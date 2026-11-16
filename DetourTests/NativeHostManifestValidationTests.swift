@@ -218,3 +218,172 @@ nonisolated final class NativeHostManifestValidationTests: XCTestCase {
         }
     }
 }
+
+/// TASK-281: manifests are searched in Detour's own folder first, then
+/// Chrome's, Chromium's and the system-wide Chrome folder, and the first file
+/// found decides. The walk is the production one
+/// (`NativeMessagingHost.discoverManifest(named:in:)`), run over a temporary
+/// root laid out like the real folders: nothing here reads or writes a real
+/// `NativeMessagingHosts` folder.
+nonisolated final class NativeHostManifestSearchOrderTests: XCTestCase {
+
+    private static let hostName = "com.detour.task281_search_order"
+    private static let origin = "chrome-extension://abcdefghijklmnopabcdefghijklmnop/"
+
+    private var root: URL?
+
+    @MainActor override func setUp() async throws {
+        try await super.setUp()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("detour-test-nm-search-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        self.root = root
+    }
+
+    @MainActor override func tearDown() async throws {
+        if let root { try? FileManager.default.removeItem(at: root) }
+        root = nil
+        try await super.tearDown()
+    }
+
+    /// The folders, in search order, under the temporary root: its `home`
+    /// stands in for the user's home and its `system` for `/Library`.
+    @MainActor private func directories() throws -> [String] {
+        let root = try XCTUnwrap(root)
+        return NativeMessagingHost.searchDirectories(
+            home: root.appendingPathComponent("home").path,
+            systemLibrary: root.appendingPathComponent("system").path,
+            override: nil)
+    }
+
+    private enum Folder { case detour, chrome, chromium, system }
+
+    /// Where `folder` is under the temporary root, spelled out here rather
+    /// than read from the production list, so a change to the order fails
+    /// these tests instead of moving the files along with it.
+    @MainActor private func directory(for folder: Folder) throws -> String {
+        let root = try XCTUnwrap(root)
+        let support = root.appendingPathComponent("home/Library/Application Support")
+        switch folder {
+        case .detour: return support.appendingPathComponent("Detour/NativeMessagingHosts").path
+        case .chrome: return support.appendingPathComponent("Google/Chrome/NativeMessagingHosts").path
+        case .chromium: return support.appendingPathComponent("Chromium/NativeMessagingHosts").path
+        case .system: return root.appendingPathComponent("system/Google/Chrome/NativeMessagingHosts").path
+        }
+    }
+
+    /// Writes a valid manifest for the host into `folder` whose `path` tells
+    /// the folders apart, or, when `broken`, one without `allowed_origins`.
+    @MainActor private func writeManifest(in folder: Folder, broken: Bool = false) throws {
+        let dir = try directory(for: folder)
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        var manifest: [String: Any] = [
+            "name": Self.hostName,
+            "description": "Detour test host",
+            "path": Self.path(for: folder),
+            "type": "stdio",
+        ]
+        if !broken { manifest["allowed_origins"] = [Self.origin] }
+        try JSONSerialization.data(withJSONObject: manifest)
+            .write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(Self.hostName).json"))
+    }
+
+    private static func path(for folder: Folder) -> String { "/opt/task281/host-\(folder)" }
+
+    /// The `path` of the manifest the search picks.
+    @MainActor private func discoveredPath() throws -> String {
+        try NativeMessagingHost.discoverManifest(named: Self.hostName, in: try directories()).path
+    }
+
+    @MainActor func testTheSearchOrderIsDetoursThenChromesThenChromiumsThenLibrarys() {
+        let home = "/Users/someone"
+        let expected = [
+            "/Users/someone/Library/Application Support/Detour/NativeMessagingHosts",
+            "/Users/someone/Library/Application Support/Google/Chrome/NativeMessagingHosts",
+            "/Users/someone/Library/Application Support/Chromium/NativeMessagingHosts",
+            "/Library/Google/Chrome/NativeMessagingHosts",
+        ]
+        XCTAssertEqual(NativeMessagingHost.searchDirectories(home: home, override: nil), expected)
+        XCTAssertEqual(NativeMessagingHost.searchDirectories(home: home, override: ""), expected,
+                       "an empty override is ignored")
+        XCTAssertEqual(NativeMessagingHost.searchDirectories(home: home, override: "/tmp/fake-hosts"),
+                       ["/tmp/fake-hosts"] + expected, "the Debug override is searched before Detour's folder")
+    }
+
+    /// The live list the app uses: the Debug-only override first, then the
+    /// user's real folders in the decided order (read, never written).
+    @MainActor func testTheLiveListPutsTheOverrideFirstAndDetoursFolderNext() throws {
+        let key = "DETOUR_NATIVE_MESSAGING_HOSTS_DIR"
+        let previous = ProcessInfo.processInfo.environment[key]
+        defer {
+            if let previous { setenv(key, previous, 1) } else { unsetenv(key) }
+        }
+        let override = try XCTUnwrap(root).appendingPathComponent("override").path
+        setenv(key, override, 1)
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        XCTAssertEqual(NativeMessagingHost.searchDirectories,
+                       [override] + NativeMessagingHost.searchDirectories(home: home, override: nil))
+        XCTAssertEqual(NativeMessagingHost.searchDirectories[1],
+                       "\(home)/Library/Application Support/Detour/NativeMessagingHosts")
+    }
+
+    @MainActor func testAValidManifestInDetoursFolderWinsOverABrokenOneInChromesFolder() throws {
+        try writeManifest(in: .chrome, broken: true)
+        try writeManifest(in: .detour)
+        XCTAssertEqual(try discoveredPath(), Self.path(for: .detour))
+    }
+
+    @MainActor func testAValidManifestInDetoursFolderWinsOverAValidOneInChromesFolder() throws {
+        try writeManifest(in: .chrome)
+        try writeManifest(in: .chromium)
+        try writeManifest(in: .system)
+        try writeManifest(in: .detour)
+        XCTAssertEqual(try discoveredPath(), Self.path(for: .detour))
+    }
+
+    @MainActor func testChromesFolderIsUsedWhenDetoursHasNone() throws {
+        try writeManifest(in: .chrome)
+        try writeManifest(in: .chromium)
+        try writeManifest(in: .system)
+        XCTAssertEqual(try discoveredPath(), Self.path(for: .chrome))
+    }
+
+    @MainActor func testChromiumsFolderIsUsedWhenDetoursAndChromesHaveNone() throws {
+        try writeManifest(in: .chromium)
+        try writeManifest(in: .system)
+        XCTAssertEqual(try discoveredPath(), Self.path(for: .chromium))
+    }
+
+    @MainActor func testTheSystemFolderIsSearchedLast() throws {
+        try writeManifest(in: .system)
+        XCTAssertEqual(try discoveredPath(), Self.path(for: .system))
+    }
+
+    /// The first file found still decides (TASK-266): a broken manifest in
+    /// Detour's folder is a refusal, not a reason to use Chrome's.
+    @MainActor func testABrokenManifestInDetoursFolderEndsTheSearch() throws {
+        try writeManifest(in: .detour, broken: true)
+        try writeManifest(in: .chrome)
+        XCTAssertThrowsError(try discoveredPath()) { error in
+            XCTAssertEqual(error as? NativeMessagingHost.NativeMessagingError,
+                           .invalidManifest(Self.hostName, .allowedOriginsMissing))
+        }
+    }
+
+    /// A broken manifest in Chrome's folder still hides Chromium's and the
+    /// system folder's when Detour's folder has none.
+    @MainActor func testABrokenManifestInChromesFolderEndsTheSearchWhenDetoursHasNone() throws {
+        try writeManifest(in: .chrome, broken: true)
+        try writeManifest(in: .chromium)
+        XCTAssertThrowsError(try discoveredPath()) { error in
+            XCTAssertEqual(error as? NativeMessagingHost.NativeMessagingError,
+                           .invalidManifest(Self.hostName, .allowedOriginsMissing))
+        }
+    }
+
+    @MainActor func testNoManifestAnywhereIsNotFound() throws {
+        XCTAssertThrowsError(try discoveredPath()) { error in
+            XCTAssertEqual(error as? NativeMessagingHost.NativeMessagingError, .manifestNotFound(Self.hostName))
+        }
+    }
+}

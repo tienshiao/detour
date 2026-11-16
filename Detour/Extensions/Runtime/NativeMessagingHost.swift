@@ -77,7 +77,13 @@ nonisolated struct NativeHostManifest: Equatable, Sendable {
 /// Max message size: 1 MB from the host, 64 MiB to it (Chrome's limits).
 class NativeMessagingHost {
 
-    /// Search directories for native messaging host manifests (Chrome-compatible locations).
+    /// Search directories for native messaging host manifests, in the order
+    /// they are searched (TASK-281): Detour's own folder, then Chrome's and
+    /// Chromium's, then the system-wide Chrome folder. A host installed for
+    /// Detour always wins; Chrome's folder is the fallback that lets hosts
+    /// such as 1Password, which write only other browsers' folders, work
+    /// without installing for Detour. The first file found decides
+    /// (`discoverManifest(named:in:)`).
     ///
     /// Debug builds additionally honor `DETOUR_NATIVE_MESSAGING_HOSTS_DIR`, searched
     /// first, so an isolated test profile can point a host name at a stand-in binary
@@ -85,21 +91,33 @@ class NativeMessagingHost {
     /// Read on every lookup rather than once, so a test can point it at a fake
     /// host directory in-process (TASK-25).
     static var searchDirectories: [String] {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        var directories = [
-            "\(home)/Library/Application Support/Google/Chrome/NativeMessagingHosts",
-            "\(home)/Library/Application Support/Chromium/NativeMessagingHosts",
-            "\(home)/Library/Application Support/Detour/NativeMessagingHosts",
-            "/Library/Google/Chrome/NativeMessagingHosts",
-        ]
         #if DEBUG
         // `ProcessInfo` rather than `getenv`: it reads the live environment
         // too (a `setenv` is seen by the next call), without handing out a
         // C string pointer.
-        if let override = ProcessInfo.processInfo.environment["DETOUR_NATIVE_MESSAGING_HOSTS_DIR"], !override.isEmpty {
+        let override = ProcessInfo.processInfo.environment["DETOUR_NATIVE_MESSAGING_HOSTS_DIR"]
+        #else
+        let override: String? = nil
+        #endif
+        return searchDirectories(home: FileManager.default.homeDirectoryForCurrentUser.path,
+                                 override: override)
+    }
+
+    /// The search order for a home folder and an optional extra directory
+    /// (searched first; ignored when empty). `systemLibrary` is `/Library`
+    /// except in tests, which lay the folders out under a temporary root.
+    static func searchDirectories(home: String, systemLibrary: String = "/Library",
+                                  override: String?) -> [String] {
+        let applicationSupport = "\(home)/Library/Application Support"
+        var directories = [
+            "\(applicationSupport)/Detour/NativeMessagingHosts",
+            "\(applicationSupport)/Google/Chrome/NativeMessagingHosts",
+            "\(applicationSupport)/Chromium/NativeMessagingHosts",
+            "\(systemLibrary)/Google/Chrome/NativeMessagingHosts",
+        ]
+        if let override, !override.isEmpty {
             directories.insert(override, at: 0)
         }
-        #endif
         return directories
     }
 
@@ -910,19 +928,27 @@ class NativeMessagingHost {
     }
 
     private func discoverManifest() throws -> NativeHostManifest {
-        guard Self.isValidHostName(hostName) else {
-            log.error("Rejecting native host name with illegal characters: \(self.hostName, privacy: .public)")
+        try Self.discoverManifest(named: hostName, in: Self.searchDirectories)
+    }
+
+    /// The manifest for `hostName`: the first `<hostName>.json` in
+    /// `directories`, which must be valid and name the host.
+    static func discoverManifest(named hostName: String, in directories: [String]) throws -> NativeHostManifest {
+        guard isValidHostName(hostName) else {
+            log.error("Rejecting native host name with illegal characters: \(hostName, privacy: .public)")
             throw NativeMessagingError.invalidName(hostName)
         }
         let filename = "\(hostName).json"
 
-        for dir in Self.searchDirectories {
+        for dir in directories {
             let path = (dir as NSString).appendingPathComponent(filename)
             guard FileManager.default.fileExists(atPath: path) else { continue }
 
             // A file that is there but refused ends the search, as Chrome's
             // does (it loads the first manifest it finds, and an invalid one
             // is "not found"): a later directory does not stand in for it.
+            // Detour's own folder is searched first, so another browser's
+            // broken file cannot hide a host installed for Detour (TASK-281).
             let manifest: NativeHostManifest
             do throws(NativeHostManifest.Invalid) {
                 guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
@@ -931,7 +957,7 @@ class NativeMessagingHost {
                 manifest = try NativeHostManifest.parse(data)
                 guard manifest.name == hostName else { throw NativeHostManifest.Invalid.nameMismatch }
             } catch {
-                log.error("Refusing native host \(self.hostName, privacy: .public): its manifest in \(dir, privacy: .public) is invalid: \(error.description, privacy: .public)")
+                log.error("Refusing native host \(hostName, privacy: .public): its manifest in \(dir, privacy: .public) is invalid: \(error.description, privacy: .public)")
                 throw NativeMessagingError.invalidManifest(hostName, error)
             }
             return manifest

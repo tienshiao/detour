@@ -306,7 +306,7 @@ Extension metadata and storage live in `AppDatabase` (the app's main SQLite data
 
 ## Native Messaging
 
-`NativeMessagingHost` spawns native host processes using Chrome's length-prefixed JSON protocol (4-byte LE uint32 + UTF-8 JSON). It finds the host manifest in Chrome's `NativeMessagingHosts` directories (and Detour's own), checks the extension against its `allowed_origins`, and enforces a 1 MB message size limit. Used by extensions like 1Password that communicate with companion desktop apps.
+`NativeMessagingHost` spawns native host processes using Chrome's length-prefixed JSON protocol (4-byte LE uint32 + UTF-8 JSON). It finds the host manifest in Detour's own `NativeMessagingHosts` folder, then Chrome's and Chromium's, then `/Library/Google/Chrome` (the first file found decides), checks the extension against its `allowed_origins`, and enforces a 1 MB message size limit. Used by extensions like 1Password that communicate with companion desktop apps.
 
 ## Test Extensions
 

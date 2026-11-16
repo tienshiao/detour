@@ -4,7 +4,7 @@ title: 1Password integration
 description: What the 1Password extension needs from a browser, which Detour mechanism meets each need, how the desktop app's trust check works, and the gaps that remain.
 tags: [extensions, 1password, native-messaging, service-worker, overview]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:05:28Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T08:29:26Z }
 sources:
   - id: plan
     resource: ../../docs/1password-integration-plan.md
@@ -66,6 +66,9 @@ sources:
   - id: task-251
     resource: backlog:TASK-251
     title: "Extensions: the history and management namespaces exist for extensions without the permission"
+  - id: task-281
+    resource: backlog:TASK-281
+    title: "Native messaging: a broken host manifest in Chrome's or Chromium's folder hides a valid one in Detour's own folder"
   - id: task-303
     resource: backlog:TASK-303
     title: Does 1Password connect in Detour on a Mac where Chrome was never installed
@@ -99,7 +102,7 @@ evidence, not for current state.
 | Need | Provided by | Page |
 |---|---|---|
 | The same extension id as in Chrome, because the desktop app's host manifest lists it in `allowed_origins` | Chrome-compatible id derivation from the CRX public key | [Installer and CRX](./installer-and-crx.md) |
-| A native messaging channel to `com.1password.1password` | Host discovery in Chrome's `NativeMessagingHosts` directories, stdio framing | [Native messaging](./native-messaging.md) |
+| A native messaging channel to `com.1password.1password` | Host discovery in the `NativeMessagingHosts` folders (Detour's, then Chrome's, where 1Password's manifest is), stdio framing | [Native messaging](./native-messaging.md) |
 | A worker that lives as long as its native port, as in Chrome | Detour-driven pings on a built-in port | [Native port keep-alive](./native-port-keep-alive.md) |
 | A `WebSocket` in the worker for the server push notifier (WebKit's deadlocks the worker) | Sockets relayed through `URLSessionWebSocketTask` | [WebSocket relay](./websocket-relay.md) |
 | Its service-worker registration and IndexedDB not being purged | User interaction logged for the extension origin | [Data store and ITP](./data-store-and-itp.md) |
@@ -189,9 +192,11 @@ unbuilt idea.[^task-7]
 - **Its host manifest is in Chrome's folder even without Chrome.** The
   desktop app writes `com.1password.1password.json` into a fixed list of
   browsers' `NativeMessagingHosts` folders, Chrome's among them, whether or
-  not those browsers are installed, and Chrome's is the first folder Detour
-  searches. Found by static investigation on one Mac on 2026-11-08; a clean
-  account without Chrome has not been checked.[^task-303]
+  not those browsers are installed. Detour searches its own folder first
+  and Chrome's next (TASK-281), so 1Password's manifest is found in Chrome's
+  folder unless one for the same host name was installed for Detour. Found
+  by static investigation on one Mac on 2026-11-08; a clean account without
+  Chrome has not been checked.[^task-303][^task-281]
 - **It declares no options page** (8.12.37.1), so the "Settings…" entry
   points are hidden for it by design.[^notes-1password]
 
@@ -253,5 +258,6 @@ and hourly `Received unknown message from b5x` in the helper's log.
 [^task-102]: The Private worker throws on a.providers
 [^task-99]: TASK-99
 [^task-251]: TASK-251
+[^task-281]: Native messaging: a broken host manifest in Chrome's or Chromium's folder hides a valid one in Detour's own folder
 [^task-303]: TASK-303
 [^notes-1password]: Session notes on the 1Password integration

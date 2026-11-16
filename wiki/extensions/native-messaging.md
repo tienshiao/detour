@@ -5,7 +5,7 @@ description: How Detour runs Chrome native messaging hosts for extensions — ho
 resource: ../../Detour/Extensions/Runtime/NativeMessagingHost.swift
 tags: [extensions, native-messaging, security, logging]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:59:43Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T08:29:26Z }
 sources:
   - id: lifecycle-tests
     resource: ../../DetourTests/NativeMessagingHostLifecycleTests.swift
@@ -100,25 +100,34 @@ the ports is on [WebKit extension ports](../platform/webkit-extension-ports.md).
    | Order | Directory |
    |---|---|
    | 0 (Debug builds only) | `$DETOUR_NATIVE_MESSAGING_HOSTS_DIR` |
-   | 1 | `~/Library/Application Support/Google/Chrome/NativeMessagingHosts` |
-   | 2 | `~/Library/Application Support/Chromium/NativeMessagingHosts` |
-   | 3 | `~/Library/Application Support/Detour/NativeMessagingHosts` |
+   | 1 | `~/Library/Application Support/Detour/NativeMessagingHosts` |
+   | 2 | `~/Library/Application Support/Google/Chrome/NativeMessagingHosts` |
+   | 3 | `~/Library/Application Support/Chromium/NativeMessagingHosts` |
    | 4 | `/Library/Google/Chrome/NativeMessagingHosts` |
 
    A file that is there but refused (step 3, or a `name` field that is not
    the requested name) ends the search, as in Chrome, which loads the first
    manifest it finds: a later directory does not stand in for it.
 
-   **The order is to change (TASK-281).** Chrome reads only its own folder,
-   so there one vendor's broken file never hides another's; in Detour a
-   stale or broken manifest in Chrome's folder hides a valid one installed
-   in Detour's own. The user decided on 2026-11-15 that Detour's own folder
-   will be searched first, then Chrome's and Chromium's, then `/Library`,
-   with the first file found still deciding: a host installed for Detour
-   always wins, and Chrome's folder stays the fallback that lets hosts such
-   as 1Password work without installing for Detour (every other Chromium
-   browser reads only its own folder). Planned in TASK-281; the table above
-   is today's order.[^task-281]
+   **Why this order (TASK-281, the user's decision of 2026-11-15).** Chrome
+   reads only its own folder, so there one vendor's broken file never hides
+   another's. Detour reads several, and until TASK-281 it read Chrome's and
+   Chromium's before its own, so a stale or broken manifest in Chrome's
+   folder hid a valid one installed for Detour. Detour's own folder now
+   comes first: a host installed for Detour always wins. Chrome's and
+   Chromium's folders stay as fallbacks because hosts such as 1Password
+   write their manifest only into other browsers' folders (see
+   [1Password integration](./1password-integration.md)), and every other
+   Chromium browser reads only its own folder. The first-file-decides rule
+   was kept rather than letting a refused file fall through to the next
+   folder: it is Chrome's rule (TASK-266). With Detour's folder first,
+   another browser's file can no longer hide a host installed for Detour;
+   a broken file in any folder still hides the folders after it (a broken
+   one in Chrome's folder hides Chromium's and `/Library`'s). The live list is
+   built by the pure `searchDirectories(home:systemLibrary:override:)`, and
+   the walk is `discoverManifest(named:in:)`, so tests run the production
+   walk over a temporary root laid out like the real
+   folders.[^task-281][^manifest-tests]
 3. `NativeHostManifest.parse` refuses what Chrome's manifest parser
    refuses: a file that is not a JSON object, a missing `name` or `path`,
    a `type` other than `"stdio"`, and an `allowed_origins` that is missing,
@@ -337,6 +346,15 @@ evidence for. There is no level between notice and error to use:
   one-shot host's string or array reply settles the request; the framing
   suite pins the fragments' JSON text and the refusal of NaN, infinity, a
   `Date` and a non-string key.
+- `NativeHostManifestSearchOrderTests` (in
+  `NativeHostManifestValidationTests.swift`, TASK-281): the order list, with
+  and without the Debug override and as the live property reads it; then
+  the production walk over a temporary root laid out like the real folders
+  (no test reads or writes a real `NativeMessagingHosts` folder): Detour's
+  valid manifest wins over a broken and over a valid one in Chrome's folder,
+  Chrome's is used when Detour's has none, then Chromium's, the system
+  folder last, and a broken file in Detour's or (with none in Detour's)
+  Chrome's folder still ends the search.[^manifest-tests]
 - `NativeConnectLogLimiterTests`: the limiter with an injected clock.
 - `NativeMessagingFramingTests`: the wire bytes of the prefix, and the read
   loop against a real host process — a prefix that claims more than the
