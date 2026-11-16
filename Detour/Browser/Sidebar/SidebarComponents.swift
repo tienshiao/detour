@@ -21,6 +21,23 @@ class DraggableTableView: NSTableView {
 
     override var mouseDownCanMoveWindow: Bool { false }
 
+    /// False only while the automation endpoint hands this list a press
+    /// (TASK-228.9). `-[NSTableView mouseDown:]` gives up on a press in a
+    /// window that is not key unless it becomes a drag
+    /// (`_shouldAbortMouseDownAfterDragAttempt:`: the window is not key, can
+    /// become key, and the table needs its panel to become key; found in the
+    /// disassembly and confirmed in the test host). The endpoint's press is
+    /// handed to the list directly and leaves the key window alone while
+    /// Detour is in the background (TASK-228.10), so no row ever selected.
+    /// Answering false for that press lets the table's own mouse-down select
+    /// the row (a folder toggles, a pinned entry selects), the way it does in
+    /// the key window. A person's press keeps AppKit's answer: the window's
+    /// routing asks this too, and in a window that is not key a person's
+    /// press on a row must still drag it out without selecting it first.
+    override var needsPanelToBecomeKey: Bool {
+        AutomationInput.isHandingPress(to: self) ? false : super.needsPanelToBecomeKey
+    }
+
     /// Last mouse-down location in table coordinates. `pasteboardWriterForRow`
     /// reads it to decide which part of a split row a drag grabbed (the drag
     /// APIs don't hand the originating event to the data source).

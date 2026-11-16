@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Automation endpoint (MCP)
-description: "Detour's local MCP server for agents and scripts (TASK-228.1, TASK-228.4, TASK-228.2, TASK-228.3, TASK-228.5, TASK-228.7, TASK-228.8): how it is turned on, who may connect (Host, Origin, a test run's shared token, per-client tokens the user approves in Detour's own prompt, and the rejected alternatives), the Private-window opt-in, the HTTP and MCP layers, the tools and their stable error codes, the window kinds a window_id names (browser, Quick Detour, quarantine, Settings) and who reaches which, how clicks, keys and menus are delivered inside the app without activating it, the agent pointer that shows where they land (TASK-228.11: a click-through child overlay window, its glide and arrival order, its setting and Debug override), screenshots and what they cannot draw, the page tools (JavaScript, page text and elements, console and network capture, waits, sleeping and unselected tabs) and their limits, the extension tools (install, list, enable, permissions, popup, options and worker contexts, the channel into a service worker, extension console) and their limits, the per-extension compatibility report (static scan of chrome.* references checked in the live worker and a probe page, the stub registry and its call counts, API-naming runtime errors, unsupported manifest keys and permissions, worker failures) and the stable output for diffing against a baseline, capture staging (a demo world seeded from a fixture file and its format, displays and exact window placement read back from the window server, paced typing, Debug UI on demand, the test-run guard on Arc's folder, who takes the focus), the connected-agent indicator and disconnecting (revoking an approved client), the bundled stdio helper and where it keeps each client's token, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, a shared item retitled per window, a table's hit test that follows the current event, AppKit controls that track a click only through the window's routing, a switch's pill, renumbered posted events, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM, never-shown tabs, Resource Timing status, inert host rows, real native hosts, a popup's profile in the test host, a window's open animation, focus during captures)."
+description: "Detour's local MCP server for agents and scripts (TASK-228.1, TASK-228.4, TASK-228.2, TASK-228.3, TASK-228.5, TASK-228.7, TASK-228.8): how it is turned on, who may connect (Host, Origin, a test run's shared token, per-client tokens the user approves in Detour's own prompt, and the rejected alternatives), the Private-window opt-in, the HTTP and MCP layers, the tools and their stable error codes, the window kinds a window_id names (browser, Quick Detour, quarantine, Settings) and who reaches which, how clicks, keys and menus are delivered inside the app without activating it, the agent pointer that shows where they land (TASK-228.11: a click-through child overlay window, its glide and arrival order, its setting and Debug override), screenshots and what they cannot draw, the page tools (JavaScript, page text and elements, console and network capture, waits, sleeping and unselected tabs) and their limits, the extension tools (install, list, enable, permissions, popup, options and worker contexts, the channel into a service worker, extension console) and their limits, the per-extension compatibility report (static scan of chrome.* references checked in the live worker and a probe page, the stub registry and its call counts, API-naming runtime errors, unsupported manifest keys and permissions, worker failures) and the stable output for diffing against a baseline, capture staging (a demo world seeded from a fixture file and its format, displays and exact window placement read back from the window server, paced typing, Debug UI on demand, the test-run guard on Arc's folder, who takes the focus), the connected-agent indicator and disconnecting (revoking an approved client), the bundled stdio helper and where it keeps each client's token, the scripts/detour-mcp client, and the traps met building it (menu-bar titles, a shared item retitled per window, a table's hit test that follows the current event, a table that selects nothing in a window that is not key, hover-only controls, AppKit controls that track a click only through the window's routing, a switch's pill, renumbered posted events, animated commands, modal actions and the main queue, key ordering, window-server materials, SIGTERM, never-shown tabs, Resource Timing status, inert host rows, real native hosts, a popup's profile in the test host, a window's open animation, focus during captures)."
 tags: [automation, mcp, testing, security]
 status: draft
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T08:10:00Z }
@@ -84,6 +84,9 @@ sources:
   - id: task-228-8
     resource: backlog:TASK-228.8
     title: "Automation: a click from the endpoint toggles a switch and opens a pop-up in Settings"
+  - id: task-228-9
+    resource: backlog:TASK-228.9
+    title: "Automation: a left click on a sidebar row selects its tab, as a person's click does"
   - id: task-228-11
     resource: backlog:TASK-228.11
     title: "Automation: a visible agent pointer shows where the endpoint clicks and types"
@@ -507,6 +510,37 @@ reaches each kind of target:
   run-loop mode of its own, so no other tool's pending run-loop work runs
   inside the call), as in AppKit's own dispatch. See the trap on sidebar rows. Checked at runtime with Detour in the background:
   the sidebar's Add Space button opened the space editor.
+- **A sidebar row** takes a left click on that direct route and selects its
+  tab, a pinned entry or (a folder's row) toggles the folder, with Detour in
+  the background as when it is active (TASK-228.9).[^task-228-9] AppKit's
+  table gives up on a press in a window that is not key unless it becomes a
+  drag (see Traps), so the list (`DraggableTableView.needsPanelToBecomeKey`)
+  answers false while the endpoint hands it a press
+  (`AutomationInput.isHandingPress(to:)`), and the table's own mouse-down
+  selects. The list has to cooperate: the check is the table's own, it asks
+  the window whether it is key, and the endpoint must leave the key window
+  alone in the background, so nothing in the delivery alone gets past it
+  short of swizzling AppKit. No select call stands in for the click: the
+  table's own code runs (the clicked row, the drag check, the New Tab row
+  opening the palette, Opt-Cmd-click's Quick Detour). A person's press is
+  untouched, so a row dragged out of a background window still drags without
+  selecting first.
+- **The pointer arrives before a left click on a native view**
+  (`AutomationInput.pointerArrived`, then `pointerLeft` after the click): the
+  views under the point, from the hit view down, that own a tracking area
+  with `.mouseEnteredAndExited` holding the point get `mouseEntered`, the
+  window is laid out, and the target is hit-tested and gated again
+  (`retarget`); after the click they get `mouseExited`, unless they left the
+  window. A person's pointer crosses a row before clicking it, so a control
+  shown only on hover is there for the press: a tab row's close button closes
+  the tab, where the click selected the row before (TASK-228.9, chosen by
+  Claude, not yet confirmed by the user). `.activeInActiveApp` is not
+  honoured (the endpoint clicks in the background); an area the person's own
+  pointer is in is left alone; the window's own hover zones (owned by the
+  controller, not a view under the point) are never touched. Not for a right
+  click (its menu runs until it closes) or a page. An agent cannot find such
+  a control first: `hit_test` and screenshots show the row without it. The
+  close button sits at the row's right end, 16 points wide.
 - **A left press on a view that takes a first click** goes through the
   window's own routing instead (`NSWindow.sendEvent`, press and then, if
   still queued, the release), because AppKit's own controls track a click
@@ -1305,11 +1339,26 @@ In a test run, Claude Code can also connect directly:
   does not begin, at runtime as a person's would not. Aim at the frame's
   centre that `hit_test` returns. Scanning for the first point that hits the
   switch made the first runtime checks of this fix look like failures.
-- **A left click on a sidebar row does not select its tab through the
-  endpoint**, before or after TASK-228.8 (the row keeps the direct route;
-  through the window its press ran no tracking loop either). Not
-  investigated further: `select_tab` selects a row's item as a row click
-  does.
+- **A left click on a sidebar row selected nothing through the endpoint**
+  (before TASK-228.9, on both routes). `-[NSTableView mouseDown:]` asks
+  `_shouldAbortMouseDownAfterDragAttempt:` first: true when the window is
+  not key, it can become key, and the table's `needsPanelToBecomeKey` is true
+  (read from the disassembly). Then the table only tries a drag
+  (`_performDragFromMouseDown:` takes the release off the queue and posts it
+  back) and, unless Command is held or a cell takes the click through,
+  returns without selecting. The endpoint's press always met it: no window is
+  key while Detour is in the background. Probed in the test host by swizzling
+  `nextEvent`, `postEvent` and `selectRowIndexes`: with the table answering
+  false the same press selected the row, its selection tracking took the
+  release, and the window stayed non-key. Not the click count, the
+  timestamps or the current event. For a person, AppKit's own
+  `_handleMouseDownEvent:isDelayedEvent:` does not make the window key at the
+  press when the view delays window ordering (it blocks ordering and orders
+  the window on the release, `_NXDoMouseUpWindowOrdering`), so a person's
+  first click on a row of a window that is not key probably only brings the
+  window forward; not checked with a real click. The same check stands in
+  every `NSTableView` of Detour's (the Archived Tabs list, Settings' lists),
+  which the endpoint's clicks may not select either.
 - **In-app captures cannot draw window-server materials.** `cacheDisplay`
   draws the content view (web content included, even with Detour in the
   background) but leaves the sidebar blank, so the sidebar is drawn again
@@ -1447,7 +1496,12 @@ a page's context menu listed and closed, a native view's mouse-down with no
 mouse-up left queued, a native context menu chosen from, an `NSSwitch`
 toggled both ways and an `NSPopUpButton` opened, listed and chosen from with
 the window not key, when a press goes through the window, a right click on a
-sidebar row's label and icon opening the row's menu, and the input errors),
+sidebar row's label and icon opening the row's menu, a left click on a row
+selecting its tab with the window not key and the app inactive and no hover
+left on the rows after, a click where a row's close button shows on hover
+closing the tab, a pinned entry's row selecting, a folder's row and its
+disclosure each toggling it once, the New Tab row opening the palette, and
+the input errors),
 `AutomationAgentPointerTests` (TASK-228.11: off, a click and typing wait
 for nothing and make no overlay; on, the 150 ms glide comes before the
 click, the overlay is a click-through child that is never key or main and
@@ -1569,5 +1623,6 @@ its contexts following the setting).[^tests][^approval-tests]
 [^approval-tests]: AutomationClientApprovalTests and AutomationPrivateAccessTests
 [^task-228-7]: Automation: run_menu_item and right clicks match what the user sees (live titles, row labels), and Quick Detour windows and Settings can be addressed
 [^task-228-8]: Automation: a click from the endpoint toggles a switch and opens a pop-up in Settings
+[^task-228-9]: Automation: a left click on a sidebar row selects its tab, as a person's click does
 [^task-228-11]: Automation: a visible agent pointer shows where the endpoint clicks and types
 [^agent-pointer]: AutomationAgentPointer.swift (the setting, the overlay window, the glide, the arrival order)

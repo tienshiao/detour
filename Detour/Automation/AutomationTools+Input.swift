@@ -76,8 +76,10 @@ extension AutomationTools {
                 + "window from list_windows), or in the "
                 + "page's viewport (CSS pixels) with context. button right opens a context menu; then use "
                 + "list_menu and choose_menu_item. A menu that is open is closed first, as a person's click elsewhere "
-                + "closes it. completed is false when the click opened a menu or an alert that "
-                + "is still open.",
+                + "closes it. A left click at a window point first hovers the views under it, as a person's "
+                + "pointer does, so a control shown only on hover takes it (a sidebar tab row's close button, "
+                + "at the row's right end); hit_test and screenshots do not show such a control. "
+                + "completed is false when the click opened a menu or an alert that is still open.",
             inputSchema: MCPSchema.input([
                 ("window_id", .integer("A window from list_windows, with x and y")),
                 ("context", .string("A tab_id or tab:<id>, popup:<ext> or options:<ext>, with selector or x and y")),
@@ -160,9 +162,24 @@ extension AutomationTools {
                     // A person's click elsewhere dismisses an open menu; so does this
                     // one, once its arguments are known to be good.
                     await AutomationMenuTracker.shared.closeAll()
+                    let byWindowPoint = !arguments.has("context")
                     if await glidePointer(to: point, in: window) {
                         target = try retarget(target, at: point, in: window, button: button, modifiers: modifiers,
-                                              byWindowPoint: !arguments.has("context"))
+                                              byWindowPoint: byWindowPoint)
+                    }
+                    // The pointer arrives before the press, as a person's
+                    // does, so what shows on hover (a tab row's close button)
+                    // takes it; the hit test and the gates run again. A left
+                    // click on a native view only: a right click's menu runs
+                    // until it closes, with no point to say the pointer left.
+                    var hovered: [NSView] = []
+                    defer { AutomationInput.pointerLeft(hovered, at: point, in: window) }
+                    if byWindowPoint, button == .left, case .view(let view) = target {
+                        hovered = AutomationInput.pointerArrived(at: point, in: window, over: view)
+                        if !hovered.isEmpty {
+                            target = try retarget(target, at: point, in: window, button: button, modifiers: modifiers,
+                                                  byWindowPoint: true)
+                        }
                     }
                     let completed = await AutomationInput.click(target, at: point, in: window, button: button,
                                                                 modifiers: modifiers, count: count, wait: inputWait)

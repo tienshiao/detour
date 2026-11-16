@@ -112,6 +112,9 @@ sources:
   - id: task-336
     resource: backlog:TASK-336
     title: "Settings: switches have one accessible name and VoiceOver reads each setting once"
+  - id: task-228-9
+    resource: backlog:TASK-228.9
+    title: "Automation: a left click on a sidebar row selects its tab, as a person's click does"
   - id: task-315
     resource: backlog:TASK-315
     title: "Windows: find what keeps a closed browser window's controller in memory"
@@ -194,6 +197,7 @@ Related.
 | `.sourceList` drop feedback can mark a whole row or a gap, nothing finer. | Split-edge drops | Draw your own overlay |
 | The session's drag image disappears the moment a drop is accepted, and `animatesToDestination` needs the destination to exist now.[^task-129] | Dropped rows appeared to travel from their origin | Take the image over as an overlay view and animate it yourself (`beginDropLanding`) |
 | A view at `alphaValue` 0 still receives drags. | Favorite drop hint after it faded out | Set `isHidden` once the fade completes |
+| `-[NSTableView mouseDown:]` gives up on a press in a window that is not key (and can become key) while the table's `needsPanelToBecomeKey` is true: it only tries a drag, then returns without selecting unless Command is held (`_shouldAbortMouseDownAfterDragAttempt:`, from the disassembly).[^task-228-9] | The automation endpoint's left click on a sidebar row selected nothing, Detour being in the background | `DraggableTableView` answers false only while the endpoint hands it a press ([automation endpoint](../features/automation-endpoint.md)) |
 
 # Popovers
 
@@ -283,4 +287,5 @@ from a probe or a measurement.
 [^task-189]: Settings: fix the window's spacing and clipping
 [^task-314]: Window: a closed browser window can be re-shown by a link placement, with its sidebar deaf to the store
 [^task-336]: Settings: switches have one accessible name and VoiceOver reads each setting once
+[^task-228-9]: Automation: a left click on a sidebar row selects its tab, as a person's click does
 [^task-338]: Settings: System Settings–style grouped rows

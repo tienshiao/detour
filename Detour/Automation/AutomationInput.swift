@@ -238,8 +238,9 @@ enum AutomationInput {
     /// check (Settings' Automation section). Not for a view that delays
     /// window ordering for the press (a sidebar row, so it can be dragged out
     /// of a background window): through the window, the sidebar's table ran
-    /// no tracking loop for the press, so such a view keeps the direct route
-    /// it had before. Never for a view whose class overrides `mouseDown`
+    /// no tracking loop for the press, so such a view keeps the direct route,
+    /// where the list selects the row (`viewTakingPress`). Never for a
+    /// view whose class overrides `mouseDown`
     /// (it tracks the press itself, and some of Detour's read
     /// `acceptsFirstMouse` as "this press activates the window", so it is
     /// not asked: Quick Detour's title-bar buttons drop such a press).
@@ -261,6 +262,94 @@ enum AutomationInput {
         }
         let selector = #selector(NSView.mouseDown(with:))
         return class_getMethodImplementation(viewClass, selector) != class_getMethodImplementation(appKitClass, selector)
+    }
+
+    // MARK: The pointer arriving
+
+    /// Tells the views a pointer arriving at `point` (window coordinates)
+    /// would be over, and that track it there, that it entered, as AppKit
+    /// does when a person's pointer moves in. A person's pointer always
+    /// crosses a tab row before clicking it, so the row's close button,
+    /// shown only on hover, is there for the press; the endpoint's pointer
+    /// never moves, so without this the press at the close button's place
+    /// selected the row instead (TASK-228.9).
+    ///
+    /// From `hit` (the view the click reaches) down: `hit` and its shown
+    /// descendants under the point. Not up the hierarchy or across the
+    /// window: the window's own hover zones (the sidebar's reveal strip) are
+    /// not where the press goes. Only a tracking area the view owns, with
+    /// `.mouseEnteredAndExited`, whose rect holds the point. An area's
+    /// `.activeInActiveApp` is not honoured: the endpoint clicks with Detour
+    /// in the background, where AppKit would never send the enter. Not an
+    /// area the person's own pointer is already in while AppKit tracks it
+    /// (the area is active now): that view is hovered already, and the exit
+    /// afterwards would take its hover away from under the pointer. With
+    /// Detour in the background the person's pointer hovers nothing, so it
+    /// does not count. Lays the window out after each view it tells, so a
+    /// control the hover shows has its frame for its own area and for the
+    /// hit test. Returns the views it told, for `pointerLeft`.
+    static func pointerArrived(at point: NSPoint, in window: NSWindow, over hit: NSView) -> [NSView] {
+        let personsPointer = window.mouseLocationOutsideOfEventStream
+        var entered: [NSView] = []
+        func visit(_ view: NSView) {
+            guard !view.isHidden else { return }
+            let local = view.convert(point, from: nil)
+            guard view.bounds.contains(local) || view === hit else { return }
+            let person = view.convert(personsPointer, from: nil)
+            let tracks = view.trackingAreas.contains { area in
+                guard area.owner === view, area.options.contains(.mouseEnteredAndExited) else { return false }
+                let rect = area.options.contains(.inVisibleRect) ? view.visibleRect : area.rect
+                let hoveredByPerson = isTracking(area.options, for: view, in: window) && rect.contains(person)
+                return rect.contains(local) && !hoveredByPerson
+            }
+            if tracks, let event = enterExitEvent(.mouseEntered, at: point, in: window) {
+                view.mouseEntered(with: event)
+                entered.append(view)
+                window.layoutIfNeeded()
+            }
+            for subview in view.subviews { visit(subview) }
+        }
+        visit(hit)
+        return entered
+    }
+
+    /// Whether AppKit delivers a tracking area with `options` now, so a
+    /// person's pointer inside it has hovered `view`.
+    private static func isTracking(_ options: NSTrackingArea.Options, for view: NSView, in window: NSWindow) -> Bool {
+        if options.contains(.activeAlways) { return true }
+        guard NSApp.isActive else { return false }
+        if options.contains(.activeInActiveApp) { return true }
+        guard window.isKeyWindow else { return false }
+        if options.contains(.activeInKeyWindow) { return true }
+        return window.firstResponder === view
+    }
+
+    /// Tells the views `pointerArrived` told that the pointer left, after the
+    /// click: the endpoint's pointer stays nowhere, and a hover left on would
+    /// stay until something checks the real pointer again. A view that left
+    /// the window meanwhile (the row of a tab the click closed) is skipped.
+    static func pointerLeft(_ views: [NSView], at point: NSPoint, in window: NSWindow) {
+        for view in views where view.window === window {
+            if let event = enterExitEvent(.mouseExited, at: point, in: window) { view.mouseExited(with: event) }
+        }
+    }
+
+    private static func enterExitEvent(_ type: NSEvent.EventType, at point: NSPoint, in window: NSWindow) -> NSEvent? {
+        NSEvent.enterExitEvent(with: type, location: point, modifierFlags: [],
+                               timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                               context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)
+    }
+
+    /// The view `click` is handing a left press straight to
+    /// (`view.mouseDown(with:)`, the direct route), while it does, for a view
+    /// that has to take such a press as one in its key window: the sidebar's
+    /// list, whose table would otherwise select nothing in a window that is
+    /// not key (`DraggableTableView.needsPanelToBecomeKey`, TASK-228.9).
+    private(set) static weak var viewTakingPress: NSView?
+
+    /// Whether `click` is handing a press to `view` or a view inside it.
+    static func isHandingPress(to view: NSView) -> Bool {
+        viewTakingPress?.isDescendant(of: view) == true
     }
 
     /// Moves keyboard focus to `view` as a person's left click does (NSWindow
@@ -315,7 +404,14 @@ enum AutomationInput {
                         // editor over the view and change the hit test.
                         routed = deliversThroughWindow(down, to: view, in: window)
                         focus(view, in: window)
-                        if routed { window.sendEvent(down) } else { view.mouseDown(with: down) }
+                        if routed {
+                            window.sendEvent(down)
+                        } else {
+                            let previous = viewTakingPress
+                            viewTakingPress = view
+                            defer { viewTakingPress = previous }
+                            view.mouseDown(with: down)
+                        }
                     } else {
                         view.rightMouseDown(with: down)
                     }

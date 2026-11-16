@@ -430,7 +430,8 @@ nonisolated final class AutomationInputTests: XCTestCase {
     @MainActor func testARightClickOnASidebarRowsLabelOrIconOpensTheRowsMenu() async throws {
         let f = try await makeFixture()
         let table = f.window.tabSidebar.tableView
-        table.layoutSubtreeIfNeeded()
+        // A point taken from a row still sliding in is no row's (a flake).
+        try await waitForRowsToSettle(f)
         let cell = try XCTUnwrap((0..<table.numberOfRows).lazy.compactMap {
             table.view(atColumn: 0, row: $0, makeIfNecessary: false) as? TabCellView
         }.first { $0.titleLabel.stringValue == "Input" })
@@ -484,5 +485,148 @@ nonisolated final class AutomationInputTests: XCTestCase {
         XCTAssertEqual(delete.keyCode, 51)
         let accented = try XCTUnwrap(AutomationInput.keyEvents(for: "é", modifiers: [], in: window)).0
         XCTAssertEqual(accented.keyCode, AutomationInput.unmappedKeyCode, "no US key, so no physical key")
+    }
+
+    // MARK: Sidebar rows (TASK-228.9)
+
+    /// The sidebar's row views, by row.
+    @MainActor private func sidebarRows(_ f: Fixture) -> [(row: Int, view: NSView?)] {
+        let table = f.window.tabSidebar.tableView
+        table.layoutSubtreeIfNeeded()
+        return (0..<table.numberOfRows).map { ($0, table.view(atColumn: 0, row: $0, makeIfNecessary: false)) }
+    }
+
+    @MainActor private func tabCell(_ f: Fixture, titled title: String) throws -> TabCellView {
+        try XCTUnwrap(sidebarRows(f).lazy.compactMap { $0.view as? TabCellView }.first { $0.titleLabel.stringValue == title },
+                      "a row titled \(title)")
+    }
+
+    @MainActor private func waitForRowsToSettle(_ f: Fixture) async throws {
+        let table = f.window.tabSidebar.tableView
+        try await waitUntil("the sidebar's rows to settle", timeout: 3) {
+            table.layoutSubtreeIfNeeded()
+            var settled = true
+            table.enumerateAvailableRowViews { rowView, row in
+                if rowView.frame != table.rect(ofRow: row) { settled = false }
+            }
+            return settled
+        }
+    }
+
+    @MainActor private func clickCentre(_ f: Fixture, of view: NSView) async throws -> JSONValue {
+        let (x, y) = try contentCentre(of: view)
+        let (clicked, isError) = try await call(f, "click", ["window_id": .int(f.windowID), "x": .double(x), "y": .double(y)])
+        XCTAssertFalse(isError, clicked.jsonString)
+        return clicked
+    }
+
+    @MainActor private func addOtherTab(_ f: Fixture) async throws -> BrowserTab {
+        let port = try XCTUnwrap(f.tab.url?.port)
+        let other = TabStore.shared.addTab(in: f.space, url: URL(string: "http://127.0.0.1:\(port)/other")!)
+        try await waitUntil("the other page to load") { other.title == "Other" }
+        try await waitForRowsToSettle(f)
+        return other
+    }
+
+    /// A left click on a tab's row selects the tab, in a window that is not
+    /// key and with the test host in the background, as Detour is when an
+    /// agent drives it. The table gave up on the press before: in a window
+    /// that is not key, `-[NSTableView mouseDown:]` only lets a drag go ahead
+    /// while the table needs its panel to become key, which the list now
+    /// denies for the endpoint's press only.
+    @MainActor func testALeftClickOnASidebarRowSelectsItsTab() async throws {
+        let f = try await makeFixture()
+        let other = try await addOtherTab(f)
+        let window = try XCTUnwrap(f.window.window)
+        let table = f.window.tabSidebar.tableView
+        XCTAssertEqual(f.window.selectedTabID, f.tab.id)
+        XCTAssertFalse(window.isKeyWindow)
+        let tabCount = f.space.tabs.count
+
+        let clicked = try await clickCentre(f, of: try tabCell(f, titled: "Other").titleLabel)
+        XCTAssertEqual(clicked["view"], "DraggableTableView")
+        XCTAssertEqual(f.window.selectedTabID, other.id, "the row's tab is selected")
+        XCTAssertEqual(f.space.tabs.count, tabCount)
+        XCTAssertFalse(NSApp.isActive, "the click did not activate the app")
+        XCTAssertFalse(window.isKeyWindow, "nor make the window key")
+        XCTAssertTrue(table.needsPanelToBecomeKey, "outside the endpoint's press the table is as AppKit made it")
+        XCTAssertNil(AutomationInput.viewTakingPress)
+        XCTAssertNil(NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .eventTracking, dequeue: false),
+                     "the table's tracking took the release")
+
+        // Back by the first tab's row, and no hover is left on either row.
+        _ = try await clickCentre(f, of: try tabCell(f, titled: "Input").titleLabel)
+        XCTAssertEqual(f.window.selectedTabID, f.tab.id)
+        for title in ["Input", "Other"] {
+            let buttons = try tabCell(f, titled: title).subviews.compactMap { $0 as? HoverButton }
+            XCTAssertFalse(buttons.isEmpty)
+            XCTAssertTrue(buttons.allSatisfy(\.isHidden), "\(title)'s close buttons are hidden again")
+        }
+    }
+
+    /// The close button shows only while the pointer is over the row. The
+    /// endpoint's click hovers the views under the point first, as a
+    /// person's pointer crosses the row before the press, so a click where
+    /// the button shows closes the tab.
+    @MainActor func testALeftClickOnARowsCloseButtonClosesTheTab() async throws {
+        let f = try await makeFixture()
+        let other = try await addOtherTab(f)
+        let cell = try tabCell(f, titled: "Other")
+        let content = try XCTUnwrap(f.window.window?.contentView)
+        let close = try XCTUnwrap(cell.subviews.compactMap { $0 as? HoverButton }.first {
+            $0.image?.accessibilityDescription == "Close"
+        })
+        XCTAssertTrue(close.isHidden, "no hover, no button")
+        // Where the button shows on hover: 16 points wide, ending where its
+        // collapsed frame ends.
+        let centre = cell.convert(NSPoint(x: close.frame.maxX - 8, y: cell.bounds.midY), to: content)
+        let x = Double(centre.x), y = Double(content.isFlipped ? centre.y : content.bounds.height - centre.y)
+        let (before, _) = try await call(f, "hit_test", ["window_id": .int(f.windowID), "x": .double(x), "y": .double(y)])
+        XCTAssertEqual(before["view"], "DraggableTableView", "hit_test shows no button there")
+
+        let (clicked, isError) = try await call(f, "click", ["window_id": .int(f.windowID), "x": .double(x), "y": .double(y)])
+        XCTAssertFalse(isError, clicked.jsonString)
+        XCTAssertEqual(clicked["view"], "HoverButton", "the hover put the button under the point")
+        try await waitUntil("the tab to close", timeout: 3) { !f.space.tabs.contains { $0.id == other.id } }
+        XCTAssertEqual(f.window.selectedTabID, f.tab.id, "the selection stayed")
+    }
+
+    /// A pinned entry's row selects its tab; a folder's row and its
+    /// disclosure button each toggle it once; the New Tab row opens the
+    /// command palette, as a person's click on each does.
+    @MainActor func testPinnedEntryFolderAndNewTabRowsTakeAClick() async throws {
+        let f = try await makeFixture()
+        let store = TabStore.shared
+        let other = try await addOtherTab(f)
+        store.pinTab(id: other.id, in: f.space)
+        let folder = store.addPinnedFolder(name: "Folder", in: f.space)
+        func collapsed() -> Bool? { f.space.pinnedFolders.first { $0.id == folder.id }?.isCollapsed }
+        // The rows slide into place; a point taken meanwhile is another row's.
+        try await waitForRowsToSettle(f)
+
+        let pinnedCell = try XCTUnwrap(sidebarRows(f).lazy.compactMap { $0.view as? TabCellView }.first {
+            $0.titleLabel.stringValue != "Input"
+        }, "the pinned entry's row")
+        _ = try await clickCentre(f, of: pinnedCell.titleLabel)
+        XCTAssertEqual(f.window.selectedTabID, other.id, "the pinned entry's tab is selected")
+
+        let folderCell = try XCTUnwrap(sidebarRows(f).lazy.compactMap { $0.view as? FolderCellView }.first)
+        let label = try XCTUnwrap(folderCell.subviews.first { $0 is NSTextField })
+        XCTAssertEqual(collapsed(), false)
+        _ = try await clickCentre(f, of: label)
+        XCTAssertEqual(collapsed(), true, "the folder's row toggles it, once")
+        let disclosure = try XCTUnwrap(sidebarRows(f).lazy.compactMap { $0.view as? FolderCellView }.first?
+            .subviews.first { $0 is NSButton })
+        let clicked = try await clickCentre(f, of: disclosure)
+        XCTAssertEqual(clicked["view"], "NSButton")
+        XCTAssertEqual(collapsed(), false, "the disclosure toggles it back, once")
+
+        let newTab = try XCTUnwrap(sidebarRows(f).first { $0.view is NewTabCellView }?.view)
+        let tabCount = f.space.tabs.count
+        XCTAssertNil(f.window.commandPaletteView)
+        _ = try await clickCentre(f, of: newTab)
+        XCTAssertNotNil(f.window.commandPaletteView, "the New Tab row opens the palette")
+        XCTAssertEqual(f.space.tabs.count, tabCount)
+        f.window.dismissCommandPalette()
     }
 }
