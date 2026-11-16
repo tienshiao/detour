@@ -4,7 +4,7 @@
 
 # Concepts
 
-* [Browser undo](browser-undo.md) - Detour's undo of browsing actions: the one app-wide UndoManager on TabStore, which mutations register an entry and which do not, how closures capture spaces (the instance) and tabs (by id), grouping, when the stack is cleared, the identity and deleted-profile pitfalls, and which window answers Edit > Undo.
+* [Browser undo](browser-undo.md) - Detour's undo of browsing actions: the one app-wide UndoManager on TabStore, which mutations register an entry and which do not, how closures capture spaces (the instance) and tabs (by id), grouping, when the stack is cleared, how a closed Private window's entries leave it, the identity and deleted-profile pitfalls, and which window answers Edit > Undo.
 * [Incognito (Private windows)](incognito.md) - How Private browsing is built — one built-in Private profile with a non-persistent store, one throwaway space per Private window, and the list of things that are and are not kept.
 * [Persistence](persistence.md) - What Detour saves, where and when — the two databases, the debounced one-transaction session save, its write order and what it does when it cannot be written, session restore, interaction state, and the DETOUR_DATA_DIR switch.
 * [Profile data removal and storage scoping](profile-data-removal.md) - What deleting a profile removes and in what order, why the on-disk WebKit data needs a pending row and retries, and how WebKitStorageScope and UserDefaultsScope keep test and verification runs out of the production app's data.

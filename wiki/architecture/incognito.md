@@ -4,7 +4,7 @@ title: Incognito (Private windows)
 description: "How Private browsing is built — one built-in Private profile with a non-persistent store, one throwaway space per Private window, and the list of things that are and are not kept."
 tags: [architecture, privacy, profiles, incognito]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:59:43Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T06:40:00Z }
 sources:
   - id: profile
     resource: ../../Detour/Browser/Profile.swift
@@ -126,15 +126,15 @@ Private window saw the previous session's cookies.[^private-notes]
 - `windowShouldClose` asks before closing a Private window whose downloads
   are still running (see Downloads below).
 - On `windowWillClose` the window calls `removeIncognitoSpace(id:)`, which
-  removes the space and **tears down** every tab. The teardown is explicit
-  because an undo closure may still retain the space
-  ([browser undo](./browser-undo.md)); without it the web
-  views would keep playing audio and stay in memory. The window's undo
-  entries stay on the app-wide stack after it closes; read from the code
-  (not run), Undo Close Tab from a normal window could then rebuild a
-  Private tab into the removed space, which no window shows (see
-  [browser undo](./browser-undo.md#open-questions)). Removing them is
-  planned in TASK-357.[^task-357]
+  removes the space, **drops the window's undo and redo entries** from the
+  app-wide stack, then **tears down** every tab (without the teardown the
+  web views would keep playing audio and stay in memory). While the window
+  is open its actions are undoable from any browser window; once it is
+  closed nothing on the stack can rebuild or name its tabs, and the space
+  object is released. Before TASK-357 the entries stayed, and Undo Close
+  Tab from a normal window rebuilt the Private tab live, loading on the
+  Private store in a space no window shows; mechanics on
+  [browser undo](./browser-undo.md#a-private-windows-entries-go-with-the-window).[^task-357]
 - `addIncognitoSpace` and `removeIncognitoSpace` register no undo and
   schedule no save.
 
@@ -143,7 +143,8 @@ Private window saw the previous session's cookies.[^private-notes]
 | Thing | Where it is stopped |
 |---|---|
 | The space and its tabs in the session | `saveNow` filters `isIncognito` spaces. |
-| Closed-tab records | `closeTab` pushes a record only for non-incognito spaces. Undo Close Tab still works within the session. |
+| Closed-tab records | `closeTab` pushes a record only for non-incognito spaces. Undo Close Tab still works while the window is open. |
+| Undo and redo entries | `removeIncognitoSpace` drops the window's entries (`dropUndoEntries(ofPrivateSpace:)`, TASK-357); other windows keep theirs. |
 | History visits and title corrections | `recordHistoryVisit` returns early; `HistoryTitleUpdatePolicy` refuses. |
 | The History page | `HistoryPageBridge.scope(for:)` returns nil and the page is told `incognito: true`. |
 | `chrome.history.search` from an extension running in Private | `HistoryPageBridge.scope(forProfile:)` returns nil and the extension gets an empty list, never another profile's history ([chrome.history in the polyfill](../extensions/polyfill-history.md)). |
@@ -302,7 +303,7 @@ spaces are saved, its history is recorded, and `isIncognito` is false.
 | Download scope rules | `DownloadScope` in [DownloadManager.swift](../../Detour/Browser/Downloads/DownloadManager.swift), `BrowserWindowController.downloadScope` |
 | Downloads in flight at close | `PrivateDownloadClosePolicy` in [PrivateDownloadClosePolicy.swift](../../Detour/Browser/Downloads/PrivateDownloadClosePolicy.swift), `BrowserWindowController.windowShouldClose`, `AppDelegate.applicationShouldTerminate` |
 | The palette's open-tab scope | `PaletteTabScope` in [PaletteTabScope.swift](../../Detour/Browser/CommandPalette/PaletteTabScope.swift), called by `CommandPaletteView.gatherTabInfos` |
-| Tests | `ExtensionPrivateDefaultTests`, `ExtensionPrivateStoreTests`, `MoveTabToSpaceTests`, `ExternalAppPermissionStoreTests`, `ExternalAppLaunchPolicyTests`, `TabStoreTests`, `DownloadManagerTests`, `DownloadWindowScopeTests`, `PrivateDownloadClosePolicyTests`, `PrivateDownloadCloseWindowTests`, `PrivateDownloadTransferTests`, `PaletteTabScopeTests`, `PaletteTabScopeWiringTests` |
+| Tests | `ExtensionPrivateDefaultTests`, `ExtensionPrivateStoreTests`, `MoveTabToSpaceTests`, `ExternalAppPermissionStoreTests`, `ExternalAppLaunchPolicyTests`, `TabStoreTests`, `DownloadManagerTests`, `DownloadWindowScopeTests`, `PrivateDownloadClosePolicyTests`, `PrivateDownloadCloseWindowTests`, `PrivateDownloadTransferTests`, `PaletteTabScopeTests`, `PaletteTabScopeWiringTests`, `PrivateWindowUndoTests`, `PrivateWindowUndoWindowTests` |
 
 # Related
 

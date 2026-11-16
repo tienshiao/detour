@@ -676,7 +676,7 @@ class TabStore {
         let isUndoing = manager.isUndoing
         guard isUndoing || manager.isRedoing else { return }
         manager.registerUndo(withTarget: self) { store in
-            store.registerUndo(actionName: actionName, handler: handler)
+            store.registerUndo(actionName: actionName, in: [], handler: handler)
         }
         manager.setActionName(actionName)
         DispatchQueue.main.async { [weak manager] in
@@ -693,9 +693,125 @@ class TabStore {
 
     // MARK: - Undo Helpers
 
-    private func registerUndo(actionName: String, handler: @escaping () -> Void) {
-        undoManager.registerUndo(withTarget: self) { _ in handler() }
+    /// Registers `handler` as the undo of an action (or, while undoing, its
+    /// redo). `spaces` are the spaces the handler acts in; pass every one it
+    /// captures or resolves (for an action on a space itself, that space).
+    ///
+    /// An action in a Private space is registered against its own
+    /// `PrivateUndoEntry`, so that closing the Private window can take exactly
+    /// that window's entries off both stacks (`dropUndoEntries(ofPrivateSpace:)`)
+    /// and leave every normal window's history alone (TASK-357). Its handler
+    /// also runs only while each of those spaces is still open, and none is
+    /// registered for a Private space already gone: nothing may rebuild a
+    /// Private tab, or keep its page, after its window closed.
+    private func registerUndo(actionName: String, in spaces: [Space], handler: @escaping () -> Void) {
+        let privateSpaceIDs = Set(spaces.lazy.filter(\.isIncognito).map(\.id))
+        if privateSpaceIDs.isEmpty {
+            undoManager.registerUndo(withTarget: self) { _ in handler() }
+        } else {
+            guard privateSpaceIDs.allSatisfy({ space(withID: $0) != nil }) else { return }
+            let entry = PrivateUndoEntry(spaceIDs: privateSpaceIDs, handler: handler)
+            privateUndoEntries.removeAll { $0.entry == nil }
+            privateUndoEntries.append(WeakPrivateUndoEntry(entry: entry))
+            // UndoManager does not retain its target: the closure does.
+            undoManager.registerUndo(withTarget: entry) { [weak self, entry] _ in
+                guard let self, entry.spaceIDs.allSatisfy({ self.space(withID: $0) != nil }) else { return }
+                entry.handler?()
+            }
+        }
         undoManager.setActionName(actionName)
+    }
+
+    /// The target of an undo or redo entry acting in a Private space
+    /// (TASK-357). One per registration, kept alive by the entry's closure.
+    private final class PrivateUndoEntry {
+        /// The Private spaces the entry acts in: one, or two for a Move to
+        /// Space between Private windows.
+        let spaceIDs: Set<UUID>
+        /// Emptied when the entry is dropped, which releases everything the
+        /// action captured (a page's URL, title and back/forward list) even
+        /// before the entry itself can leave the stack.
+        var handler: (() -> Void)?
+
+        init(spaceIDs: Set<UUID>, handler: @escaping () -> Void) {
+            self.spaceIDs = spaceIDs
+            self.handler = handler
+        }
+    }
+
+    private struct WeakPrivateUndoEntry {
+        weak var entry: PrivateUndoEntry?
+    }
+
+    /// Every Private entry still on a stack (entries leave it by running or by
+    /// being dropped, which releases them; nil references are pruned).
+    private var privateUndoEntries: [WeakPrivateUndoEntry] = []
+
+    /// Dropped entries not yet taken off the stack, and the observers that
+    /// wait for the moment they can be: see `removeDroppedUndoEntries`.
+    private var droppedUndoEntries: [PrivateUndoEntry] = []
+    private var droppedUndoEntryObservers: [any NSObjectProtocol] = []
+
+    /// Drops every undo and redo entry acting in the Private space `id`, when
+    /// its window closes (TASK-357). The store's one undo stack is app wide,
+    /// so without this an Undo Close Tab pressed in a normal window after the
+    /// Private window closed rebuilt the Private tab live, loading its page on
+    /// the Private profile's store, in a space no window shows.
+    private func dropUndoEntries(ofPrivateSpace id: UUID) {
+        var dropped: [PrivateUndoEntry] = []
+        privateUndoEntries.removeAll { weakEntry in
+            guard let entry = weakEntry.entry else { return true }
+            guard entry.spaceIDs.contains(id) else { return false }
+            dropped.append(entry)
+            return true
+        }
+        guard !dropped.isEmpty else { return }
+        for entry in dropped { entry.handler = nil }
+        droppedUndoEntries += dropped
+        removeDroppedUndoEntries()
+    }
+
+    /// Takes the dropped entries off both stacks with
+    /// `removeAllActions(withTarget:)`, which also removes a group it empties.
+    ///
+    /// That call must wait while an undo group is open or an undo or redo
+    /// runs (measured: on an open group it leaves an empty group behind, which
+    /// the next Cmd+Z then undoes, doing nothing). The group stays open until
+    /// the next event ends it — an action registered in the event that closed
+    /// the window, or, with no event at all, every action the automation
+    /// endpoint drove since the last one. So the removal then waits for the
+    /// first of: the group closing (it is on the stack once the close
+    /// notification has returned, hence the hop), or an undo or redo starting,
+    /// which closes the group itself and runs it at once — removed in
+    /// `willUndo`/`willRedo`, the emptied group goes and the undo reaches
+    /// the action below. Until then the dropped entries do nothing.
+    private func removeDroppedUndoEntries() {
+        guard !droppedUndoEntries.isEmpty else { return }
+        let manager = undoManager
+        if manager.groupingLevel == 0, !manager.isUndoing, !manager.isRedoing {
+            takeDroppedUndoEntriesOffTheStack()
+            return
+        }
+        guard droppedUndoEntryObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        droppedUndoEntryObservers = [
+            center.addMainObserver(forName: .NSUndoManagerDidCloseUndoGroup, object: manager) { [weak self] _ in
+                DispatchQueue.main.async { self?.removeDroppedUndoEntries() }
+            },
+            center.addMainObserver(forName: .NSUndoManagerWillUndoChange, object: manager) { [weak self] _ in
+                self?.takeDroppedUndoEntriesOffTheStack()
+            },
+            center.addMainObserver(forName: .NSUndoManagerWillRedoChange, object: manager) { [weak self] _ in
+                self?.takeDroppedUndoEntriesOffTheStack()
+            },
+        ]
+    }
+
+    private func takeDroppedUndoEntriesOffTheStack() {
+        for entry in droppedUndoEntries { undoManager.removeAllActions(withTarget: entry) }
+        droppedUndoEntries.removeAll()
+        for observer in droppedUndoEntryObservers { NotificationCenter.default.removeObserver(observer) }
+        droppedUndoEntryObservers.removeAll()
     }
 
     /// Removes a space by ID without the "keep at least one" guard.
@@ -2147,7 +2263,7 @@ class TabStore {
         let space = Space(name: name, emoji: emoji, colorHex: colorHex, profileID: profileID)
         space.profile = profile(withID: profileID)
         spaces.append(space)
-        registerUndo(actionName: "Add Space") { [weak self] in
+        registerUndo(actionName: "Add Space", in: [space]) { [weak self] in
             self?.deleteSpaceFromUndoStack(id: space.id, actionName: "Add Space")
         }
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
@@ -2308,7 +2424,7 @@ class TabStore {
 
         // `space` is captured strongly on purpose: the restored space must BE the
         // instance the older undo actions closed over (TASK-40).
-        registerUndo(actionName: "Delete Space") { [weak self, space] in
+        registerUndo(actionName: "Delete Space", in: [space]) { [weak self, space] in
             guard let self else { return }
             // deleteProfile clears the undo stack, so this only guards against
             // an action that outlived it: restoring onto a deleted profile would
@@ -2455,7 +2571,7 @@ class TabStore {
             self.appDB.insertClosedTabs(savedClosedTabs)
             self.notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
 
-            self.registerUndo(actionName: "Add Space") { [weak self] in
+            self.registerUndo(actionName: "Add Space", in: [space]) { [weak self] in
                 self?.deleteSpaceFromUndoStack(id: id, actionName: "Add Space")
             }
             self.notifyObservers { $0.tabStoreDidUpdateSpaces() }
@@ -2549,7 +2665,7 @@ class TabStore {
                 userInfo: ["spaceID": id]
             )
         }
-        registerUndo(actionName: "Edit Space") { [weak self] in
+        registerUndo(actionName: "Edit Space", in: [space]) { [weak self] in
             guard let self else { return }
             // As for Delete Space (TASK-35): never move the space back onto a
             // profile deleted since. The space stays as it is, and no redo is
@@ -2570,7 +2686,7 @@ class TabStore {
               destinationIndex >= 0, destinationIndex < spaces.count else { return }
         let space = spaces.remove(at: sourceIndex)
         spaces.insert(space, at: destinationIndex)
-        registerUndo(actionName: "Move Space") { [weak self] in
+        registerUndo(actionName: "Move Space", in: [space]) { [weak self] in
             self?.moveSpace(from: destinationIndex, to: sourceIndex)
         }
         notifyObservers { $0.tabStoreDidUpdateSpaces() }
@@ -2638,9 +2754,12 @@ class TabStore {
     func removeIncognitoSpace(id: UUID) {
         guard let index = spaces.firstIndex(where: { $0.id == id && $0.isIncognito }) else { return }
         let space = spaces.remove(at: index)
+        // First, so what the window's undo entries captured (pages, the space)
+        // is released before the session's reset below (TASK-357).
+        dropUndoEntries(ofPrivateSpace: space.id)
         // Tear down tabs (mirror deleteSpace) so incognito webviews stop media and
         // release memory. Without this, audio keeps playing and content stays
-        // resident — especially if an undo closure retains the space.
+        // resident.
         for tab in space.tabs {
             tabSubscriptions.removeValue(forKey: tab.id)
             tab.teardown()
@@ -2872,7 +2991,7 @@ class TabStore {
         let undoActionName = archivedAt == nil ? "Close Tab" : "Archive Tab"
         if undoable, registersUndo {
             let pushedRecord = !space.isIncognito
-            registerUndo(actionName: undoActionName) { [weak self] in
+            registerUndo(actionName: undoActionName, in: [space]) { [weak self] in
                 guard let self else { return }
                 // The close's record is the tab's one life after closing: once it
                 // is consumed — restored from the Archived Tabs page or by Reopen
@@ -2923,7 +3042,7 @@ class TabStore {
                 self.notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
                 // Redo re-closes with the same stamp: an undone Archive Tab that
                 // is redone stays an archive record, not a plain close (TASK-115).
-                self.registerUndo(actionName: undoActionName) { [weak self] in
+                self.registerUndo(actionName: undoActionName, in: [space]) { [weak self] in
                     self?.closeTab(id: restored.id, in: space, archivedAt: archivedAt)
                 }
                 self.notifyObservers { $0.tabStoreDidInsertTab(restored, at: insertAt, in: space) }
@@ -2972,7 +3091,7 @@ class TabStore {
         space.tabs.removeSubrange(move.blockRange)
         space.tabs.insert(contentsOf: block, at: move.insertAt)
         let originalBlockStart = move.blockRange.lowerBound
-        registerUndo(actionName: "Move Tab") { [weak self] in
+        registerUndo(actionName: "Move Tab", in: [space]) { [weak self] in
             self?.moveTab(from: move.insertAt, to: originalBlockStart, in: space)
         }
         notifyObservers { $0.tabStoreDidReorderTabs(in: space) }
@@ -3300,7 +3419,7 @@ class TabStore {
         // fresh objects of the same ids — TASK-40).
         let sourceID = source.id
         let destinationID = destination.id
-        registerUndo(actionName: "Move to Space") { [weak self] in
+        registerUndo(actionName: "Move to Space", in: [source, destination]) { [weak self] in
             guard let self,
                   let home = self.space(withID: sourceID),
                   let current = self.space(withID: destinationID),
@@ -3381,7 +3500,7 @@ class TabStore {
         // be an orphan by the time this runs.
         let sourceID = source.id
         let destinationID = destination.id
-        registerUndo(actionName: "Move to Space") { [weak self] in
+        registerUndo(actionName: "Move to Space", in: [source, destination]) { [weak self] in
             guard let self,
                   let home = self.space(withID: sourceID),
                   let current = self.space(withID: destinationID),
@@ -3488,7 +3607,7 @@ class TabStore {
             member.splitFraction = fraction
         }
 
-        registerUndo(actionName: "Split Tabs") { [weak self] in
+        registerUndo(actionName: "Split Tabs", in: [space]) { [weak self] in
             guard let self,
                   let currentIndex = space.tabs.firstIndex(where: { $0.id == draggedTabID }) else { return }
             // removeTabFromSplit takes a PRE-removal gap: when the dragged tab now
@@ -3549,7 +3668,7 @@ class TabStore {
     /// Delete Space rebuilds the space's tabs as fresh objects of the same ids,
     /// so a captured instance would be an orphan (TASK-40).
     private func registerOpenInSplitUndo(removing tabIDs: [UUID], in space: Space) {
-        registerUndo(actionName: "Open in Split") { [weak self] in
+        registerUndo(actionName: "Open in Split", in: [space]) { [weak self] in
             guard let self else { return }
             // All removed before any observer hears of it, so a window settling
             // its selection never lands on the other new pane. Each index is
@@ -3675,7 +3794,7 @@ class TabStore {
             member.splitFraction = nil
         }
 
-        registerUndo(actionName: "Separate Tabs") { [weak self] in
+        registerUndo(actionName: "Separate Tabs", in: [space]) { [weak self] in
             guard let self else { return }
             // Rejoin only if the members are still adjacent ungrouped normal tabs.
             let indices = memberIDs.compactMap { id in space.tabs.firstIndex { $0.id == id } }.sorted()
@@ -3687,7 +3806,7 @@ class TabStore {
                 space.tabs[i].splitGroupID = rejoinedID
                 space.tabs[i].splitFraction = fraction
             }
-            self.registerUndo(actionName: "Separate Tabs") { [weak self] in
+            self.registerUndo(actionName: "Separate Tabs", in: [space]) { [weak self] in
                 self?.separateSplit(groupID: rejoinedID, in: space)
             }
             self.notifyObservers { $0.tabStoreDidReorderTabs(in: space) }
@@ -3719,7 +3838,7 @@ class TabStore {
         )
         space.tabs.insert(tab, at: insertAt)
 
-        registerUndo(actionName: "Move Tab Out of Split") { [weak self] in
+        registerUndo(actionName: "Move Tab Out of Split", in: [space]) { [weak self] in
             guard let self, let partnerID else { return }
             self.createSplit(
                 draggedTabID: tabID,
@@ -3793,7 +3912,7 @@ class TabStore {
             member.teardown()
         }
 
-        registerUndo(actionName: "Close Both Splits") { [weak self] in
+        registerUndo(actionName: "Close Both Splits", in: [space]) { [weak self] in
             guard let self else { return }
             // A member on a page of an extension disabled or uninstalled since the
             // close cannot come back (TASK-28). It stays closed, its closed-tab
@@ -3846,11 +3965,11 @@ class TabStore {
             }
             self.notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
             if rejoinsSplit {
-                self.registerUndo(actionName: "Close Both Splits") { [weak self] in
+                self.registerUndo(actionName: "Close Both Splits", in: [space]) { [weak self] in
                     self?.closeSplitGroup(groupID: newGroupID, in: space)
                 }
             } else if let lone = restoredFirst {
-                self.registerUndo(actionName: "Close Tab") { [weak self] in
+                self.registerUndo(actionName: "Close Tab", in: [space]) { [weak self] in
                     self?.closeTab(id: lone.id, in: space)
                 }
             }
@@ -3941,7 +4060,7 @@ class TabStore {
         // (TASK-59).
         for tab in members { ExtensionTabLifecycle.didChangePinned(tab) }
 
-        registerUndo(actionName: "Pin Split") { [weak self] in
+        registerUndo(actionName: "Pin Split", in: [space]) { [weak self] in
             self?.unpinSplitGroup(groupID: groupID, toGapIndex: firstIndex, in: space)
         }
         notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
@@ -4015,7 +4134,7 @@ class TabStore {
             ExtensionTabLifecycle.didChangePinned(tab)
         }
 
-        registerUndo(actionName: "Unpin Split") { [weak self] in
+        registerUndo(actionName: "Unpin Split", in: [space]) { [weak self] in
             guard let self else { return }
             self.pinSplitGroup(groupID: groupID, in: space)
             // Restore the original pinned placement (pinSplitGroup appends):
@@ -4044,7 +4163,7 @@ class TabStore {
             entry.splitFraction = nil
         }
 
-        registerUndo(actionName: "Separate Tabs") { [weak self] in
+        registerUndo(actionName: "Separate Tabs", in: [space]) { [weak self] in
             guard let self else { return }
             let members = entryIDs.compactMap { id in space.pinnedEntries.first { $0.id == id } }
             guard members.count == entryIDs.count,
@@ -4056,7 +4175,7 @@ class TabStore {
             }
             // Rejoin only if they're still a valid group (same folder, adjacent).
             sanitizePinnedSplitGroups(entries: space.pinnedEntries, folders: space.pinnedFolders)
-            self.registerUndo(actionName: "Separate Tabs") { [weak self] in
+            self.registerUndo(actionName: "Separate Tabs", in: [space]) { [weak self] in
                 self?.separatePinnedSplit(groupID: rejoinedID, in: space)
             }
             self.notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
@@ -4075,10 +4194,10 @@ class TabStore {
         let snapshot = capturePinnedOrder(in: space)
         dissolvePinnedSplit(around: entryID, groupID: groupID, in: space)
         placePinnedBlock([entry], folderID: folderID, beforeItemID: beforeItemID, in: space)
-        registerUndo(actionName: "Move Tab Out of Split") { [weak self] in
+        registerUndo(actionName: "Move Tab Out of Split", in: [space]) { [weak self] in
             guard let self else { return }
             self.restorePinnedOrder(snapshot, in: space)
-            self.registerUndo(actionName: "Move Tab Out of Split") { [weak self] in
+            self.registerUndo(actionName: "Move Tab Out of Split", in: [space]) { [weak self] in
                 self?.removePinnedEntryFromSplit(entryID: entryID, folderID: folderID, beforeItemID: beforeItemID, in: space)
             }
             self.notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
@@ -4293,7 +4412,7 @@ class TabStore {
         // fresh objects of the same ids (TASK-40). unpinTab no-ops for an id the
         // space no longer has.
         let pinnedEntryID = entry.id
-        registerUndo(actionName: "Pin Tab") { [weak self] in
+        registerUndo(actionName: "Pin Tab", in: [space]) { [weak self] in
             self?.unpinTab(id: pinnedEntryID, in: space, at: savedTabIndex)
         }
         notifyObservers { $0.tabStoreDidPinTab(entry, fromIndex: index, toIndex: insertAt, in: space) }
@@ -4360,7 +4479,7 @@ class TabStore {
         // The id, not the tab: Undo Delete Space rebuilds the space's tabs as
         // fresh objects of the same ids (TASK-40).
         let unpinnedTabID = tab.id
-        registerUndo(actionName: "Unpin Tab") { [weak self] in
+        registerUndo(actionName: "Unpin Tab", in: [space]) { [weak self] in
             guard let self else { return }
             // Re-pin: remove from tabs, create entry, insert at original pinned position
             guard let tabIndex = space.tabs.firstIndex(where: { $0.id == unpinnedTabID }) else {
@@ -4383,7 +4502,7 @@ class TabStore {
             // announces the flip itself (TASK-59).
             ExtensionTabLifecycle.didChangePinned(tab)
             self.rejoinPinnedSplit(reEntry, membership: membership, in: space)
-            self.registerUndo(actionName: "Unpin Tab") { [weak self] in
+            self.registerUndo(actionName: "Unpin Tab", in: [space]) { [weak self] in
                 self?.unpinTab(id: reEntry.id, in: space, at: tabIndex)
             }
             self.notifyObservers { $0.tabStoreDidPinTab(reEntry, fromIndex: tabIndex, toIndex: reInsertAt, in: space) }
@@ -4425,7 +4544,7 @@ class TabStore {
         }
 
         if undoable, tab != nil {
-            registerUndo(actionName: "Close Tab") { [weak self] in
+            registerUndo(actionName: "Close Tab", in: [space]) { [weak self] in
                 guard let self else { return }
                 guard let idx = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return }
                 let entry = space.pinnedEntries[idx]
@@ -4448,7 +4567,7 @@ class TabStore {
                 ) else { return }
                 entry.tab = restored
                 self.subscribeToTab(restored)
-                self.registerUndo(actionName: "Close Tab") { [weak self] in
+                self.registerUndo(actionName: "Close Tab", in: [space]) { [weak self] in
                     self?.closePinnedTab(id: id, in: space)
                 }
                 self.notifyObservers { $0.tabStoreDidUpdatePinnedEntry(entry, at: idx, in: space) }
@@ -4484,7 +4603,7 @@ class TabStore {
         space.pinnedEntries.remove(at: index)
         dissolvePinnedSplit(around: id, groupID: membership?.groupID, in: space)
 
-        registerUndo(actionName: "Delete Tab") { [weak self] in
+        registerUndo(actionName: "Delete Tab", in: [space]) { [weak self] in
             guard let self else { return }
             // An extension page entry comes back on its extension's live origin,
             // or dormant on a pending origin if the extension is disabled. One
@@ -4506,7 +4625,7 @@ class TabStore {
             let insertAt = min(index, space.pinnedEntries.count)
             space.pinnedEntries.insert(restored, at: insertAt)
             self.rejoinPinnedSplit(restored, membership: membership, in: space)
-            self.registerUndo(actionName: "Delete Tab") { [weak self] in
+            self.registerUndo(actionName: "Delete Tab", in: [space]) { [weak self] in
                 self?.deletePinnedEntry(id: id, in: space)
             }
             self.notifyObservers { $0.tabStoreDidInsertPinnedEntry(restored, at: insertAt, in: space) }
@@ -4548,7 +4667,7 @@ class TabStore {
         // fresh objects of the same ids (TASK-40). deletePinnedFolder no-ops for an
         // id the space no longer has.
         let newFolderID = folder.id
-        registerUndo(actionName: "New Folder") { [weak self] in
+        registerUndo(actionName: "New Folder", in: [space]) { [weak self] in
             self?.deletePinnedFolder(id: newFolderID, in: space)
         }
         notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
@@ -4592,7 +4711,7 @@ class TabStore {
 
         space.pinnedFolders.removeAll { $0.id == id }
 
-        registerUndo(actionName: "Delete Folder") { [weak self] in
+        registerUndo(actionName: "Delete Folder", in: [space]) { [weak self] in
             guard let self else { return }
             // Recreate folder
             let restored = PinnedFolder(id: id, name: savedName, parentFolderID: parentID, isCollapsed: savedIsCollapsed, sortOrder: savedSortOrder)
@@ -4607,7 +4726,7 @@ class TabStore {
             // The restored folder's saved sortOrder lands in a level that was
             // renumbered by the delete — a tie could sort it into a split pair.
             sanitizePinnedSplitGroups(entries: space.pinnedEntries, folders: space.pinnedFolders)
-            self.registerUndo(actionName: "Delete Folder") { [weak self] in
+            self.registerUndo(actionName: "Delete Folder", in: [space]) { [weak self] in
                 self?.deletePinnedFolder(id: id, in: space)
             }
             self.notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
@@ -4622,7 +4741,7 @@ class TabStore {
         guard let index = space.pinnedEntries.firstIndex(where: { $0.id == id }) else { return }
         let oldName = space.pinnedEntries[index].pinnedTitle
         space.pinnedEntries[index].pinnedTitle = name
-        registerUndo(actionName: "Rename") { [weak self] in
+        registerUndo(actionName: "Rename", in: [space]) { [weak self] in
             self?.renamePinnedEntry(id: id, name: oldName, in: space)
         }
         notifyObservers { $0.tabStoreDidUpdatePinnedEntry(space.pinnedEntries[index], at: index, in: space) }
@@ -4633,7 +4752,7 @@ class TabStore {
         guard let folder = space.pinnedFolders.first(where: { $0.id == id }) else { return }
         let oldName = folder.name
         folder.name = name
-        registerUndo(actionName: "Rename Folder") { [weak self] in
+        registerUndo(actionName: "Rename Folder", in: [space]) { [weak self] in
             self?.renamePinnedFolder(id: id, name: oldName, in: space)
         }
         notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
@@ -4662,10 +4781,10 @@ class TabStore {
         let snapshot = capturePinnedOrder(in: space)
         placePinnedBlock(block, folderID: folderID, beforeItemID: beforeItemID, in: space)
 
-        registerUndo(actionName: "Move Tab") { [weak self] in
+        registerUndo(actionName: "Move Tab", in: [space]) { [weak self] in
             guard let self else { return }
             self.restorePinnedOrder(snapshot, in: space)
-            self.registerUndo(actionName: "Move Tab") { [weak self] in
+            self.registerUndo(actionName: "Move Tab", in: [space]) { [weak self] in
                 self?.movePinnedTabToFolder(tabID: tabID, folderID: folderID, beforeItemID: beforeItemID, in: space)
             }
             self.notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
@@ -4688,10 +4807,10 @@ class TabStore {
         let snapshot = capturePinnedOrder(in: space)
         placePinnedFolder(folder, parentFolderID: parentFolderID, beforeItemID: beforeItemID, in: space)
 
-        registerUndo(actionName: "Move Folder") { [weak self] in
+        registerUndo(actionName: "Move Folder", in: [space]) { [weak self] in
             guard let self else { return }
             self.restorePinnedOrder(snapshot, in: space)
-            self.registerUndo(actionName: "Move Folder") { [weak self] in
+            self.registerUndo(actionName: "Move Folder", in: [space]) { [weak self] in
                 self?.movePinnedFolder(folderID: folderID, parentFolderID: parentFolderID, beforeItemID: beforeItemID, in: space)
             }
             self.notifyObservers { $0.tabStoreDidUpdatePinnedFolders(in: space) }
@@ -5027,7 +5146,7 @@ class TabStore {
                 peekHostTabID: host.id.uuidString))
             notifyObservers { $0.tabStoreDidUpdateClosedTabRecords() }
         }
-        registerUndo(actionName: "Close Peek") { [weak self] in
+        registerUndo(actionName: "Close Peek", in: [space]) { [weak self] in
             guard let self else { return }
             // As for a closed tab: a record consumed since (Reopen Closed Tab,
             // the Archived Tabs page) or deleted leaves nothing to undo.

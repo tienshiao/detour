@@ -1,14 +1,14 @@
 ---
 type: Concept
 title: Browser undo
-description: "Detour's undo of browsing actions: the one app-wide UndoManager on TabStore, which mutations register an entry and which do not, how closures capture spaces (the instance) and tabs (by id), grouping, when the stack is cleared, the identity and deleted-profile pitfalls, and which window answers Edit > Undo."
+description: "Detour's undo of browsing actions: the one app-wide UndoManager on TabStore, which mutations register an entry and which do not, how closures capture spaces (the instance) and tabs (by id), grouping, when the stack is cleared, how a closed Private window's entries leave it, the identity and deleted-profile pitfalls, and which window answers Edit > Undo."
 tags: [architecture, undo, state, menus]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:59:43Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T06:40:00Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
-    title: TabStore.swift (undoManager, registerUndo, reRegisterRunningUndoEntry, every registering mutation, deleteProfile)
+    title: TabStore.swift (undoManager, registerUndo, PrivateUndoEntry, dropUndoEntries, removeIncognitoSpace, reRegisterRunningUndoEntry, every registering mutation, deleteProfile)
   - id: window
     resource: ../../Detour/Browser/Window/BrowserWindowController.swift
     title: BrowserWindowController.swift (undoManager, browserUndo:, undoTarget, handleTabRestoredByUndo)
@@ -36,6 +36,12 @@ sources:
   - id: tests-routing
     resource: ../../DetourTests/PageUndoRoutingTests.swift
     title: PageUndoRoutingTests.swift
+  - id: tests-private
+    resource: ../../DetourTests/PrivateWindowUndoTests.swift
+    title: PrivateWindowUndoTests.swift (PrivateWindowUndoTests, PrivateWindowUndoWindowTests)
+  - id: harness-357
+    resource: ../../docs/harness/task357-private-undo-checks.py
+    title: task357-private-undo-checks.py (the runtime check through the automation endpoint)
   - id: page-undo
     resource: ../platform/page-key-equivalents-and-undo.md
     title: A page's key equivalents and its undo
@@ -63,6 +69,9 @@ sources:
   - id: task-357
     resource: backlog:TASK-357
     title: "Private windows: their undo entries outlive the window and can rebuild a Private tab nobody sees"
+  - id: incognito
+    resource: ./incognito.md
+    title: Incognito (Private windows)
 ---
 
 # Summary
@@ -71,7 +80,8 @@ Structural browsing actions (tabs, pinned entries, folders, splits, spaces)
 are undone through **one `UndoManager`**, `TabStore.undoManager`. It is app
 wide: every `BrowserWindowController` returns it as its `undoManager` and
 runs it from Edit > Undo, so Cmd+Z in any browser window undoes the newest
-action wherever it happened, in another window or another space included.
+action wherever it happened, in another window or another space included
+(a closed Private window's actions excepted).
 It is not the `NSWindow`'s own undo manager (AppKit asks only the window's
 delegate for that), which the window's text fields type into; Edit > Undo
 does not reach that one, so with focus in the palette or the find bar
@@ -91,8 +101,11 @@ are on [A page's key equivalents and its undo](../platform/page-key-equivalents-
 Every registering mutation follows the store's order
 ([TabStore](./tabstore.md#shape-of-a-mutation)): capture what the inverse
 needs (a tab's interaction state before teardown), mutate, then
-`registerUndo(actionName:handler:)`, which registers the closure with the
-store as target and names it. The handler performs the inverse and, as
+`registerUndo(actionName:in:handler:)`, which registers the closure and
+names it. `in:` lists the spaces the closure acts in (both for Move to
+Space); it is not optional, so every new registration has to say. An entry of a normal space has the store as target; an entry of
+a Private space gets its own target
+([below](#a-private-windows-entries-go-with-the-window)). The handler performs the inverse and, as
 AppKit does for a registration made while undoing, its own registration of
 the forward action lands on the redo stack. A handler that finds nothing to
 do (below) returns without registering, so that entry has no redo.
@@ -184,6 +197,57 @@ explicitly. A harness must never end the automatic group by hand
 | `applicationWillTerminate` | The stack does not outlive the session. |
 | The automation endpoint's staging | Seeding a world is not something to undo. |
 
+## A Private window's entries go with the window
+
+The stack is shared, so a close in a Private window is undoable from any
+browser window **while the Private window is open**. When it closes,
+`removeIncognitoSpace` first calls `dropUndoEntries(ofPrivateSpace:)`, which
+takes every undo and redo entry acting in that space off both stacks and
+leaves every other entry, normal windows' and other Private windows', where
+it was (TASK-357).[^task-357]
+
+- **Per-entry target.** `registerUndo` registers an action in a Private
+  space against a `PrivateUndoEntry` of its own (the spaces it acts in, and
+  the handler), which the store tracks weakly. Dropping one empties its
+  handler, releasing the page's URL, title and back/forward list at once,
+  then `UndoManager.removeAllActions(withTarget:)` removes it; that call
+  also removes a group it leaves empty (measured).
+- **Not while a group is open.** On an open group the same call leaves an
+  empty group behind, which the next Cmd+Z then spends doing nothing
+  (measured). The group of an event stays open until the next event ends
+  it, so it is open when the window closes in the event that registered in
+  that space, and, with no event at all, whenever the
+  [automation endpoint](../features/automation-endpoint.md) drives the app
+  (measured below). The removal then waits for the first of: the group
+  closing (`NSUndoManagerDidCloseUndoGroup`, then one main-queue hop, since
+  the group reaches the stack only after the notification), or an undo or
+  redo starting (`willUndo`/`willRedo`): Undo closes the open group itself
+  and runs it at once, so the entries are taken off there and the undo
+  reaches the action below. Until then the dropped entries do nothing.
+- **`UndoManager` does not retain a target** (measured), so the entry's
+  closure holds it.
+- **Guards.** No entry is registered for a Private space already gone (an
+  empty group from the same event can remain, with no name), and a Private
+  entry's handler runs only while each of its spaces is still in `spaces`,
+  registering no redo otherwise.
+- A Move to Space between two Private windows (the store allows it; no
+  Private window offers the menu) lists both spaces and goes with either.
+
+Before the fix, measured in a test against the old code and in the
+running app (`docs/harness/task357-private-undo-checks.py`, driven through
+the automation endpoint): after the Private window closed, Undo Close Tab
+from a normal window rebuilt the Private tab with a live web view on the
+Private profile's store, in the removed space no window shows, and posted
+`.tabRestoredByUndo` for that space; the app requested the Private page
+from the local server again, and the first Cmd+Z went to that invisible tab
+rather than to the normal close below it. Since the session's reset had
+already run, whatever that page stored would have stayed in the store the
+next Private session reuses. The same harness against the fix: the first
+Cmd+Z brings back the normal tab, the Private page is never requested
+again, and Undo is then disabled. A first cut that polled for the group to
+close (2 s) left the endpoint's still-open group in place, and its first
+Cmd+Z did nothing; hence the notifications.
+
 ## Which window answers Edit > Undo
 
 Edit > Undo and Redo send `browserUndo:` / `browserRedo:` (not AppKit's
@@ -201,26 +265,15 @@ The item's title and enabled state come from the same choice
 (`BrowserCommands.undo` / `.redo`: "Undo Typing" from the page, "Undo
 Close Tab" from the store). Neither is offered in the command palette.
 
-# Open questions
-
-- **A Private window's entries outlive its space.** The stack is shared, so
-  a close in a Private window is undoable from any browser window while the
-  Private window is open. After it closes, `removeIncognitoSpace` tears the
-  tabs down but leaves the entries; read from the code (not run), Undo Close
-  Tab would then rebuild a live tab into the removed space, which no window
-  shows, on the Private profile's store. Not verified at runtime.
-  Establishing it and dropping a closed Private window's entries is planned
-  in TASK-357.[^task-357]
-
 # Where it lives
 
 | What | Where |
 |---|---|
-| The manager, `registerUndo`, `reRegisterRunningUndoEntry`, every registering mutation | [TabStore.swift](../../Detour/Browser/TabStore.swift) |
+| The manager, `registerUndo`, `PrivateUndoEntry`, `dropUndoEntries`, `reRegisterRunningUndoEntry`, every registering mutation | [TabStore.swift](../../Detour/Browser/TabStore.swift) |
 | `undoManager` override, `browserUndo:`, `UndoTarget`, `handleTabRestoredByUndo` | [BrowserWindowController.swift](../../Detour/Browser/Window/BrowserWindowController.swift) |
 | The page's undo manager, `editingPage(in:)` | [BrowserWebView.swift](../../Detour/Browser/Window/BrowserWebView.swift) |
 | Quick Detour and launcher responders | [QuickDetourWindowController.swift](../../Detour/Browser/QuickDetour/QuickDetourWindowController.swift), [QuickDetourLauncher.swift](../../Detour/Browser/QuickDetour/QuickDetourLauncher.swift) |
-| Tests | `UndoAfterDeleteSpaceTests`, `ProfileDeletionUndoTests`, `PageUndoRoutingTests`, `ExtensionPageUndoTests`, `ClosedTabOpenerTests`, `ClosedPeekTests`, `MoveTabToSpaceTests`, `LinkRouteStoreTests`, `QuickDetourLauncherTests`, `TabStoreTests` |
+| Tests | `UndoAfterDeleteSpaceTests`, `ProfileDeletionUndoTests`, `PrivateWindowUndoTests`, `PrivateWindowUndoWindowTests`, `PageUndoRoutingTests`, `ExtensionPageUndoTests`, `ClosedTabOpenerTests`, `ClosedPeekTests`, `MoveTabToSpaceTests`, `LinkRouteStoreTests`, `QuickDetourLauncherTests`, `TabStoreTests` |
 
 # Related
 
@@ -230,6 +283,7 @@ Close Tab" from the store). Neither is offered in the command palette.
 - [Closed tabs and archive](../tabs/closed-tabs-and-archive.md) — close undos and the records they consume.
 - [Split tabs](../tabs/split-tabs.md) — the split undo rules.
 - [Tab opener](../tabs/tab-opener.md) — the link the close undos re-check.
+- [Incognito](./incognito.md) — what else a Private window's close removes.
 
 [^task-40]: Undo actions registered before Delete Space act on a stale Space object
 [^task-119]: Archived Tabs page; close undos skip consumed records
