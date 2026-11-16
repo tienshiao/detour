@@ -54,6 +54,12 @@ sources:
   - id: task-358
     resource: backlog:TASK-358
     title: "Tab opener: a pinned or favourite tab's opener is lost at relaunch, and the readers disagree on which openers count"
+  - id: task-377
+    resource: backlog:TASK-377
+    title: "Sidebar: the Back button stays enabled after a child's opener closes or a favourite opener sleeps"
+  - id: checks-377
+    resource: ../../docs/harness/task377-back-enabled-checks.py
+    title: TASK-377 runtime checks through the automation endpoint (Back's enabled state)
   - id: tests-rule
     resource: ../../DetourTests/TabOpenerRuleTests.swift
     title: TabOpenerRuleTests.swift (TabOpenerRuleTests, TabOpenerWindowTests)
@@ -129,7 +135,8 @@ which Back then never resolved.[^task-358]
 
 | Reader | What it does with the link | Opener |
 |---|---|---|
-| `BrowserWindowController.parentTab(for:)`: the Back button (and its enabled state), Cmd+[, the palette's Back, the [back swipe](./back-swipe-to-opener.md) | with no back item, select the opener and close the child | the rule, in the window's **active** space |
+| `BrowserWindowController.parentTab(for:)`: the Back button, Cmd+[, the palette's Back, the [back swipe](./back-swipe-to-opener.md) | with no back item, select the opener and close the child | the rule, in the window's **active** space |
+| `BrowserWindowController.canNavigateBack`: whether the sidebar Back button and Navigate › Back (and so the palette's Back) are enabled | history, or `parentTab(for:)` resolving (a Peek: its history) | the rule, through `parentTab(for:)`; refreshed on the tab's `canGoBack` and on every store change that can make an opener resolve or stop (TASK-377) |
 | `tabCloseSelectionID` ([close selection](./tab-insertion-and-close-selection.md)), through `settleSelectionLeaving` (Cmd+W, a close from the sidebar, Move to Space leaving the selection) | next sibling, previous sibling, then the opener, then a neighbour | the rule (the window passes `isOpener`); the opener need not be in the list, so the last normal tab returns to a pinned or favourite opener too |
 | `webViewDidClose` (a page's `window.close()`, TASK-168) | when the closing tab is the window's selected tab and not in a split, select its opener **ahead of** the close rule's siblings | the rule |
 | `Space.liveOpenerID(_:)`: `reopenClosedTabRecord`, the `closeTab` and `closeSplitGroup` undos | keep the saved link only while it resolves in the space the tab returns to | the rule |
@@ -159,8 +166,14 @@ favourite of its profile, an opener moved there first).
 
 - **Opener closed, archived, asleep (pinned or a dormant favourite) or moved away**: the child's
   `parentID` is left as it is. `openerTab` stops resolving it, so Back and
-  the swipe no longer close to it; the insertion and close-selection rules
-  still group the child with its siblings by that id.
+  the swipe no longer close to it, and Back is disabled while the child has
+  no history; the insertion and close-selection rules still group the child
+  with its siblings by that id. The window re-reads Back's enabled state on
+  the same store notifications that re-decide the swipe mode (a tab or
+  pinned entry inserted, removed, pinned, unpinned, put to sleep or woken;
+  the favourites changed). Before TASK-377 it was re-read only when the
+  child's `canGoBack` changed, so Back stayed enabled and did
+  nothing.[^task-377]
 - **The child moves to another space** (`moveTab(id:from:to:)`, TASK-38):
   `parentID` becomes `destination.liveOpenerID(saved)`: the link is kept
   while it resolves in the destination by the rule (a favourite of the
@@ -205,6 +218,15 @@ the favourite returns to it rather than to its neighbour. Trap: a
 `target=_blank` click on a favourite (or pinned tab) peeks, so the child of
 a favourite is made with a Cmd+click.[^checks-358]
 
+`docs/harness/task377-back-enabled-checks.py` checks Back's enabled state in
+one launch: Navigate › Back is refused as disabled on a root tab, the
+sidebar button's chevron is drawn darker on a `target=_blank` child, and
+after the opener is archived from its row's menu (the child staying
+selected) the menu item and Cmd+[ are refused and the chevron is drawn as on
+the root tab. The button is read from screenshots (the darkest pixel around
+it); the sidebar table hit-tests as a whole, so the opener's row is found by
+its place in the list.[^checks-377]
+
 # Where it lives
 
 | What | Where |
@@ -212,7 +234,7 @@ a favourite is made with a Cmd+click.[^checks-358]
 | The field | `BrowserTab.parentID` in [BrowserTab.swift](../../Detour/Browser/BrowserTab.swift); `TabRecord.parentID` in the session database |
 | Resolution | `Space.openerTab(id:)`, `Space.liveOpenerID(_:)` in [TabStore.swift](../../Detour/Browser/TabStore.swift); `BrowserWindowController.parentTab(for:)` |
 | Pure rules | [TabInsertion.swift](../../Detour/Browser/TabInsertion.swift), [TabCloseSelection.swift](../../Detour/Browser/TabCloseSelection.swift) |
-| Tests | `TabOpenerRuleTests` (the rule per kind, the relaunch round trips, reopen, close undo and Move to Space with pinned and favourite openers), `TabOpenerWindowTests` (Back, Cmd+W, `window.close()` and the swipe mode with pinned and favourite openers), `TabInsertionTests`, `TabCloseSelectionTests`, `ClosedTabOpenerTests` (written, kept, dropped on reopen and on a close undo, v26), `MoveTabToSpaceTests`, `NavigationSwipeTests`, `PageOpenedWindowTests` |
+| Tests | `TabOpenerRuleTests` (the rule per kind, the relaunch round trips, reopen, close undo and Move to Space with pinned and favourite openers), `TabOpenerWindowTests` (Back, Cmd+W, `window.close()` and the swipe mode with pinned and favourite openers; Back's enabled state, button and menu, as an opener closes, goes dormant, is removed or moves away and back), `TabInsertionTests`, `TabCloseSelectionTests`, `ClosedTabOpenerTests` (written, kept, dropped on reopen and on a close undo, v26), `MoveTabToSpaceTests`, `NavigationSwipeTests`, `PageOpenedWindowTests` |
 
 # Related
 
@@ -227,3 +249,5 @@ a favourite is made with a Cmd+click.[^checks-358]
 [^task-167]: window.open() hands the page no window back, so an xterm.js terminal link opens an empty tab
 [^task-358]: Tab opener: a pinned or favourite tab's opener is lost at relaunch, and the readers disagree on which openers count
 [^checks-358]: TASK-358 runtime checks through the automation endpoint (three launches)
+[^task-377]: Sidebar: the Back button stays enabled after a child's opener closes or a favourite opener sleeps
+[^checks-377]: TASK-377 runtime checks through the automation endpoint (Back's enabled state)

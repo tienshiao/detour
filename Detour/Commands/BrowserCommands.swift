@@ -185,8 +185,10 @@ enum BrowserCommands {
 
     // MARK: - Navigate
 
-    /// Always enabled in a browser window, whose Back can also close a tab to
-    /// the tab it was opened from (TASK-325); a Quick Detour's needs history.
+    /// Enabled when Back does something: in a browser window, as the sidebar
+    /// button, with history or an opener to close the tab to (TASK-325,
+    /// `canNavigateBack`; before TASK-377 always enabled there); in a Quick
+    /// Detour, with history.
     /// With the page focused the item resolves to the page's `WKWebView`,
     /// whose own `goBack:` is ahead of the controller in the responder chain;
     /// `BrowserWebView` hands it, and its validation, to the controller
@@ -195,7 +197,7 @@ enum BrowserCommands {
         "page.back", "Back", key: KeyEquivalent("["), action: #selector(BrowserWindowController.goBack(_:)),
         responder: .windowController(CommandWindowKind.every),
         aliases: ["go back"], symbol: "chevron.backward",
-        rule: { $0.commandWindowKind.isBrowserWindow || $0.pageCanGoBack })
+        rule: { $0.pageCanGoBack })
     static let forward = BrowserCommand(
         "page.forward", "Forward", key: KeyEquivalent("]"), action: #selector(BrowserWindowController.goForward(_:)),
         responder: .windowController(CommandWindowKind.every),

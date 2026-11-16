@@ -12,7 +12,7 @@ extension BrowserWindowController: TabStoreObserver {
             toastManager.show(message: "Opened new tab in background")
         }
         // An opener can come back (an undone close): its child swipes to it again.
-        navigationSwipeStoreDidChange()
+        openersDidChange()
     }
 
     func tabStoreDidRemoveTab(_ tab: BrowserTab, at index: Int, in space: Space) {
@@ -30,7 +30,7 @@ extension BrowserWindowController: TabStoreObserver {
         // A removed pane dissolves its group; collapse the hosted split view.
         refreshSplitHostingIfNeeded()
         // A closed opener leaves its child nothing to swipe back to (TASK-325).
-        navigationSwipeStoreDidChange(removedTabID: tab.id)
+        openersDidChange(removedTabID: tab.id)
     }
 
     /// Pick a sensible tab to select after the current selection was removed
@@ -76,7 +76,7 @@ extension BrowserWindowController: TabStoreObserver {
         tabSidebar.applyState(pinnedEntries: space.pinnedEntries, pinnedFolders: space.pinnedFolders,
                               tabs: space.tabs, selectedTabID: selectedTabID)
         // A pinned opener can come back too (an undone delete) (TASK-325).
-        navigationSwipeStoreDidChange()
+        openersDidChange()
     }
 
     func tabStoreDidRemovePinnedEntry(_ entry: PinnedEntry, at index: Int, in space: Space) {
@@ -88,7 +88,7 @@ extension BrowserWindowController: TabStoreObserver {
                               tabs: space.tabs, selectedTabID: selectedTabID)
         // Deleting a pinned split member dissolves its group; collapse hosting.
         refreshSplitHostingIfNeeded()
-        navigationSwipeStoreDidChange(removedTabID: entry.tab?.id)
+        openersDidChange(removedTabID: entry.tab?.id)
     }
 
     func tabStoreDidPinTab(_ entry: PinnedEntry, fromIndex: Int, toIndex: Int, in space: Space) {
@@ -100,7 +100,7 @@ extension BrowserWindowController: TabStoreObserver {
         // converge hosting to it.
         refreshSplitHostingIfNeeded()
         // A pinned tab is not closed by a swipe (TASK-325).
-        navigationSwipeStoreDidChange()
+        openersDidChange()
     }
 
     func tabStoreDidUnpinTab(_ entry: PinnedEntry, fromIndex: Int, toIndex: Int, in space: Space) {
@@ -110,7 +110,7 @@ extension BrowserWindowController: TabStoreObserver {
         // unpinTab silently dissolves a pinned split — collapse a now-stale
         // two-pane hosting to match.
         refreshSplitHostingIfNeeded()
-        navigationSwipeStoreDidChange()
+        openersDidChange()
     }
 
     func tabStoreDidReorderPinnedEntries(in space: Space) {
@@ -145,7 +145,7 @@ extension BrowserWindowController: TabStoreObserver {
         // panes the selected group hosts — converge the content view.
         refreshSplitHostingIfNeeded()
         // A pinned opener going dormant leaves its child no opener (TASK-325).
-        navigationSwipeStoreDidChange()
+        openersDidChange()
     }
 
     func tabStoreDidUpdatePinnedFolders(in space: Space) {
@@ -178,6 +178,15 @@ extension BrowserWindowController: TabStoreObserver {
         // favourites are openers here, and no normal tab changed, so the
         // picture caches need no pruning.
         refreshNavigationSwipeModes()
+        refreshBackButton()
+    }
+
+    /// A store change in the active space that can make an opener resolve or
+    /// stop resolving: the back swipe's mode and pictures (TASK-325) and
+    /// whether Back is enabled (TASK-377) follow it.
+    private func openersDidChange(removedTabID: UUID? = nil) {
+        navigationSwipeStoreDidChange(removedTabID: removedTabID)
+        refreshBackButton()
     }
 
     func tabStoreDidUpdateClosedTabRecords() {

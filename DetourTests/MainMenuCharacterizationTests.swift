@@ -423,8 +423,9 @@ nonisolated final class MainMenuCharacterizationTests: XCTestCase {
         var titles = Self.browserTitles
         titles["File › togglePinTab:"] = "Pin Tab"
         XCTAssertEqual(Self.enablement(in: try XCTUnwrap(wc.window)), expected(
+            // Back: a root tab with no history (TASK-377).
             off: Set(["File › reopenClosedTab:", "File › openInDefaultSpace:", "Edit › browserUndo:",
-                      "Edit › browserRedo:"]).union(archiveOff),
+                      "Edit › browserRedo:", "Navigate › goBack:"]).union(archiveOff),
             retitled: titles))
     }
 
@@ -433,8 +434,9 @@ nonisolated final class MainMenuCharacterizationTests: XCTestCase {
         spin()
         XCTAssertEqual(Self.enablement(in: try XCTUnwrap(wc.window)), expected(
             off: Set(["File › reopenClosedTab:", "File › togglePinTab:", "File › openInDefaultSpace:",
-                      "Edit › browserUndo:", "Edit › browserRedo:", "Navigate › selectPreviousTab:",
-                      "Navigate › selectNextTab:", "Spaces › nextSpace:"]).union(archiveOff),
+                      "Edit › browserUndo:", "Edit › browserRedo:", "Navigate › goBack:",
+                      "Navigate › selectPreviousTab:", "Navigate › selectNextTab:", "Spaces › nextSpace:"])
+                .union(archiveOff),
             retitled: Self.browserTitles))
     }
 
@@ -443,7 +445,8 @@ nonisolated final class MainMenuCharacterizationTests: XCTestCase {
         spin()
         XCTAssertEqual(Self.enablement(in: try XCTUnwrap(wc.window)), expected(
             off: Set(["File › reopenClosedTab:", "File › togglePinTab:", "File › openInDefaultSpace:",
-                      "Edit › browserUndo:", "Edit › browserRedo:", "Navigate › selectPreviousTab:",
+                      "Edit › browserUndo:", "Edit › browserRedo:", "Navigate › goBack:",
+                      "Navigate › selectPreviousTab:",
                       "Navigate › selectNextTab:", "Navigate › showArchivedTabs:", "Navigate › clearArchivedTabs:",
                       "Spaces › nextSpace:", "Spaces › previousSpace:", "Spaces › openSpacesSettings:"]
                       + Self.spaceJumps),

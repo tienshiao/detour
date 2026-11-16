@@ -226,6 +226,11 @@ else WebKit's own swipe shows WebKit's own picture.[^task-355]
 
 # Edge cases
 
+- Navigate › Back and the sidebar Back button are enabled by one rule
+  (`canNavigateBack`: history, or an opener `parentTab(for:)` resolves),
+  re-read when an opener closes, sleeps, moves or comes back (TASK-377);
+  before it the menu item was always enabled in a browser window and the
+  button kept a stale state, so both could do nothing.
 - Navigate › Back (Cmd+[) with the page focused closes a child with no
   back item too, since TASK-331. Before it the item was disabled there
   (also on a build from before TASK-325): `WKWebView`'s own `goBack:`

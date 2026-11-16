@@ -392,4 +392,117 @@ nonisolated final class TabOpenerWindowTests: XCTestCase {
         XCTAssertEqual(after.mode, .webKit, "no opener left: WebKit's gesture is back")
         XCTAssertTrue(after.gesturesEnabled)
     }
+
+    // MARK: - Whether Back is enabled (TASK-377)
+
+    /// The sidebar Back button and Navigate › Back agree, and follow whether
+    /// the selected tab has history or an opener `parentTab(for:)` resolves.
+    /// Turns the run loop first: the button's `canGoBack` sink delivers there.
+    @MainActor private func assertBack(_ wc: BrowserWindowController, enabled: Bool, _ message: String,
+                                       file: StaticString = #filePath, line: UInt = #line) {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(wc.tabSidebar.backButton.isEnabled, enabled, "the sidebar button: \(message)",
+                       file: file, line: line)
+        let item = BrowserCommands.back.makeMenuItem()
+        XCTAssertEqual(wc.validateMenuItem(item), enabled, "Navigate › Back: \(message)", file: file, line: line)
+    }
+
+    @MainActor func testBackIsDisabledOnceANormalOpenerClosesAndEnabledWhileItIsInTheSpace() throws {
+        let (wc, space, profile) = makeWindow("Back enabled normal")
+        let other = TabStore.shared.addSpace(name: "Opener Back enabled other", emoji: "O", colorHex: "FF3B30",
+                                             profileID: profile.id)
+        spaceIDs.append(other.id)
+        let opener = wc.store.addTab(in: space)
+        let neighbour = wc.store.addTab(in: space)
+        let child = wc.store.addTab(in: space, parentID: opener.id)
+        wc.selectTab(id: child.id)
+        assertBack(wc, enabled: true, "precondition: a child of a normal tab")
+
+        XCTAssertTrue(wc.store.moveTab(id: opener.id, from: space, to: other))
+        assertBack(wc, enabled: false, "its opener moved to another space")
+        XCTAssertTrue(wc.store.moveTab(id: opener.id, from: other, to: space))
+        assertBack(wc, enabled: true, "its opener is back in the space")
+
+        wc.store.closeTab(id: opener.id, in: space)
+        XCTAssertEqual(wc.selectedTabID, child.id, "precondition: the child stays selected")
+        assertBack(wc, enabled: false, "its opener closed")
+
+        wc.goBack(nil)
+        XCTAssertTrue(space.tabs.contains { $0 === child }, "Back has nothing to do")
+        XCTAssertTrue(space.tabs.contains { $0 === neighbour })
+    }
+
+    @MainActor func testBackIsDisabledOnceAPinnedOpenerGoesDormant() throws {
+        let (wc, space, _) = makeWindow("Back enabled pinned")
+        let opener = wc.store.addTab(in: space, url: pageURL)
+        let child = wc.store.addTab(in: space, parentID: opener.id)
+        wc.store.pinTab(id: opener.id, in: space)
+        let entry = try XCTUnwrap(space.pinnedEntries.first { $0.tab === opener })
+        wc.selectTab(id: child.id)
+        assertBack(wc, enabled: true, "precondition: a child of a live pinned tab")
+
+        wc.store.closePinnedTab(id: entry.id, in: space)
+        XCTAssertNil(entry.tab, "precondition: the entry is dormant")
+        XCTAssertEqual(wc.selectedTabID, child.id)
+        assertBack(wc, enabled: false, "its pinned opener went dormant")
+    }
+
+    @MainActor func testBackIsDisabledOnceAFavouriteOpenerGoesDormantOrIsRemoved() throws {
+        let (wc, space, profile) = makeWindow("Back enabled favourite")
+        let favouriteTab = addFavorite(to: profile, in: space)
+        let child = wc.store.addTab(in: space, parentID: favouriteTab.id)
+        wc.selectTab(id: child.id)
+        assertBack(wc, enabled: true, "precondition: a child of a live favourite")
+
+        let favorite = try XCTUnwrap(profile.favorites.first { $0.tab === favouriteTab })
+        wc.store.deactivateFavorite(id: favorite.id, profileID: profile.id)
+        assertBack(wc, enabled: false, "its favourite went dormant")
+
+        let second = addFavorite(to: profile, in: space)
+        let secondChild = wc.store.addTab(in: space, parentID: second.id)
+        wc.selectTab(id: secondChild.id)
+        assertBack(wc, enabled: true, "precondition: a child of another live favourite")
+        let secondFavorite = try XCTUnwrap(profile.favorites.first { $0.tab === second })
+        wc.store.removeFavorite(id: secondFavorite.id, profileID: profile.id)
+        assertBack(wc, enabled: false, "its favourite was removed")
+    }
+
+    @MainActor func testBackStaysEnabledWithHistoryAfterTheOpenerCloses() throws {
+        let (wc, space, _) = makeWindow("Back enabled history")
+        let opener = wc.store.addTab(in: space)
+        let child = wc.store.addTab(in: space, parentID: opener.id)
+        wc.selectTab(id: child.id)
+        assertBack(wc, enabled: true, "precondition")
+
+        child.canGoBack = true
+        wc.store.closeTab(id: opener.id, in: space)
+        assertBack(wc, enabled: true, "the child's own history is still there to go back in")
+    }
+
+    /// With a Peek up, Back acts on the Peek (`navigateBackOrCloseChildTab`),
+    /// so it is enabled by the Peek's history, not the host's opener.
+    @MainActor func testWithAPeekBackFollowsThePeeksHistory() throws {
+        let (wc, space, _) = makeWindow("Back enabled peek")
+        let opener = wc.store.addTab(in: space)
+        let child = wc.store.addTab(in: space, parentID: opener.id)
+        wc.selectTab(id: child.id)
+        assertBack(wc, enabled: true, "precondition: the host has an opener")
+
+        let peek = BrowserTab(id: UUID(), title: "Peek", url: pageURL, faviconURL: nil,
+                              cachedInteractionState: nil, spaceID: space.id)
+        child.peekTab = peek
+        defer { child.peekTab = nil }
+        XCTAssertFalse(wc.canNavigateBack, "a Peek with no history: Back has nothing to do")
+        XCTAssertFalse(wc.validateMenuItem(BrowserCommands.back.makeMenuItem()))
+        peek.canGoBack = true
+        XCTAssertTrue(wc.canNavigateBack, "a Peek with history goes back in it")
+        XCTAssertTrue(wc.validateMenuItem(BrowserCommands.back.makeMenuItem()))
+    }
+
+    @MainActor func testBackIsDisabledOnARootTab() throws {
+        let (wc, space, _) = makeWindow("Back enabled root")
+        let root = wc.store.addTab(in: space)
+        wc.selectTab(id: root.id)
+        assertBack(wc, enabled: false, "no history and no opener")
+    }
 }

@@ -195,6 +195,9 @@ protocol CommandContext {
     /// The selected tab (a Quick Detour's page) has an address.
     var selectedTabHasURL: Bool { get }
     var selectedTabIsPinned: Bool { get }
+    /// Back does something: the page has history (a Quick Detour), or, in a
+    /// browser window, the selected tab has history or an opener to close
+    /// to, or the open Peek has history (TASK-377).
     var pageCanGoBack: Bool { get }
     var pageCanGoForward: Bool { get }
     var isPeekShowing: Bool { get }

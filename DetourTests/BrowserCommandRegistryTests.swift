@@ -301,8 +301,13 @@ nonisolated final class BrowserCommandRegistryTests: XCTestCase {
         }
     }
 
-    @MainActor func testBackAndForwardAlwaysInABrowserWindowAndByHistoryInAQuickDetour() {
-        XCTAssertTrue(BrowserCommands.back.isAvailable(in: context(.normal)), "may close the tab to its opener")
+    /// Back is the sidebar button's rule in a browser window too since
+    /// TASK-377 (history or an opener, which the window computes as
+    /// `pageCanGoBack`); Forward stays always enabled there.
+    @MainActor func testBackByWhetherItCanGoAndForwardAlwaysInABrowserWindowAndByHistoryInAQuickDetour() {
+        XCTAssertFalse(BrowserCommands.back.isAvailable(in: context(.normal)), "no history and no opener")
+        XCTAssertTrue(BrowserCommands.back.isAvailable(in: context(.normal) { $0.pageCanGoBack = true }),
+                      "may close the tab to its opener")
         XCTAssertTrue(BrowserCommands.forward.isAvailable(in: context(.private)))
         XCTAssertFalse(BrowserCommands.back.isAvailable(in: context(.quickDetour)))
         XCTAssertTrue(BrowserCommands.back.isAvailable(in: context(.quickDetour) { $0.pageCanGoBack = true }))

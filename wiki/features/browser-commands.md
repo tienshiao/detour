@@ -49,6 +49,9 @@ sources:
   - id: task-327
     resource: backlog:TASK-327
     title: "Keyboard shortcuts: assign and customize the shortcuts of browser commands in Settings"
+  - id: task-377
+    resource: backlog:TASK-377
+    title: "Sidebar: the Back button stays enabled after a child's opener closes or a favourite opener sleeps"
   - id: task-295
     resource: backlog:TASK-295
     title: "Spaces: keyboard shortcuts that jump straight to a space by its position (first through ninth)"
@@ -128,10 +131,14 @@ rule. An item that is no command is enabled, as before.
 The rules reproduce what the controllers answered item by item, quirks
 included:
 
-- The same action can have a different rule per window kind. Back is always
-  enabled in a browser window (its Back may close the tab to its
-  [opener](../tabs/tab-opener.md),
-  TASK-325); a Quick Detour's needs history. Copy URL, Reload, zoom, Find
+- The same action can have a different rule per window kind. Back in a
+  browser window is enabled as the sidebar Back button is: with history, or
+  an [opener](../tabs/tab-opener.md) to close the tab to (TASK-325), or a
+  Peek with history (`canNavigateBack`, answered as `pageCanGoBack`); a
+  Quick Detour's needs history. Until TASK-377 it was always enabled in a
+  browser window, so it stayed enabled (and did nothing) on a root tab or
+  a child whose opener had closed. Forward is still always enabled there.
+  Copy URL, Reload, zoom, Find
   and Web Inspector are always enabled in a browser window and need an
   address in a Quick Detour.
 - A command whose action a controller does not implement is not answered in

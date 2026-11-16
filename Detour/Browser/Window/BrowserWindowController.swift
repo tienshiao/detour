@@ -2380,16 +2380,11 @@ class BrowserWindowController: NSWindowController {
             }
             .store(in: &displayTabSubscriptions)
 
+        // Delivered on a later turn of the run loop, so the tab's value is set
+        // by then. The opener half is refreshed by the store (TASK-377).
         tab.$canGoBack
             .receive(on: RunLoop.main)
-            .sink { [weak self] canGoBack in
-                if self?.selectedTab?.peekTab != nil {
-                    self?.tabSidebar.backButton.isEnabled = canGoBack
-                } else {
-                    let canCloseToParent = !canGoBack && self?.parentTab(for: tab) != nil
-                    self?.tabSidebar.backButton.isEnabled = canGoBack || canCloseToParent
-                }
-            }
+            .sink { [weak self] _ in self?.refreshBackButton() }
             .store(in: &displayTabSubscriptions)
 
         tab.$canGoForward
@@ -2575,6 +2570,25 @@ class BrowserWindowController: NSWindowController {
     func parentTab(for tab: BrowserTab) -> BrowserTab? {
         guard let parentID = tab.parentID else { return nil }
         return activeSpace?.openerTab(id: parentID)
+    }
+
+    /// Whether Back does anything here: with a Peek up, whether the Peek has
+    /// history; otherwise whether the selected tab has history or an opener
+    /// `parentTab(for:)` resolves (`navigateBackOrCloseChildTab`). The
+    /// sidebar button and Navigate › Back (`pageCanGoBack`) both read it
+    /// (TASK-377).
+    var canNavigateBack: Bool {
+        guard let tab = selectedTab else { return false }
+        if let peek = tab.peekTab { return peek.canGoBack }
+        return tab.canGoBack || parentTab(for: tab) != nil
+    }
+
+    /// Puts the sidebar Back button in step with `canNavigateBack`: on the
+    /// displayed tab's `canGoBack`, and on every store change that can make
+    /// an opener resolve or stop resolving (one closing, going dormant,
+    /// moving, coming back; a favourite removed or put to sleep).
+    func refreshBackButton() {
+        tabSidebar.backButton.isEnabled = canNavigateBack
     }
 
     func navigateBackOrCloseChildTab() {
@@ -2868,7 +2882,7 @@ class BrowserWindowController: NSWindowController {
         isShowingEmptyState = true
         tabSidebar.fauxAddressBar.displayText = ""
         tabSidebar.fauxAddressBar.isSecure = true
-        tabSidebar.backButton.isEnabled = false
+        refreshBackButton()
         tabSidebar.forwardButton.isEnabled = false
         tabSidebar.reloadButton.isEnabled = false
         tabSidebar.tableView.deselectAll(nil)
@@ -3654,6 +3668,10 @@ extension BrowserWindowController: CommandContext {
     }
 
     var isPeekShowing: Bool { peekOverlayView != nil }
+
+    /// Back's rule here is the sidebar button's: history, or an opener to
+    /// close the tab to (TASK-377).
+    var pageCanGoBack: Bool { canNavigateBack }
 
     var isEditingPageText: Bool { editingPageWebView != nil }
 
