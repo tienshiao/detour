@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T19:55:00Z'
-updated_date: '2026-11-14T21:30:00Z'
+updated_date: '2026-11-16T05:54:00Z'
 labels:
   - settings
   - ui
@@ -69,6 +69,8 @@ Verification (Nov 14 2026):
 - /verify (Debug build, DETOUR_DATA_DIR=DetourVerify-328, DETOUR_MCP=1, API Explorer installed): General, Quick Detour, Profiles and Extensions captured with screencapture -l in light and dark and looked at. Accessibility frames: the converted rows match Extensions' Enabled and Profiles' Search suggestions exactly (56 x 26 switch, frame gap 6 pt = 8 pt between alignment rects, same centre line). AXPress on each of the five switches flipped its AX value and its key in the run's defaults suite (PeekEnabled, AutomationAllowPrivate, QuickDetourOptionCommandClickEnabled, QuickDetourHotKeyEnabled, AutomationEndpointEnabled) and back. Automation off: endpoint file removed, status 'Off.', copy buttons hidden, window shrank; on again: endpoint back, buttons shown. Real (HID) clicks: on the Peek, hotkey and Opt-Cmd labels changed nothing; on the Peek switch toggled it twice; on the hotkey switch while the recorder was recording ended the recording and toggled the switch. AX names: each converted switch's description is its label text, identifiers unchanged.
 - Code review (medium, --fix): SettingsSwitchRow.make now returns only the row (applied, tests re-run; runtime not re-run for this return-type change). Skipped: moving Extensions' rows onto the helper and naming their switches (out of scope), the label and switch both being in the AX tree (the label text is read twice by VoiceOver; System Settings rows do the same; a titleUIElement link is the alternative), an observer the test's throwaway General pane leaves (General has no teardown, predates this change), the checkbox guard seeing only each pane's first state (selection-built details were checked at runtime).
 - Not verified: VoiceOver itself; the global hotkey registering (Debug build without DETOUR_GLOBAL_HOTKEY=1).
+
+2026-11-15, the user's decision: the Quick Detour hotkey's two rows (a switch row ending at 'any app', and a labelled Shortcut row with the recorder) are confirmed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

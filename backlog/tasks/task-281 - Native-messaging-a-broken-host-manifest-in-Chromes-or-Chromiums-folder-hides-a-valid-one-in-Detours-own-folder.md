@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-07T09:35:00Z'
+updated_date: '2026-11-16T05:54:00Z'
 labels:
   - extensions
   - native-messaging
@@ -32,3 +33,9 @@ Manifests are searched in Chrome's, Chromium's, Detour's, then /Library's folder
 - [ ] #2 If the behaviour changes: a valid manifest in Detour's folder is used when Chrome's folder holds a broken one for the same host name, with a test
 - [ ] #3 1Password's real host manifest still connects (signed build, or recorded as owed)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-15, the user's decision: search Detour's own NativeMessagingHosts folder first, then Chrome's and Chromium's, then /Library; the first file found still decides. A host installed for Detour always wins; Chrome's folder stays the fallback that lets hosts like 1Password work without installing for Detour. (Context given: every other Chromium browser reads only its own folder.)
+<!-- SECTION:NOTES:END -->

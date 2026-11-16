@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-15T22:59:00Z'
-updated_date: '2026-11-15T23:05:00Z'
+updated_date: '2026-11-16T05:54:00Z'
 labels:
   - settings
 dependencies: []
@@ -46,4 +46,6 @@ The user, 2026-11-15, after clicking through Settings: (1) the Shortcuts pane op
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented: SettingsWindowController.paneOrder by topic; SettingsMetrics.designMaximumContentHeight = 720; SettingsPaneHeight.fit opens at min(full, max(720, explicit minimum)) and keeps maxHeight = natural (or minimum) capped to the screen, minHeight = min(floor, cap, initial); refit follows a window at its opening height to the new opening height and one dragged fully open to the new maximum, otherwise clamps. Tests: SettingsPaneHeightTests (27, new cases for the design maximum, tall fixed and list panes, short screens and refits), SettingsWindowFitTests, SettingsPaneColumnsTests (order), SettingsSwitchRowTests, SettingsFormTests, ShortcutsSettingsPaneTests, ProfileSettingsLayoutTests, SettingsGuideLinkTests, SettingsCaptureHarnessTests: 126 run, 1 skipped, 0 failures; after the review's refactor the three height/fit/columns suites again 51/0. Runtime (DETOUR_DATA_DIR launch, endpoint open_ui): Shortcuts opened at 808 pt (720 content + 88 chrome) with its list scrolling; Profiles 808 (its natural height in that run is above 720); General 677 (natural); set_window_frame made the Settings window 1108 pt tall and it stayed. The toolbar order was not seen at runtime (the endpoint's screenshot is the content view only); covered by the order test. Review (medium --fix): no correctness bugs; renamed a test helper, reused floorHeight, wiki lists Search and Shortcuts among the 400 pt panes. Accepted: a window the user dragged back to exactly its opening height follows the pane like an untouched one; a pane under 720 that grows past it now stops at 720 and scrolls.
+
+2026-11-15, the user's decision: keep the 720 pt opening maximum and accept that the Profiles pane (~1008 pt natural on the TASK-338 grouped form) opens at the cap and scrolls. The code comment on designMaximumContentHeight is corrected under TASK-353.
 <!-- SECTION:NOTES:END -->

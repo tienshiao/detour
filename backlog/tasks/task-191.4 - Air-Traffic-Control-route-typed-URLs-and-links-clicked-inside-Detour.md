@@ -3,8 +3,8 @@ id: TASK-191.4
 title: 'Air Traffic Control: route typed URLs and links clicked inside Detour'
 status: Done
 assignee: []
-created_date: '2026-10-24 09:48'
-updated_date: '2026-10-25 22:22'
+created_date: 2026-10-24 09:48
+updated_date: '2026-11-16T05:54:00Z'
 labels:
   - links
   - spaces
@@ -57,6 +57,8 @@ Keep modifier precedence and the existing policies' order (wiki/tabs/tab-lifecyc
 - /code-review --fix: 10 findings. Fixed: routed typed URLs lost the typed flag for history (now passed through; test extended); routing work ran for every navigation, now only .linkActivated; address-bar palette with no selected tab didn't route like Cmd+T; duplicated outcome switch merged (performInPageLinkOutcome); repeated resolver call (resolveRoute); needless Optional on inPageLinkRequest. Skipped: a cross-host click to a download (Content-Disposition) is routed before the response is known, leaving an empty tab in the routed space (design change; pre-existing for Cmd+click/_blank; follow-up proposed to the user); pageURL is the provisional URL during an in-flight navigation (rare); origin space is the window's active space, not the firing tab's (needs a gesture in an unshown space); fixed 700 ms settle in negative in-app tests.
 - Tests before review: 422 tests, 26 suites, 0 failures. After review fixes: 230 tests, 0 failures (LinkRoutingEligibility 40, InPageLinkRouting 21, LinkPlacement 19, ExternalLinkRouting 13, LinkRouteResolver 38, PeekAnchor 23, PeekState 11, FavoritePeekPersistence 5, SplitOpening 20, PageOpenedWindow 11, CommandPaletteFocus 4, PaletteSelection 14, TabNavigation 11).
 - Runtime (docs/harness/task191-4-harness.patch, real NSApp.postEvent input, screen unlocked): every case above as expected, incl. popup keeps opener (postMessage received), redirect asked twice and landed in the tab, pinned tab route beats Peek, Private route from a normal window, routes ignored from a Private window. Trap: plain clicks posted to an inactive app are swallowed (Cmd-clicks aren't); harness activates Detour first. Runtime ran before the review fixes; not re-run after them. Not verified: favourite tabs, split panes, iframe links, History page links, real sites.
+
+2026-11-15, the user's decisions on the 'to confirm' list: confirmed as built: Cmd+L with a Peek open routes; a routed Cmd+click opens selected with its window in front; Cmd+click and _blank in an iframe route; a click from an internal page to a web host is cross-host; window.open() followed by location= is not routed. Changed: Open Link in New Tab and Open Link in New Window should be routed (Split View and Quick Detour stay unrouted), for consistency with other browsers' link rules (follow-up TASK-356).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

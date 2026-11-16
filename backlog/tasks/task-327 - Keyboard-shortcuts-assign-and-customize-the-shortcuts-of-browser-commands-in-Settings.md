@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14T19:47:00Z'
-updated_date: '2026-11-15T07:37:00Z'
+updated_date: '2026-11-16T05:54:00Z'
 labels:
   - keyboard
   - menus
@@ -144,6 +144,8 @@ Left as is: (a) conflicts on shifted punctuation are not seen (a recording store
 - The spikes, the Accessibility helper (axdrive.swift) and the fixture page are in docs/harness/task327 for redoing the owed checks.
 
 2026-11-14 user decision: approved as built: main-menu commands only; ⌘ or ⌃ required except F1–F20; a taken key is refused with the holder named, never reassigned; Restore Defaults asks no confirmation; App Shortcuts set in System Settings win.
+
+2026-11-15, the user's decision: Cut, Copy, Paste and Select All stay fixed (not bindable), like Undo/Redo. The PROVISIONAL comment in BrowserCommands.fixedShortcuts is removed under TASK-353.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

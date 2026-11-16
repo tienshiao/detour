@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T06:21:00Z'
-updated_date: '2026-11-15T22:57:00Z'
+updated_date: '2026-11-16T05:54:00Z'
 labels:
   - feature
 dependencies: []
@@ -152,6 +152,8 @@ Follow-up 2026-11-14 (after the first commit):
 - Left on disk: four WebKit website-data-store folders from the first runtime runs (12:29-12:31, before the check script cleaned its stores); later runs clean up after themselves.
 
 2026-11-15: the user checked the back swipe by hand on a real trackpad and reports it works well (the owed hand check for ACs #1-#3 and #7).
+
+2026-11-15, the user's decisions on the three provisional choices: a split pane's plain background underlay and 'a pinned tab or favourite is never swiped closed' are confirmed as built; the forward swipe should show a picture of the page as it was left instead of a blank card (follow-up TASK-355).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

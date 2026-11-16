@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-15T20:08:00Z'
-updated_date: '2026-11-15T22:27:00Z'
+updated_date: '2026-11-16T05:54:00Z'
 labels:
   - automation
   - ui
@@ -97,6 +97,8 @@ Not verified / owed:
 2026-11-15 (lead, main c99dca9d Debug build): harness scripts still pass with the pointer's test-run default: docs/harness/task228-7-private-quick-detour-checks.py ALL PASS (17 checks, two launches), docs/harness/task324-endpoint-checks.py ALL PASSED (5 checks; Detour stayed in the background). Still owed for AC #5/#7: a full-screen recording on an uncovered window showing the pointer, the ripple and the typing outline.
 
 2026-11-15 (lead) full-screen recording: screencapture -v of the capture kit's virtual display (no other window can cover it; no wallpaper change), Detour placed there with set_window_frame activate false and never activated (app_active false before and after), the kit's seed and its agent_pointer override on, so the 600 ms staging glide. Recorded: a click on a page button by selector (glide, ripple, 'Clicked 1'), a click at a page point (glide to it), type_text into a field (glide, ripple, orange outline on the field while typing, 'agent typing' typed), then the pointer lingering and fading. A contact sheet of the frames confirmed each. Sidebar-row and Settings-switch clicks were not in this recording (the scan by hit_test found no labelled row); they were seen in the agent's burst captures of the overlay window earlier. The endpoint's own screenshot leaving the pointer out was checked by the agent and AutomationAgentPointerTests. Script: scratchpad pointer_recording.py (subclasses docs/capture/capture.py's Capture with one shot).
+
+2026-11-15, the user's decision on the review's open question: choose_menu_item and close_menu should wait in the input order while the agent pointer is on (TASK-228.13).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
