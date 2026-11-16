@@ -30,6 +30,9 @@ sources:
   - id: harness
     resource: ../../docs/harness/task191-1-harness.patch
     title: TASK-191.1 runtime harness
+  - id: task-361
+    resource: backlog:TASK-361
+    title: "Undo: reRegisterRunningUndoEntry re-registers with no spaces, so a re-registered entry is never tracked as Private"
 ---
 
 A space that a link route or the Default targets cannot be deleted. User
@@ -72,6 +75,17 @@ run that way, its registration of the original handler lands where the entry
 came from, and neither stack is otherwise changed. It skips the bounce if an
 undo group is open by then. Before this, a refused undo or redo did nothing,
 showed nothing, and was gone (review finding, 2026-10-25).[^task-191-1]
+
+The caller passes the spaces of the entry it replaces (`in:`); the bounce
+and the entry put back both carry them through `registerUndo(actionName:in:)`,
+so one in a Private space stays tracked as Private and goes when its window
+closes ([browser undo](../architecture/browser-undo.md#a-private-windows-entries-go-with-the-window)).
+Nothing goes back for a Private window already closed, and if it closes
+before the hop, the hop runs nothing (the stack would run the entry under
+the dropped bounce) and takes the dropped entries off instead. Before
+TASK-361 both registrations had no spaces, so a re-registered entry was
+never Private; only Add Space and Delete Space use it, never in a Private
+space, so that was latent.[^task-361]
 
 # The alert
 
@@ -137,3 +151,4 @@ entry with the other stack untouched, the alert text and its two buttons.
 [^task-191-1]: TASK-191.1: route model, matching rule and storage
 [^task-191-3]: TASK-191.3: Settings UI to add, edit, reorder and remove routes
 [^harness]: TASK-191.1 runtime harness
+[^task-361]: "Undo: reRegisterRunningUndoEntry re-registers with no spaces, so a re-registered entry is never tracked as Private"

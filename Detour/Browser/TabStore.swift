@@ -661,7 +661,7 @@ class TabStore {
     private func deleteSpaceFromUndoStack(id: UUID, actionName: String) {
         guard case .blockedByLinkRoutes(let references) = deleteSpace(id: id),
               let space = space(withID: id) else { return }
-        reRegisterRunningUndoEntry(actionName: actionName) { [weak self] in
+        reRegisterRunningUndoEntry(actionName: actionName, in: [space]) { [weak self] in
             self?.deleteSpaceFromUndoStack(id: id, actionName: actionName)
         }
         let block = SpaceDeletionBlock(spaceID: id, spaceName: space.name, references: references)
@@ -679,24 +679,42 @@ class TabStore {
     /// the opposite stack, and is run from the main queue as soon as this undo
     /// returns: run as a redo (or undo), its registration of `handler` lands
     /// back where the entry came from.
-    private func reRegisterRunningUndoEntry(actionName: String, handler: @escaping () -> Void) {
+    ///
+    /// `spaces` are the spaces of the entry it replaces, which the bounce and
+    /// the entry put back both carry: one in a Private space stays tracked as
+    /// Private and goes with its window (TASK-361). Internal for tests.
+    func reRegisterRunningUndoEntry(actionName: String, in spaces: [Space], handler: @escaping () -> Void) {
         let manager = undoManager
         let isUndoing = manager.isUndoing
         guard isUndoing || manager.isRedoing else { return }
-        manager.registerUndo(withTarget: self) { store in
-            store.registerUndo(actionName: actionName, in: [], handler: handler)
-        }
-        manager.setActionName(actionName)
-        DispatchQueue.main.async { [weak manager] in
+        // Nothing goes back for a Private window closed since (`registerUndo`
+        // refuses it), and then there is no hop: it would run the entry under it.
+        guard registerUndo(actionName: actionName, in: spaces, handler: { [weak self] in
+            self?.registerUndo(actionName: actionName, in: spaces, handler: handler)
+        }) else { return }
+        DispatchQueue.main.async { [weak self, weak manager] in
             // An open group would be closed onto the stack first and run
             // instead of the bounce; leave the stacks alone then.
-            guard let manager, manager.groupingLevel == 0 else { return }
+            guard let self, let manager, manager.groupingLevel == 0 else { return }
+            guard self.spacesAreOpen(spaces) else {
+                // Its Private window closed since: the bounce is dropped, and
+                // running the stack would run the entry under it. The stack is
+                // idle, so the dropped entries can leave it now.
+                self.removeDroppedUndoEntries()
+                return
+            }
             if isUndoing {
                 if manager.canRedo { manager.redo() }
             } else if manager.canUndo {
                 manager.undo()
             }
         }
+    }
+
+    /// Whether every Private space among `spaces` is still open (a normal
+    /// space always counts as open here).
+    private func spacesAreOpen(_ spaces: [Space]) -> Bool {
+        spaces.allSatisfy { !$0.isIncognito || space(withID: $0.id) != nil }
     }
 
     // MARK: - Undo Helpers
@@ -712,12 +730,15 @@ class TabStore {
     /// also runs only while each of those spaces is still open, and none is
     /// registered for a Private space already gone: nothing may rebuild a
     /// Private tab, or keep its page, after its window closed.
-    private func registerUndo(actionName: String, in spaces: [Space], handler: @escaping () -> Void) {
+    ///
+    /// Returns whether it registered anything.
+    @discardableResult
+    private func registerUndo(actionName: String, in spaces: [Space], handler: @escaping () -> Void) -> Bool {
         let privateSpaceIDs = Set(spaces.lazy.filter(\.isIncognito).map(\.id))
         if privateSpaceIDs.isEmpty {
             undoManager.registerUndo(withTarget: self) { _ in handler() }
         } else {
-            guard privateSpaceIDs.allSatisfy({ space(withID: $0) != nil }) else { return }
+            guard spacesAreOpen(spaces) else { return false }
             let entry = PrivateUndoEntry(spaceIDs: privateSpaceIDs, handler: handler)
             privateUndoEntries.removeAll { $0.entry == nil }
             privateUndoEntries.append(WeakPrivateUndoEntry(entry: entry))
@@ -728,6 +749,7 @@ class TabStore {
             }
         }
         undoManager.setActionName(actionName)
+        return true
     }
 
     /// The target of an undo or redo entry acting in a Private space

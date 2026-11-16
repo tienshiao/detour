@@ -315,6 +315,83 @@ nonisolated final class PrivateWindowUndoTests: XCTestCase {
         XCTAssertFalse(f.store.undoManager.canRedo)
     }
 
+    // MARK: - An entry put back on its stack (TASK-361)
+
+    /// An undo that puts itself back (as a refused space deletion does) keeps
+    /// its spaces: in a Private space, the entry it puts back goes with the
+    /// window. Before the fix it was put back with no spaces, as a normal
+    /// entry, and outlived the window.
+    @MainActor func testAnEntryPutBackOnTheStackGoesWithItsPrivateWindow() throws {
+        let f = try makeFixture()
+        let store = f.store
+        let (priv, _) = addPrivateSpace(store)
+        let runs = Counter()
+        inUndoGroup(store) {
+            store.undoManager.registerUndo(withTarget: store) { s in
+                runs.count += 1
+                s.reRegisterRunningUndoEntry(actionName: "Try Again", in: [priv]) { runs.count += 1 }
+            }
+            store.undoManager.setActionName("Try Again")
+        }
+
+        store.undoManager.undo()
+        drainMainQueue()
+        XCTAssertEqual(runs.count, 1)
+        XCTAssertEqual(store.undoManager.undoActionName, "Try Again", "precondition: the entry is back on the undo stack")
+        XCTAssertFalse(store.undoManager.canRedo, "precondition: the bounce has run")
+
+        store.removeIncognitoSpace(id: priv.id)
+
+        XCTAssertFalse(store.undoManager.canUndo, "the entry put back must go with its Private window")
+        store.undoManager.undo()
+        XCTAssertEqual(runs.count, 1)
+    }
+
+    /// The window closes before the main-queue hop: nothing is put back, and
+    /// the hop does not run the entry below in its place. A redo, so the
+    /// bounce lands on the undo stack right above a normal window's Close
+    /// Tab, which the hop's undo would otherwise reach.
+    @MainActor func testAnEntryWhosePrivateWindowClosedBeforeTheHopIsNotPutBack() throws {
+        let f = try makeFixture()
+        let store = f.store
+        let normalPage = makeTab("https://normal.example/", in: f.normal)
+        f.normal.tabs.append(normalPage)
+        inUndoGroup(store) { store.closeTab(id: normalPage.id, in: f.normal) }
+        let (priv, _) = addPrivateSpace(store)
+        let runs = Counter()
+        inUndoGroup(store) {
+            store.undoManager.registerUndo(withTarget: store) { s in
+                // Registered while undoing: lands on the redo stack.
+                s.undoManager.registerUndo(withTarget: s) { s in
+                    runs.count += 1
+                    s.reRegisterRunningUndoEntry(actionName: "Try Again", in: [priv]) { runs.count += 1 }
+                    s.removeIncognitoSpace(id: priv.id)
+                }
+                s.undoManager.setActionName("Try Again")
+            }
+            store.undoManager.setActionName("Try Again")
+        }
+        store.undoManager.undo()
+        XCTAssertEqual(runs.count, 0)
+        XCTAssertEqual(store.undoManager.redoActionName, "Try Again", "precondition: the entry is on the redo stack")
+
+        store.undoManager.redo()
+        drainMainQueue()
+
+        XCTAssertEqual(runs.count, 1)
+        XCTAssertFalse(hasPage("normal.example", in: f.normal), "the hop must not run the normal close's undo")
+        XCTAssertEqual(store.undoManager.undoActionName, "Close Tab")
+        XCTAssertFalse(store.undoManager.canRedo)
+    }
+
+    /// Runs what is already queued on the main queue: the store puts an entry
+    /// back on its stack from there.
+    @MainActor private func drainMainQueue() {
+        let drained = expectation(description: "main queue drained")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 2)
+    }
+
     // MARK: - Move Space across Private windows (TASK-360)
 
     /// Normal spaces N, B, C with a Private window's space between N and B
@@ -448,4 +525,9 @@ nonisolated final class PrivateWindowUndoWindowTests: XCTestCase {
         XCTAssertFalse(store.spaces.flatMap(\.tabs).contains { $0.url?.host == "secret.example" })
         XCTAssertTrue(restoredIDs.isEmpty)
     }
+}
+
+/// How many times an undo handler ran (TASK-361's tests).
+private final class Counter {
+    var count = 0
 }

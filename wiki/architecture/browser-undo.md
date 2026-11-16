@@ -216,7 +216,8 @@ explicitly. A harness must never end the automatic group by hand
   Closed Tab.[^task-28]
 - **A refused space deletion.** Undo of Add Space (and redo of Delete
   Space) can be refused by a link route; the entry is put back on its
-  stack with a one-step bounce (`reRegisterRunningUndoEntry`), described on
+  stack with a one-step bounce (`reRegisterRunningUndoEntry`, which carries
+  the replaced entry's spaces, TASK-361), described on
   [space deletion and link routes](../features/link-routing-space-deletion.md).
 
 ## When the stack is cleared
