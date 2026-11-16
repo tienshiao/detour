@@ -251,9 +251,9 @@ enum BrowserCommands {
     /// kind, not "a space exists at N": an enabled command with nothing to do
     /// swallows the key, a disabled one lets it fall through to the page.
     ///
-    /// Default keys ⌃1–⌃9, as Arc's. PROVISIONAL (chosen by Claude while the
-    /// user was away): macOS's Mission Control "Switch to Desktop N" takes
-    /// ⌃N first when it is turned on; Settings › Shortcuts says so on the row.
+    /// Default keys ⌃1–⌃9, as Arc's (the user's decision, 2026-11-14,
+    /// TASK-295): macOS's Mission Control "Switch to Desktop N" takes ⌃N
+    /// first when it is turned on; Settings › Shortcuts says so on the row.
     static let jumpToSpace: [BrowserCommand] = {
         // IDs are API: written out, never derived.
         let positions: [(CommandID, Selector)] = [
