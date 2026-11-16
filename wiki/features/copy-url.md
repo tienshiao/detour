@@ -4,7 +4,7 @@ title: Copy URL
 description: "Every copy of a page's or tab's address (Edit > Copy URL / Shift-Cmd-C in a browser or Quick Detour window, the faux address bar's and Quick Detour's Copy Link buttons, the sidebar tab menu's Copy URL / Copy Link) puts the address on the clipboard without its tracking parameters (the dev toolbar's link button copies it as loaded, the user's decision), through TrackingParameters: the built-in list quarantine pages also use, plus the downloaded AdGuard URL Tracking filter's site-specific $removeparam rules and exceptions (TASK-329: rule forms supported and skipped, fallback; quarantine navigations use it too, the user's decision); Share… shares the clean link too; the list's switch in Settings > Content Blocking (TASK-337: off, it is neither fetched nor used; the cache is kept); what is left alone (the dev toolbar's link button, a page's own Copy Link, Opt-Cmd-click copies into Quick Detour) and why; the loaded URL, history and session keep the original (TASK-326)."
 tags: [links, privacy, clipboard, sidebar, window]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T07:52:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:04:38Z }
 sources:
   - id: task-326
     resource: backlog:TASK-326
@@ -203,8 +203,8 @@ or a common second-level label over a two-letter country code (`co.uk`,
 `com.au`, `co.jp`), so `amazon.evil.com` is not `amazon.*`; a rarer real
 suffix is missed (under-stripping, the safe side).
 
-**Exceptions beat the built-in names (decision by Claude, TASK-329, while
-the user was away, not confirmed):** once the list is loaded, a parameter an
+**Exceptions beat the built-in names (TASK-329; first chosen by Claude,
+confirmed by the user on 2026-11-14 as built):**[^task-329] once the list is loaded, a parameter an
 exception keeps for the address is kept even if the built-in list names it,
 when the exception is taken as written and limited to some addresses (a
 pattern or an included domain). A widened exception (a regex, `~name`, an
@@ -214,8 +214,8 @@ finding: otherwise a widened exception would let `gclid` through).
 The uBO build's exceptions exist for exactly those names (archived
 addresses whose query is the original link's, `utm_source` sites need), and
 a shared link that breaks is worse than one that keeps a tag. Without the
-list the built-in names apply everywhere. Alternative: exceptions cancel
-only list rules; one line in `TrackingParameters.removing`.
+list the built-in names apply everywhere. Rejected alternative: exceptions
+cancel only list rules (one line in `TrackingParameters.removing`).
 
 **Quarantine navigations use the list too (TASK-329 AC #4, the user's
 decision, 2026-11-14):** `Quarantine.trackingFreeURL` and `openQuarantine`
@@ -249,9 +249,9 @@ manager's own gate is the test host's, `downloadsTrackingParameterList`):
 | Turning it off (`setEnabled(false)`) | the rules in use are dropped at once (`install(nil)`) and every ticket taken so far is superseded, so a download already in flight is neither installed nor cached |
 | Turning it on (`setEnabled(true)`, then `turnedOn()`) | the cached rules are installed, then the list is fetched: conditional on the cached text's ETag, in full when there is no cache. Offline, the cached rules stay in use |
 
-**The cache is kept while off (PROVISIONAL: chosen by Claude while the user
-was away, not confirmed by the user).** Turning the list on again then works
-offline and costs a 304. Alternative: delete the cached text when it is
+**The cache is kept while off (the user's decision, 2026-11-14, keeping
+what was built).**[^task-337] Turning the list on again then works
+offline and costs a 304. Rejected alternative: delete the cached text when it is
 turned off (a one-line change in `setEnabled`), so an off list leaves nothing
 on disk. Clear Cache & Redownload while off deletes it, since that is what
 the button says, but downloads nothing; turning the list on then downloads

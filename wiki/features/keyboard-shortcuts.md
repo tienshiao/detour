@@ -5,7 +5,7 @@ description: "Where Detour's shortcuts are defined (the command registry's defau
 resource: ../../Detour/Commands/ShortcutBindings.swift
 tags: [keyboard, menus, settings, commands]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T00:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:00:16Z }
 stale_after: 2027-06-01T00:00:00Z
 sources:
   - id: task-345
@@ -61,7 +61,7 @@ Keyboard > Keyboard Shortcuts > App Shortcuts) still win over Detour's.
 
 The Quick Detour hotkey stays on its own pane: it is system-wide, and its
 shortcut is also File > New Quick Detour Window's
-([Quick Detour](./quick-detour.md#the-global-hotkey)).
+([Quick Detour](./quick-detour-hotkey.md)).
 
 # How it works
 
@@ -137,7 +137,7 @@ not on a binding change).
 |---|---|
 | Every parameterless main-menu command, AppKit's application and window items included (Hide, Quit, Minimize, Zoom) | `bindable` |
 | New Quick Detour Window | `quickDetourPane`: listed read-only, with a link to that pane |
-| Undo, Redo, Cut, Copy, Paste, Select All | `fixed`: listed read-only, the reason as tooltip (Undo and Redo: the user's decision, 2026-11-15, TASK-345; the text commands still PROVISIONAL[^task-327]) |
+| Undo, Redo, Cut, Copy, Paste, Select All | `fixed`: listed read-only, the reason as tooltip (Undo and Redo: the user's decision, 2026-11-15, TASK-345; the text commands: still marked PROVISIONAL in `BrowserCommands.fixedShortcuts`, although the user approved the pane's scope as built on 2026-11-14[^task-327]) |
 | Parameterised commands (a space, an extension) | `notListed` |
 | Check for Updates… | listed only in a run that starts Sparkle |
 
@@ -185,7 +185,8 @@ unchanged) and `.appShortcut` (a command). In order:
 7. **Enabled macOS shortcuts** (`CopySymbolicHotKeys`, the Fn bit ignored).
 
 A refused key beeps, the reason shows on the line under the list, and the
-recorder keeps recording (PROVISIONAL: refuse rather than reassign[^task-327]).
+recorder keeps recording: a taken key is refused with its holder named, never
+reassigned (the user's decision, 2026-11-14[^task-327]).
 
 ## A shifted key and its character
 
@@ -265,7 +266,8 @@ Limits:
 ## The pane
 
 `ShortcutsSettingsViewController` (toolbar item "Shortcuts", symbol
-`keyboard`, after Search): description, a search field and Restore Defaults,
+`keyboard`, the last pane since TASK-347's order; it came after Search
+before): description, a search field and Restore Defaults,
 then one list drawn as a form group (TASK-338; a column pane: the list fills the pane and scrolls
 on its own, 400 pt minimum), then the warning line.
 
@@ -293,8 +295,8 @@ on its own, 400 pt minimum), then the warning line.
   the keystroke runs ("⌘+ and Reload Page's ⇧⌘= are one keystroke on this
   keyboard, which runs Reload Page. Record another shortcut for one of
   them."); both rows of the pair are marked, and macOS's note wins when a
-  row has both. PROVISIONAL (chosen by Claude): the row note rather than a
-  line under the list or a dialog.
+  row has both. The row note, rather than a line under the list or a
+  dialog, is the user's choice (confirmed 2026-11-15).[^task-343]
 - The warning line under the list (a refused recording or reset) sits on
   the pane's bottom and the list takes the rest. Until TASK-343 the line
   was only held above the bottom and nothing gave the list a height, so the

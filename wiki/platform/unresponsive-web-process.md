@@ -5,6 +5,8 @@ description: What WebKit does and does not do when a page's web process stops re
 tags: [webkit, hang, navigation, loading]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-29T04:30:00Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:26Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-176

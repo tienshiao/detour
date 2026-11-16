@@ -4,7 +4,7 @@ title: IPv6 hosts in URL APIs
 description: "Foundation's URL.host returns an IPv6 literal without its brackets (::1 for http://[::1]:3000/) while URLComponents.host, WKSecurityOrigin.host and JavaScript keep them, so a URL rebuilt from URL.host does not parse and hosts read two ways never compare equal; the helpers Detour uses instead."
 tags: [foundation, webkit, url, ipv6, favicons, dev-mode]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T00:38:52Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:26Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: url-host
@@ -87,7 +87,7 @@ Sites checked for TASK-198 and their verdicts:[^task-198]
 | `HistoryDatabase.faviconURL(for:…)` same-host fallback | **Matched nothing** (`http://::1`). Now `authorityHost` |
 | `BrowserTab.displayHost` (faux address bar) | **Showed `::1`.** Now `[::1]` |
 | `devModeHostLabel`, `devModeSiteKey`, `isLocalDevelopmentURL` | Correct: brackets added back by hand |
-| Hover card URL line (`HoverCardRules`) | Correct: reads `URLComponents.host` |
+| Hover card URL line (`HoverCardText` in `HoverCardRules.swift`) | Correct: reads `URLComponents.host` |
 | Palette `displayHost`/`rootURL`, `history_display_host` | Correct: string-based on the URL text |
 | `AddressInputClassifier` | Correct: `[::1]:8898` and `[::1]` are URLs (`http://`) |
 | `ExternalAppLaunchPolicy.origin`, the WKUIDelegate origin strings, the extension polyfill origin key | Correct: built from `WKSecurityOrigin.host`, which keeps the brackets |

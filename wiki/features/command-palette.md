@@ -4,7 +4,7 @@ title: Command palette
 description: "The overlay used for URL entry, tab switching, history, web search and browser commands: its two modes, how it is opened and dismissed, inline completion, command rows and the > list, a command's chip that asks for its space, tab or extension, keyboard handling, and how focus returns to the page."
 tags: [command-palette, navigation, keyboard, focus, appkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T09:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:02:38Z }
 sources:
   - id: palette-view
     resource: ../../Detour/Browser/CommandPalette/CommandPaletteView.swift
@@ -196,7 +196,7 @@ weigh double in inline-completion ranking and bypass the 30 s history dedup
 (see [history recording and search](./history-recording-and-search.md)).
 
 In new-tab mode a URL (not a search) is first offered to
-[Link Routes](./link-routing.md#typed-urls-and-links-clicked-in-a-page)
+[Link Routes](./link-routing-in-page.md)
 (`typedURLIsRoutable`, TASK-191.4): a route that sends it to another space or
 a Private window opens it there, placed as a link from another app, and no
 tab is added here. In place (Cmd+L, the address bar) never routes. Cmd+L or
@@ -411,11 +411,12 @@ switching to a tab: Split with Tab re-hosts the selected tab's web view in
 the split, which left nothing focused (measured at runtime: the endpoint's
 `press_key` found no focused view; `testSplitWithTab…` fails without it).
 
-**Spaces of other profiles.** PROVISIONAL (chosen while the user was away):
-a normal window's Switch to Space and Move Tab to Space list every normal
-profile's spaces, as the Spaces menu and the sidebar's Move to do (the row
-names the other profile); the alternative is the window's profile only,
-as the palette's open-tab and history rows are (TASK-209).
+**Spaces of other profiles.** A normal window's Switch to Space and Move
+Tab to Space list every normal profile's spaces, as the Spaces menu and the
+sidebar's Move to do (the row names the other profile): the user's decision
+of 2026-11-15, keeping what was built.[^task-320] The rejected alternative
+was the window's profile only, as the palette's open-tab and history rows
+are (TASK-209).
 
 # Edge cases
 
@@ -506,8 +507,7 @@ as the palette's open-tab and history rows are (TASK-209).
 
 # Related
 
-- [Site search](./site-search.md): keyword shortcuts and the mode they enter
-
+- [Site search](./site-search.md) - keyword shortcuts and the mode they enter.
 - [Suggestion pipeline](./suggestion-pipeline.md) - what the rows are and how they are ranked.
 - [Keyboard focus](../sidebar/keyboard-focus.md) - first responder rules for the window and sidebar.
 - [Find in page](./find-in-page.md) - the other overlay in the content area; its dismissal restores focus on its own, simpler path.
@@ -515,6 +515,7 @@ as the palette's open-tab and history rows are (TASK-209).
 - [BrowserWindowController](../architecture/browser-window-controller.md) - the palette's delegate.
 - [Web view ownership](../architecture/webview-ownership.md) - why focus is restored only when this window hosts the web view.
 
+[^task-320]: TASK-320
 [^task-78]: After Cmd+L and Return the page does not regain keyboard focus
 [^task-144]: Cmd+L then Return activates the first recent-history row instead of the pre-filled URL
 [^task-181]: Backspace after moving the caret off an inline completion deletes back to the typed prefix

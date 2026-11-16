@@ -4,7 +4,7 @@ title: External application links
 description: "What happens when a page navigates to a non-web scheme such as zoommtg: or mailto: - the confirmation sheet, the pure launch policy, and the per-profile 'Always allow' store keyed by origin and scheme."
 tags: [navigation, security, external-apps, profiles, permissions]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:19:15Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:02:00Z }
 sources:
   - id: policy
     resource: ../../Detour/Browser/ExternalApps/ExternalAppLaunchPolicy.swift
@@ -53,7 +53,7 @@ without asking. Before TASK-84 every such URL went straight to
 `ExternalAppLaunchPolicy.isForExternalApp(scheme:)` says so: the scheme is
 none of `http`, `https`, `about`, `blob`, `data`, `webkit-extension` or
 `browser-error` (`schemesLoadedInTheBrowser`). The check runs **after** the
-internal-scheme guard, the Cmd/Shift/Option-click branches and the error-page
+internal-scheme guard, the Opt-Cmd/Cmd/Shift/Option-click branches and the error-page
 re-attempt, and before the download check. It calls
 `handleExternalAppNavigation(to:action:in:)` and returns `.cancel`.
 
@@ -143,9 +143,11 @@ scheme, per profile.
   checkbox is not offered there in the first place.
 - Rows reference `profile` with `ON DELETE CASCADE`, so they go with the
   profile.
-- Settings > Profiles shows an "External apps" row with the saved count and a
-  Clear button (`clearAll(for:)`), hidden for the Private profile. The store
-  posts `didChangeNotification` so an open pane refreshes its count.
+- Settings > Profiles has an "External Apps" section whose "Saved
+  permissions" row shows the saved count and a Clear button
+  (`clearAll(for:)`), hidden for the Private profile. The sheet's handler
+  posts the store's `didChangeNotification` after an "Always allow", so an
+  open pane refreshes its count; Clear refreshes the pane itself.
 
 # Edge cases
 
@@ -166,9 +168,11 @@ scheme, per profile.
 - **`window.open("app:…")` is outside this path.** Script `window.open` calls
   only `createWebViewWith`, never `decidePolicyFor`[^delegate-spike], so it
   does not reach the prompt. TASK-84 left that case as it was.
-- **Unclaimed tabs.** The check lives in the window's navigation delegate
-  only. A tab's own delegate (a web view no window has claimed) hands nothing
-  to an application.
+- **Unclaimed tabs.** The check lives in the windows' navigation delegates
+  only: a browser window's, and a [Quick Detour](./quick-detour.md) window's,
+  which calls the same static `handleExternalAppNavigation` with its one
+  page as the hosted web view (TASK-193.1). A tab's own delegate (a web view
+  no window has claimed) hands nothing to an application.
 - A custom-scheme *link* does reach `decidePolicyFor`, with the main frame as
   its target.[^delegate-spike]
 

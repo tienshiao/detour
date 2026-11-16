@@ -4,7 +4,7 @@ title: Pinned tabs and folders
 description: The pinned section's model (PinnedEntry with an optional backing tab, PinnedFolder, per-level sort order), what live, asleep and dormant mean, how closing and home work, and why a dormant tile can refuse to open.
 tags: [tabs, pinned, folders, sidebar, model]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:36:48Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:12:56Z }
 sources:
   - id: entry
     resource: ../../Detour/Browser/PinnedEntry.swift
@@ -54,7 +54,8 @@ into `PinnedFolder`s, which nest. Both live on the `Space`
 
 A pinned entry's backing tab is **not in `space.tabs`**. Code that walks only
 `space.tabs` misses every pinned tab; use `space.pinnedTabs`,
-`Space.displayableTab(id:)` or `TabStore.tab(hosting:in:)` when the question is
+`Space.displayableTab(id:)` (by id) or `TabStore.tab(hosting:in:)` (by web
+view) when the question is
 "is this a tab of this space".
 
 # Rules
@@ -181,9 +182,12 @@ tab's own title on another host. `renamePinnedEntry` changes `pinnedTitle`.
 
 A live pinned tab is held to its home host. A link that leaves it, any
 `_blank` link and a tab-style `window.open` open in a [Peek](./peek.md) rather
-than navigating the pinned tab or opening a new tab. Navigations that are not
-link activations (redirects, script-driven location changes) still navigate in
-place.
+than navigating the pinned tab or opening a new tab. With Settings > General >
+Peek off, a link that leaves opens a new tab and `_blank` / `window.open`
+become ordinary tabs; a [link route](../features/link-routing-in-page.md) to
+another space wins over the Peek. Script-driven location changes and client
+redirects navigate in place; a server redirect of a clicked link is asked
+again as a link activation and can peek (see [Peek](./peek.md)).
 
 ## Dormant tiles that refuse to open
 

@@ -5,6 +5,8 @@ description: "The detour://history/ page: a profile-scoped list of visits in an 
 tags: [history, internal-pages, profiles, privacy, bridge]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T02:50:00Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:04:01Z }
 sources:
   - id: bridge
     resource: ../../Detour/Browser/InternalPages/HistoryPageBridge.swift

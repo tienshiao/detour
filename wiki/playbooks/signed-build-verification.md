@@ -4,7 +4,7 @@ title: Signed-build verification
 description: How to check extension behaviour that only works in the signed build installed in /Applications (real 1Password, native messaging trust) — deploy, capture the log, drive the session with a person, and read the result.
 tags: [playbook, extensions, 1password, verification, release-build]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:44:19Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:05:20Z }
 sources:
   - id: deploy-script
     resource: ../../scripts/deploy-1password-test.sh
@@ -30,6 +30,9 @@ sources:
   - id: notes-1password
     resource: "Agent session notes, 2026-09-13 (not in the repository)"
     title: Session notes on the 1Password integration
+  - id: task-142
+    resource: backlog:TASK-142
+    title: The native-port keep-alive is defeated when any other port of the background closes
 ---
 
 Some behaviour cannot be verified in a Debug build or an isolated profile.
@@ -49,9 +52,14 @@ cannot (unlocking, popups, biometric prompts).
   "the signed build".
 - A bug reproduces only with the real 1Password extension and desktop app.
 
-Do the harness run first ([seeding extensions](./seeding-extensions.md)
+Do the isolated run first ([seeding extensions](./seeding-extensions.md)
 with a fake native host). A signed-build session costs a person's time and
 replaces their installed browser.
+
+The automation endpoint is not the route here. `AutomationGate` turns on
+`DETOUR_MCP=1` only with an isolated `DETOUR_DATA_DIR`, and the signed
+session runs the real profile; the endpoint there exists only if the person
+turns it on in Settings. The log is the record of the session.
 
 # Steps
 
@@ -132,6 +140,16 @@ those cases exercise is on
 | Tracking prevention | watch the first minutes after launch | `ITP: logged user interaction for <id> origin <uuid>` before the Networking pass, no `SWServerRegistration::clear` after `deleteAndRestrictWebsiteDataForRegistrableDomains`[^task-90] |
 | Which `chrome.offscreen` | read the worker start lines | `[Detour polyfill] chrome.offscreen implementation: polyfill`[^task-71] |
 
+The keep-alive rows were measured on 2026-09-21, before the TASK-142
+anchor (2026-10-28). Since then a passing session can also show
+`Keep-alive re-anchor requested for <id>: one of its native ports closed`
+when a host or relayed socket closes while armed, and an unload is
+reported as `Keep-alive port closed for <id> (background unloaded;
+reported through its anchor)`. The disarm leaves the anchor open, so the
+"30 s later" unload may come later. TASK-142 has not yet been checked in
+a signed build with 1Password; see
+[native port keep-alive](../extensions/native-port-keep-alive.md).[^task-142]
+
 **Getting native hosts to zero.** Locking 1Password does not do it (the
 browser-support process stays connected) and quitting the desktop app does
 not either (the extension relaunches it and restarts its workers). What
@@ -156,7 +174,9 @@ Expect `Disconnected from Desktop app due to ExtensionSupportDisabled`,
 - **`armed: 1 native host(s)` with integration off.** A relayed WebSocket
   counts as a host; the notifier socket reopening after an unlock re-arms
   the keep-alive.[^task-21]
-- **`superseded by a newer one` right after an unload** is expected.
+- **`superseded by a newer one` right after an unload** was expected
+  before TASK-142; since then an unload after a re-anchor is reported
+  through the anchor instead.
 - **API Explorer noise.** Its `example.invalid` relay probe at every worker
   start logs a hostname failure and a 1006 close.[^task-21]
 - **Counting hits with grep.** A count of 1 for a string that is in the
@@ -185,3 +205,4 @@ Expect `Disconnected from Desktop app due to ExtensionSupportDisabled`,
 [^task-90]: TASK-90
 [^notes-signed]: Session notes on a signed-build verification session
 [^notes-1password]: Session notes on the 1Password integration
+[^task-142]: TASK-142

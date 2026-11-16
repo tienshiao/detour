@@ -4,7 +4,7 @@ title: 1Password integration
 description: What the 1Password extension needs from a browser, which Detour mechanism meets each need, how the desktop app's trust check works, and the gaps that remain.
 tags: [extensions, 1password, native-messaging, service-worker, overview]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:09:03Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:05:28Z }
 sources:
   - id: plan
     resource: ../../docs/1password-integration-plan.md
@@ -60,6 +60,15 @@ sources:
   - id: task-102
     resource: backlog:TASK-102
     title: The Private worker throws on a.providers
+  - id: task-99
+    resource: backlog:TASK-99
+    title: Give each context a stable base URL so extension storage survives a relaunch (closed; storage already survives)
+  - id: task-251
+    resource: backlog:TASK-251
+    title: "Extensions: the history and management namespaces exist for extensions without the permission"
+  - id: task-303
+    resource: backlog:TASK-303
+    title: Does 1Password connect in Detour on a Mac where Chrome was never installed
   - id: notes-1password
     resource: "Agent session notes, 2026-09-11 to 2026-09-21 (not in the repository)"
     title: Session notes on the 1Password integration
@@ -113,7 +122,7 @@ and recorded in the polyfill diagnostics (`_polyfillDiag.apis`):
 | `permissions.contains` with a ported origin | It builds the origin pattern of every page; WebKit match patterns reject a port and **throw synchronously**, so no form on a `host:port` site got a control[^task-75] | The port is stripped before the call |
 | `privacy.services.*` | Dereferenced without an existence check | No-op settings, `not_controllable`, only with the `privacy` permission |
 | `webRequest.onAuthRequired` | Registered unguarded in the same block as its navigation listeners | Never-firing event, only with the `webRequest` permission |
-| `management.setEnabled` | Disables other 1Password channel builds | No-op |
+| `management.setEnabled` | Disables other 1Password channel builds | No-op, only with the `management` permission[^task-251] |
 | `action.getUserSettings` | Feature-detected | `{isOnToolbar: true}` |
 
 Natively provided and load-bearing: `alarms` (its wake source),
@@ -171,6 +180,18 @@ unbuilt idea.[^task-7]
   directory's `Extensions/<id>/`. Its sources are minified but error strings
   and message names can be searched for, which is how several of the gaps
   above were diagnosed.
+- **Its IndexedDB survives a relaunch.** Each launch loads the extension on
+  a new origin, and WebKit renames the previous origin's IndexedDB and
+  `localStorage` to it; only Cache Storage and the worker registration stay
+  behind, and 1Password keeps nothing in Cache Storage. Until TASK-99 was
+  closed this page listed a cold item cache at every launch as a gap. See
+  [storage](./storage.md).[^task-99]
+- **Its host manifest is in Chrome's folder even without Chrome.** The
+  desktop app writes `com.1password.1password.json` into a fixed list of
+  browsers' `NativeMessagingHosts` folders, Chrome's among them, whether or
+  not those browsers are installed, and Chrome's is the first folder Detour
+  searches. Found by static investigation on one Mac on 2026-11-08; a clean
+  account without Chrome has not been checked.[^task-303]
 - **It declares no options page** (8.12.37.1), so the "Settings…" entry
   points are hidden for it by design.[^notes-1password]
 
@@ -184,7 +205,6 @@ unbuilt idea.[^task-7]
 | Rejections on `a.providers` in the Private worker | Unexplained; worker keeps running[^task-102] |
 | Basic-auth fill | Unsupported: WebKit has no blocking request interception |
 | Passkeys, export through `downloads`, QR scanning through `captureVisibleTab` | Not verified[^task-5] |
-| Item cache is cold at every launch | Extension storage does not survive a relaunch; see [storage](./storage.md) |
 | `[Tabs] Could not collect all frames that were initially found` | Seen occasionally; the empty-URL-frame explanation was tested and rejected[^task-4] |
 
 Benign noise, not Detour's: `Unable to find "background/offscreen/vendor/semver.js"`
@@ -231,4 +251,7 @@ and hourly `Received unknown message from b5x` in the helper's log.
 [^task-100]: Inject content scripts into srcdoc and about:blank frames
 [^task-101]: The inline menu does not open from a form inside a cross-origin iframe
 [^task-102]: The Private worker throws on a.providers
+[^task-99]: TASK-99
+[^task-251]: TASK-251
+[^task-303]: TASK-303
 [^notes-1password]: Session notes on the 1Password integration

@@ -4,7 +4,7 @@ title: Incognito (Private windows)
 description: "How Private browsing is built — one built-in Private profile with a non-persistent store, one throwaway space per Private window, and the list of things that are and are not kept."
 tags: [architecture, privacy, profiles, incognito]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T23:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:10:46Z }
 sources:
   - id: profile
     resource: ../../Detour/Browser/Profile.swift
@@ -137,9 +137,9 @@ Private window saw the previous session's cookies.[^private-notes]
 | Closed-tab records | `closeTab` pushes a record only for non-incognito spaces. Undo Close Tab still works within the session. |
 | History visits and title corrections | `recordHistoryVisit` returns early; `HistoryTitleUpdatePolicy` refuses. |
 | The History page | `HistoryPageBridge.scope(for:)` returns nil and the page is told `incognito: true`. |
-| `chrome.history.search` from an extension running in Private | `HistoryPageBridge.scope(forProfile:)` returns nil and the extension gets an empty list, never another profile's history ([polyfill layer](../extensions/polyfill-layer.md)). |
+| `chrome.history.search` from an extension running in Private | `HistoryPageBridge.scope(forProfile:)` returns nil and the extension gets an empty list, never another profile's history ([chrome.history in the polyfill](../extensions/polyfill-history.md)). |
 | Per-site switches (content blocking, picture in picture, dev mode) | `SiteSettingsStore` keeps the Private profile's values in memory only and drops them when the last Private page goes — no Private space and no Private Quick Detour left (`TabStore.hasLivePrivateSession`; [site settings](./site-settings.md), TASK-195, TASK-193.1). |
-| "Always allow" for external apps | `ExternalAppPermissionStore` keeps a Private decision in memory for the session only; the prompt offers no "remember" option. |
+| "Always allow" for external apps | The prompt in a Private window offers no "Always allow" (`ExternalAppLaunchPolicy.decide` returns `canRemember: false`), so nothing is remembered; `ExternalAppPermissionStore.allow` also never writes a Private decision to the database. |
 | `runtime.onInstalled` for extensions | Never delivered or recorded for the Private profile. |
 | Auto-archive | `archiveStaleTabs` skips incognito spaces. |
 | Favorites of the Private profile | `saveNow` skips incognito profiles when saving favorites. |
@@ -293,7 +293,7 @@ spaces are saved, its history is recorded, and `isIncognito` is false.
 | Download scope rules | `DownloadScope` in [DownloadManager.swift](../../Detour/Browser/Downloads/DownloadManager.swift), `BrowserWindowController.downloadScope` |
 | Downloads in flight at close | `PrivateDownloadClosePolicy` in [PrivateDownloadClosePolicy.swift](../../Detour/Browser/Downloads/PrivateDownloadClosePolicy.swift), `BrowserWindowController.windowShouldClose`, `AppDelegate.applicationShouldTerminate` |
 | The palette's open-tab scope | `PaletteTabScope` in [PaletteTabScope.swift](../../Detour/Browser/CommandPalette/PaletteTabScope.swift), called by `CommandPaletteView.gatherTabInfos` |
-| Tests | `ExtensionPrivateDefaultTests`, `ExtensionPrivateStoreTests`, `MoveTabToSpaceTests`, `ExternalAppPermissionTests`, `TabStoreTests`, `DownloadManagerTests`, `DownloadWindowScopeTests`, `PrivateDownloadClosePolicyTests`, `PrivateDownloadCloseWindowTests`, `PrivateDownloadTransferTests`, `PaletteTabScopeTests`, `PaletteTabScopeWiringTests` |
+| Tests | `ExtensionPrivateDefaultTests`, `ExtensionPrivateStoreTests`, `MoveTabToSpaceTests`, `ExternalAppPermissionStoreTests`, `ExternalAppLaunchPolicyTests`, `TabStoreTests`, `DownloadManagerTests`, `DownloadWindowScopeTests`, `PrivateDownloadClosePolicyTests`, `PrivateDownloadCloseWindowTests`, `PrivateDownloadTransferTests`, `PaletteTabScopeTests`, `PaletteTabScopeWiringTests` |
 
 # Related
 

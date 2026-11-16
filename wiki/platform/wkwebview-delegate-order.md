@@ -4,7 +4,7 @@ title: WKWebView delegate call order
 description: Which WKNavigationDelegate and WKUIDelegate methods WebKit calls, and in what order, for target=_blank links, window.open, custom-scheme links, failed and superseded loads, and custom-scheme internal pages — verified with a standalone spike.
 tags: [webkit, navigation, delegates, peek, internal-pages]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T09:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:26Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: notes-spike
@@ -120,9 +120,10 @@ Other facts from the same runs:
   reverting the URL, before it calls the failure delegate; the two runs agree
   with that but did not observe the order directly.) The failed URL is in the
   error's `NSURLErrorFailingURLErrorKey`.
-  `BrowserTab.didFailProvisionalNavigation` takes it from there only when the
-  tab has no URL of its own (nil or `about:blank`), which covers the opened
-  window; the ordinary-tab case is open as TASK-170.[^task-167]
+  `BrowserTab.didFailProvisionalNavigation` takes it from there for every
+  provisional failure (never `about:blank`, the error scheme or an internal
+  URL), which covers the opened window and, since TASK-170, the ordinary
+  tab; see [error pages](../features/error-pages.md).[^task-167]
 - **An extension page's `window.open` is supplied the extension context's
   configuration** (`_requiredWebExtensionBaseURL` set; CORS checks off for the
   extension's hosts). A child built from it for a web URL carried the
@@ -153,7 +154,7 @@ script reports `_isUserInitiated` false for an `a.click()` (still
 `.linkActivated`) and for a `location.href` change, while a real click and
 a click handler's own script report true. Link Routes use it to tell
 a user's click from a page's scripted one; the full table is on
-[link routing](../features/link-routing.md#signals-from-webkit).
+[link routing](../features/link-routing-in-page.md#signals-from-webkit).
 
 A **server redirect** of a link click is asked about again in
 `decidePolicyFor`, with the click's `.linkActivated` type and its gesture;

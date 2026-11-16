@@ -4,7 +4,7 @@ title: Build and test
 description: How to generate the project, build, and run the test suite without clobbering another build, another test run or the machine's memory.
 tags: [playbook, build, tests, xcodebuild]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:10:57Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:04:49Z }
 sources:
   - id: claude-md
     resource: ../../CLAUDE.md
@@ -75,7 +75,7 @@ file. A worktree has no project until you do.
 |---|---|
 | Nobody else is building, Xcode is closed | the default DerivedData (no flag) |
 | Xcode has the project open, or another agent builds | `-derivedDataPath <dir>` of your own |
-| A worktree | `-derivedDataPath "$PWD/.derived"` (not in `.gitignore` on `main`: never `git add` it) |
+| A worktree | `-derivedDataPath "$PWD/.derived"` (git-ignored since 2026-10-10) |
 
 When Xcode holds the default DerivedData bundle, a command-line build into
 the same directory fails at CodeSign.[^notes-harness] A private directory
@@ -124,9 +124,13 @@ the run is writing into the real profile. What the data directory does and
 does not isolate is on [persistence](../architecture/persistence.md) and
 [profile data removal](../architecture/profile-data-removal.md).
 
-The directory is not emptied between runs (only the extension table is
-wiped), so the shared singletons (`TabStore.shared`, `LinkRouteStore.shared`,
-`AppDatabase.shared`) start each run with whatever earlier runs left. A suite
+The directory is not emptied between runs. At bundle start
+`TestEnvironmentSetup` removes the extensions and their storage, cuts the
+session down to the default space and profile with no tabs, resets the
+shortcut bindings and removes the WebKit storage earlier runs recorded;
+every other table keeps what earlier runs left, so the shared singletons
+(`TabStore.shared`, `LinkRouteStore.shared`, `AppDatabase.shared`) can start
+a run with it. A suite
 that seeds a shared store in `setUp` and removes the rows in `tearDown`
 (`ExternalLinkRoutingTests` adds 9 link routes, `InPageLinkRoutingTests` 3)
 leaks them when the host crashes or the run is killed. A test whose result
@@ -177,6 +181,13 @@ Use `pgrep -x`. `pgrep -f xcodebuild` matches the wait loop's own command
 line and never exits.[^notes-stale] In an agent shell that blocks
 foreground sleeps, run the whole line as one background command.
 
+When several agents share the machine, the agent batches since 2026-11-07
+ran every `xcodebuild` through a local wrapper instead,
+`.claude/scratch/xcb-locked.sh` (git-ignored, not in the repository): it
+takes a `mkdir` lock in the main checkout, waits while another holds it, and
+runs `caffeinate -d -i xcodebuild "$@"` so the display stays awake for the
+run.
+
 If two test runs must overlap anyway, give each its own data directory and
 its own DerivedData:
 
@@ -186,8 +197,8 @@ env TEST_RUNNER_DETOUR_DATA_DIR=DetourTests-<tag> \
 ```
 
 Without that, both hosts use `~/Library/Application Support/DetourTests/`
-and `TestEnvironmentSetup` wipes the extension table at bundle start, so
-each run corrupts the other. The override is confirmed by the
+and `TestEnvironmentSetup` wipes the extensions and resets the session at
+bundle start, so each run corrupts the other. The override is confirmed by the
 `✓ Test data directory` line naming the new directory.[^notes-parallel]
 
 ## 7. Memory watchdog for agent-run tests

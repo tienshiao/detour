@@ -3,8 +3,8 @@ type: Platform Quirk
 title: WKWebView snapshots on macOS
 description: What WKWebView.takeSnapshot really captures on macOS — a software paint at the device scale, clipped to the visible viewport whatever rect is asked for — how a whole-document capture is made instead (the private _usesContentsRect, or createPDF rasterised), what each does with fixed, sticky, filtered and GPU content, and the NSImage size quirks that decide how to get device pixels out.
 tags: [webkit, snapshot, retina, dev-mode, private-api]
-status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T06:50:00Z }
+status: stable
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:26Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: wkwebview
@@ -136,7 +136,8 @@ you will need later while the page is still on screen.
 `-[WKWebView _setOverrideDeviceScaleFactor:]` makes WebKit render and
 snapshot at that scale in any window (`PageCaptureWebViewTests` use it; a
 setter only, call it through its IMP). For the whole app, the TASK-110
-virtual display (`docs/task-110/vdisplay.m`) adds a 1600 x 1000 pt @2x
+virtual display ([docs/capture/vdisplay.m](../../docs/capture/vdisplay.m),
+moved from `docs/task-110` by TASK-228.3) adds a 1600 x 1000 pt @2x
 screen; move the window onto it.
 
 # Gotchas

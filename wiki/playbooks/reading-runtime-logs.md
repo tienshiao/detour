@@ -4,7 +4,7 @@ title: Reading runtime logs
 description: Unified log recipes for Detour and its WebKit helper processes — categories, predicates, which process logs what, how to read extension console output, and the traps that produce false hits or empty results.
 tags: [playbook, logs, extensions, webkit, diagnostics]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-12T23:47:45Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:05:20Z }
 sources:
   - id: plan-doc
     resource: ../../docs/1password-integration-plan.md
@@ -51,6 +51,9 @@ sources:
   - id: task-175
     resource: backlog:TASK-175
     title: A GPU process WebKit failed to kill stays alive and freezes every tab connected to it
+  - id: task-142
+    resource: backlog:TASK-142
+    title: The native-port keep-alive is defeated when any other port of the background closes
 ---
 
 Detour logs through `os.Logger` under the subsystem `com.detourbrowser.mac`,
@@ -99,6 +102,10 @@ PID=$(pgrep -f "$APP/Contents/MacOS/Detour")      # the build path, not a wrappe
 /usr/bin/log show --last 5m --info --predicate "processIdentifier == $PID AND subsystem BEGINSWITH 'com.detour'"
 ```
 
+A run with the automation endpoint on (`DETOUR_MCP=1`) names its pid in
+`~/Library/Application Support/<data dir>/mcp-endpoint.json`
+([runtime verification](./runtime-verification.md)).
+
 ## 3. Pick the category
 
 Detour's categories (subsystem `com.detourbrowser.mac`), from the code:
@@ -117,7 +124,8 @@ Detour's categories (subsystem `com.detourbrowser.mac`), from the code:
 | `gpu-recycle` | GPU process surface counts and recycles |
 | `gpu-orphan` | each kill of a GPU process WebKit abandoned (notice) |
 | `web-process` | a web process replaced because it never read a load request (notice) |
-| `content-blocker`, `InternalPageBridge` | those features |
+| `content-blocker`, `InternalPageBridge`, `automation`, `downloads`, `link-routing`, `NavigationSwipe`, `shortcuts` | those features |
+| `quick-detour` | the Quick Detour global hotkey's registration |
 
 WebKit lines worth knowing, and who logs them:
 
@@ -185,6 +193,16 @@ on, the app logs `Extension console bridge is logging message text
 PUBLICLY` at notice. The defaults domain is shared by every Detour on the
 machine, isolated runs included.
 
+In a run of your own with the automation endpoint on, read the text
+without the flag: `scripts/detour-mcp call console_messages
+context='worker:<extension>' after_seq=0` (also `popup:`, `options:`, or
+`extension:` for all of an extension's contexts). The endpoint keeps what
+the bridge sends while it is on, so the bridge's own limits apply (bursts
+past 50, about 20 a second, repeats folded), `console.debug` is not
+forwarded, and the Private profile is never recorded. See
+[automation endpoint](../features/automation-endpoint.md). The log route
+remains for runs without the endpoint, such as a signed-build session.
+
 When the flag was off and the run cannot be repeated, an extension that
 keeps its own diagnostics may still tell you: see
 [WebKit helper diagnostics](./webkit-helper-diagnostics.md) for reading
@@ -204,7 +222,18 @@ Keep-alive reply #n from <id> (N ms)          ← every 30 s
 and no `Keep-alive disarmed`, no `terminateWorker`, no
 `SWServerRegistration::clear` while the host stays connected. After the
 last host disconnects: `Keep-alive disarmed for <id>: no native host
-connected`, then WebKit's `WebPageProxy::close` 30 s later.
+connected`, then WebKit's `WebPageProxy::close` 30 s later (measured
+2026-09-21, before the TASK-142 anchor).
+
+Since TASK-142 (2026-10-28) a healthy session can also show
+`Keep-alive re-anchor requested for <id>: one of its native ports closed`
+whenever one of the extension's hosts or relayed sockets closes while
+armed; that is the fix working, not a failure. An unload is now reported
+through the anchor: `Keep-alive port closed for <id> (background unloaded;
+reported through its anchor)`, about a second after it. The disarm leaves
+the anchor open, so the unload timing after a disarm may differ from the
+2026-09-21 figure. The post-TASK-142 lines have been seen in a Debug run
+with a fake host, not in a signed build with 1Password.[^task-142]
 Background: [native port keep-alive](../extensions/native-port-keep-alive.md),
 [service worker unload rules](../platform/service-worker-unload-rules.md).
 
@@ -220,9 +249,12 @@ Background: [native port keep-alive](../extensions/native-port-keep-alive.md),
   come in groups.[^notes-logs]
 - **"1 native host(s)" may be a WebSocket.** A relayed WebSocket counts as
   a host for the keep-alive by design; only the wording says "native".[^task-21]
-- **`superseded by a newer one` at a reload is expected.** WebKit's unload
-  reports no port disconnect, so the old keep-alive port is only noticed
-  when the new one opens.[^task-21]
+- **`superseded by a newer one` at a reload was expected before
+  TASK-142.** WebKit's unload reported no port disconnect, so the old
+  keep-alive port was only noticed when the new one opened (2026-09-21).[^task-21]
+  Since 2026-10-28 an unload after a re-anchor is reported through the
+  anchor (`… (background unloaded; reported through its anchor)`);
+  `superseded` can still follow an unload that reported nothing.
 - **API Explorer's relay failures are deliberate.** Its worker probes
   `wss://example.invalid/api-explorer` at every start, which logs
   `hostname could not be found` and a 1006 close.[^task-21]
@@ -260,3 +292,4 @@ Background: [native port keep-alive](../extensions/native-port-keep-alive.md),
 [^task-71]: TASK-71
 [^task-1]: TASK-1
 [^task-175]: TASK-175
+[^task-142]: TASK-142

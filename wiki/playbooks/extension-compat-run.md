@@ -3,8 +3,10 @@ type: Playbook
 title: Extension compatibility run
 description: "How to run extensions end to end through the automation endpoint (install, drive a popup and a content script, read the console, fetch the compatibility report) and diff the result against a saved baseline, with the script that does it and the traps met doing it."
 tags: [extensions, automation, testing, playbook]
-status: draft
+status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T09:20:00Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:07:05Z }
 sources:
   - id: script
     resource: ../../docs/harness/task2282-compat-run.py
@@ -119,7 +121,7 @@ fixture that throws them).
 
 # Related
 
-- [Automation endpoint](../features/automation-endpoint.md) — the tools, the report's parts and what is stable.
+- [Automation endpoint](../features/automation-endpoint.md) — the tools; [the compatibility report](../features/automation-endpoint-compat-report.md) — the report's parts and what is stable.
 - [Testing extensions](../extensions/testing-extensions.md) — which test level proves what; this is level 5 without a person.
 - [Runtime verification](./runtime-verification.md) — launching an isolated build and cleaning up after it.
 - [Seeding extensions](./seeding-extensions.md) — the hand-made alternative to `install_extension`.

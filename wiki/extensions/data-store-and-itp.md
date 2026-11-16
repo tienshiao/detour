@@ -4,7 +4,7 @@ title: Extension data store and tracking prevention
 description: Why WebKit's tracking prevention kept deleting extension storage and killing 1Password's worker, which data store extension pages really run in, the reconnect loop that was the same bug in the Private profile, and the interaction keeper that fixed it.
 tags: [extensions, webkit, itp, data-store, service-worker, 1password]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:09:03Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:02:26Z }
 stale_after: 2027-01-01T00:00:00Z
 sources:
   - id: keeper
@@ -201,9 +201,11 @@ Traps met while writing it:[^task-70]
 - **Storage across relaunches** (resolved 2026-10-28). The keeper's header
   comment is right: WebKit renames the last-seen origin's IndexedDB and
   `localStorage` to the new base URL at every load, on the store the pages
-  use. The orphans found on 2026-09-20 were left from before this fix moved
-  the pages to the profile store, and WebKit's one-time stale-origin sweep
-  has since removed them. See [storage](./storage.md).[^task-99]
+  use. TASK-99 put the orphans found on 2026-09-20 down to the pages having
+  been on the default store, but the persistent profiles' pages had moved to
+  their profile store on 2026-09-13, so their cause is not settled. WebKit's
+  one-time stale-origin sweep has since removed them. See
+  [storage](./storage.md).[^task-99]
 - **One unexplained event.** Both of 1Password's hosts in one profile were
   terminated within half a second and respawned a second later on
   2026-09-19. Judged harmless, never explained.[^task-90]

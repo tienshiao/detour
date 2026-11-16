@@ -4,7 +4,7 @@ title: Tab insertion and close selection
 description: The two pure rules that decide where a new tab lands in a space's list and which tab is selected after one closes, plus what the window layers on top of them.
 tags: [tabs, rules, pure-functions]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:06:47Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:04:08Z }
 sources:
   - id: insertion
     resource: ../../Detour/Browser/TabInsertion.swift
@@ -137,9 +137,8 @@ and restored if the move is undone while the parent still exists.
 `TabInsertionTests` (9) and `TabCloseSelectionTests` (17) cover the two rules;
 the snap and the block moves are in `SplitTabTests`
 (`testSnappedToSplitGroupBoundary`, `testChildTabInsertionNeverLandsInsideGroup`,
-the `testResolveTabMove…` and `testGapMove…` cases). These are the suites to
-extend first when the rules change: write the failing case, then change the
-function.
+the `testResolveTabMove…` and `testGapMove…` cases). These are the suites a
+change to the rules extends.
 
 # Related
 

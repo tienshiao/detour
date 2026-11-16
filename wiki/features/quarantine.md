@@ -5,6 +5,8 @@ description: "A link opened in a throwaway Quick Detour window whose page has a 
 tags: [links, privacy, window, incognito, extensions, downloads]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T20:30:00Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:05:33Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-329
@@ -84,7 +86,7 @@ Detour, with a tooltip). The resolver (`resolveLinkRoute`):
 | Origin | A route to Quarantine that matches | Default = Quarantine, no route matches |
 |---|---|---|
 | A link from another app | quarantined | quarantined |
-| A routable click in a page (cross-host, Cmd+click, `_blank`, tab-style `window.open`; [the click rule](./link-routing.md#the-rule)) | **quarantined** (the user's decision) | stays: a Default of Quarantine would quarantine every link clicked to another site |
+| A routable click in a page (cross-host, Cmd+click, `_blank`, tab-style `window.open`; [the click rule](./link-routing-in-page.md#the-rule)) | **quarantined** (the user's decision) | stays: a Default of Quarantine would quarantine every link clicked to another site |
 | A routable click in a **Private** window | stays (navigates as before): a quarantine's Open in reaches normal spaces, so a Private page's link would be one Cmd+O from a normal profile and its history — nothing leaves a Private window (code review; the first build quarantined it) | stays |
 | A typed URL | skipped; the next route or the Default decides | stays |
 

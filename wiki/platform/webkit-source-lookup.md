@@ -4,7 +4,7 @@ title: WebKit source lookup
 description: How to read the WebKit source that explains a behaviour seen in Detour — fetching files and older revisions from GitHub, which files answered which questions, and how far a source reading can be trusted.
 tags: [webkit, reference, debugging, extensions]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-12T23:47:17Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T04:59:26Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: notes-source
@@ -12,7 +12,7 @@ sources:
     title: Reading WebKit's WKWebExtension implementation; worker unload and native port facts
   - id: webkit-repo
     resource: https://github.com/WebKit/WebKit
-    title: WebKit source repository (paths and recipes re-checked 2026-10-04)
+    title: WebKit source repository (paths and recipes re-checked 2026-10-04; paths again 2026-11-15)
   - id: task-68
     resource: backlog:TASK-68
     title: The armed keep-alive does not stop WebKit unloading a worker with no relayed WebSocket
@@ -96,7 +96,8 @@ Both recipes were re-run successfully on 2026-10-04.[^webkit-repo]
 # Where things are
 
 Paths are relative to the repository root and were checked against `main` on
-2026-10-04.[^webkit-repo]
+2026-10-04, and every path on this page and in the platform pages' sources
+again on 2026-11-15 (only `IOSurfacePool.cpp` had moved).[^webkit-repo]
 
 ## Web Extensions
 
@@ -119,7 +120,7 @@ web-process file `…/WebProcess/Extensions/API/Cocoa/WebExtensionAPI<X>Cocoa.mm
 
 | Path | What was learned there |
 |---|---|
-| `Source/WebCore/platform/graphics/cg/IOSurfacePool.cpp`, `.h` | The pool is capped by bytes, never by count; `collectionTimerFired` only marks surfaces volatile[^task-104] — see [GPU IOSurface limit](./gpu-iosurface-limit.md) |
+| `Source/WebCore/platform/graphics/cg/IOSurfacePool.mm`, `.h` (the `.mm` was `IOSurfacePool.cpp` until 2026-10-23; read the `.cpp` for the shipped WebKit) | The pool is capped by bytes, never by count; `collectionTimerFired` (`performCollection` → `collectInUseSurfaces` in `main` since the rename) only marks idle surfaces volatile and returns them to the pool[^task-104] — see [GPU IOSurface limit](./gpu-iosurface-limit.md) |
 | `Source/WebKit/GPUProcess/GPUProcess.cpp`, `GPUConnectionToWebProcess.cpp` | `lowMemoryHandler` and `prepareToSuspend` discard every connection's pool[^task-109] |
 | `Source/WebKit/UIProcess/GPU/GPUProcessProxy.cpp` | `gpuProcessExited` and how pages reconnect |
 | `Source/WebKit/Shared/EntryPointUtilities/Cocoa/XPCService/XPCServiceMain.mm` | A helper exits on a dropped XPC connection by posting `exitProcess` to its main run loop, so a helper with a blocked main thread never exits[^task-175] — see [abandoned GPU process](./abandoned-gpu-process.md) |
@@ -180,7 +181,7 @@ on [service worker unload rules](./service-worker-unload-rules.md).[^notes-sourc
 - [Test host crashes](../playbooks/test-host-crashes.md) — getting the stack whose frames name the classes to look up.
 
 [^notes-source]: Reading WebKit's WKWebExtension implementation; worker unload and native port facts
-[^webkit-repo]: WebKit source repository (paths and recipes re-checked 2026-10-04)
+[^webkit-repo]: WebKit source repository (paths and recipes re-checked 2026-10-04; paths again 2026-11-15)
 [^task-68]: The armed keep-alive does not stop WebKit unloading a worker with no relayed WebSocket
 [^task-104]: GPU process leaks IOSurfaces until the 16384 per-process limit
 [^task-109]: Does the GPU process ever get the memory-pressure pool flush

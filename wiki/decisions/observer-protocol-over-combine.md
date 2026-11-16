@@ -5,6 +5,8 @@ description: TabStore announces structural changes through the TabStoreObserver 
 tags: [decision, architecture, state, combine]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:20Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:11:43Z }
 sources:
   - id: architecture-doc
     resource: ../../docs/architecture.md

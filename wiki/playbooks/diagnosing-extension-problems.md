@@ -4,7 +4,7 @@ title: Diagnosing extension problems
 description: A symptom-to-cause table for Web Extension failures seen in Detour (dead popups, worker restarts, helper CPU, missing content scripts, log noise), with the first check for each and where the mechanism is explained.
 tags: [playbook, extensions, diagnostics, 1password, service-worker]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:44:19Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:00:07Z }
 sources:
   - id: plan-doc
     resource: ../../docs/1password-integration-plan.md
@@ -54,6 +54,9 @@ sources:
   - id: task-75
     resource: backlog:TASK-75
     title: Origin patterns with a port make chrome.permissions calls throw
+  - id: task-312
+    resource: backlog:TASK-312
+    title: Extensions are on per profile; an install turns one on only in the profile it came from
   - id: task-80
     resource: backlog:TASK-80
     title: Polyfill chrome.storage.managed
@@ -145,7 +148,7 @@ errors and you need to know which ones matter.
 | Each worker drops its host after 10 seconds and tries a legacy host name | The desktop app was not running and unlocked when the browser started[^task-21] | start the app first, relaunch | [signed-build verification](./signed-build-verification.md) |
 | "The background content failed to load due to an error" three times in an isolated profile | A hand-seeded extension without `extensionPermission` rows[^notes-seeding] | `select * from extensionPermission` | [seeding extensions](./seeding-extensions.md) |
 | Worker in the Private profile gets no events; `sendMessage` comes back empty with no `lastError`; no content scripts in Private windows | WebKit hides ephemeral-session pages from a context without `hasAccessToPrivateData`[^task-73] | `Profile.loadExtensionContext` sets the flag for the incognito profile | [private profile extensions](../extensions/private-profile-extensions.md) |
-| Extension does nothing at all in Private windows | It is off there unless allowed per extension[^task-74] | the "Allow in Private" switch | [private extensions opt-in](../decisions/private-extensions-opt-in.md) |
+| Extension does nothing at all in one profile, or in Private windows | It runs only where its `profileExtension` row is on: an install turns it on in the profile it came from only, a missing row is off, and Private is off unless allowed[^task-312][^task-74] | Settings → Extensions: the profiles it is on in, "Turn On in All Profiles", "Allow in Private" | [extensions on per profile](../decisions/extensions-on-per-profile.md), [private extensions opt-in](../decisions/private-extensions-opt-in.md) |
 
 ### CPU and storage
 
@@ -154,7 +157,7 @@ errors and you need to know which ones matter.
 | Networking process near a full core in `takeNextRunnableTransaction` via `abortTransaction`; worker logging errors at a flat rate; the extension reports a closed desktop-app port | The extension's IndexedDB files were deleted underneath it (the purge above, on a store the interaction keeper skipped) and it re-initialises in a loop. The "port closed" is the extension's own `disconnect()` during re-init, not Detour refusing a port[^task-90] | `lsof` on the Networking pid: IndexedDB files that no longer exist on disk | [WebKit helper diagnostics](./webkit-helper-diagnostics.md) |
 | One WebContent near 120% and the Detour process at 40–50% | A content script's `runtime.sendMessage` fails with WebKit's `Tab not found` because the web view was never reported to the extension contexts; an unhandled-rejection reporter then feeds itself[^task-50] | `category == "Extensions"`: `Tab not found for message for content script message` | [tab and window bridge](../extensions/tab-and-window-bridge.md) |
 | Hundreds of thousands of `[SW …]` error lines in a minute | A worker error loop forwarded line by line; now capped by the bridge's rate limit[^task-17] | `[console bridge] dropped N messages` lines | [console bridge](../extensions/console-bridge.md) |
-| Extension's cached data is cold after every relaunch | Each context load gets a new base URL, so the previous launch's origin storage is orphaned. Not tracking prevention[^task-99] | origin directory birth times | [storage](../extensions/storage.md) |
+| Extension's cached data is cold after every relaunch | Each context load gets a new base URL. WebKit moves the old origin's IndexedDB and `localStorage` to it, but not its Cache Storage or service worker registration, which start empty. Not tracking prevention[^task-99] | origin directory birth times | [storage](../extensions/storage.md) |
 
 ### Content scripts and frames
 
@@ -256,6 +259,7 @@ errors and you need to know which ones matter.
 [^task-74]: TASK-74
 [^task-75]: TASK-75
 [^task-80]: TASK-80
+[^task-312]: TASK-312
 [^task-81]: TASK-81
 [^task-90]: TASK-90
 [^task-99]: TASK-99

@@ -5,7 +5,7 @@ description: "How Detour serves its own privileged pages into ordinary tabs: sin
 resource: ../../Detour/Browser/InternalPages
 tags: [internal-pages, security, webkit, bridge, navigation]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T02:52:40Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:08:00Z }
 sources:
   - id: task-231-5
     resource: backlog:TASK-231.5
@@ -66,8 +66,8 @@ So trust is carried out of band: a tab is **armed** for one page.
 
 | Entry point | Arms? | Callers |
 |---|---|---|
-| `BrowserTab.loadInternalPage(_:)` | yes | Cmd+Y (`TabStore.addTab(in:internalPage:)`), the palette when the user typed `detour://history` |
-| `BrowserTab.loadRecordedURL(_:)` | yes, if the URL is internal | URLs Detour itself recorded from a committed navigation: reload retry, a favourite's home, rebuilding a closed tab or a dormant pinned entry. Keeps `?q=` state |
+| `BrowserTab.loadInternalPage(_:)` | yes | Cmd+Y (`TabStore.addTab(in:internalPage:)`), the palette (and a Quick Detour's field) when the user typed `detour://history`, the sidebar's Duplicate of a tab showing the page |
+| `BrowserTab.loadRecordedURL(_:)` | yes, if the URL is internal | URLs Detour itself recorded from a committed navigation: reload retry, a favourite's home, rebuilding a closed tab or a dormant pinned entry, the parent pane of Open in Split, a Quick Detour's profile switch. Keeps `?q=` state |
 | `wake()` with a plain load of the tab's own URL | yes | a slept tab that was showing the page |
 | `BrowserTab.load(_:)` | **never**; returns without loading an internal URL | everything untrusted: extensions' `tabs.create`/`tabs.update`, Cmd+click, links from other apps |
 
@@ -131,7 +131,8 @@ can execute, and there is no inline `<style>` or `style` attribute either: the
 page script toggles classes and the `hidden` property.
 
 Resources are Swift string literals (`HistoryPageContent.html`, `.css`,
-`.script`); the project bundles no web resources. A nil resource is a 404.
+`.script`); the project bundles no web resources. A nil resource fails the
+load (`URLError(.fileDoesNotExist)`); no HTTP error response is sent.
 
 A resource can be answered later from another queue (the favicon route reads
 the history database and may fetch). WebKit raises an Objective-C exception
@@ -168,7 +169,8 @@ re-verified:
   `scheme://host`[^delegate-spike]), and both the frame URL and `webView.url`
   name that same page;
 - `TabStore.tab(hosting:)` finds a `BrowserTab` for the web view (a space's
-  tabs, pinned entries, the profile's favourites, or a Peek over any of them).
+  tabs, pinned entries, the profile's favourites, a Peek over any of them, or
+  a [Quick Detour](./quick-detour.md) window's page, which is in no space).
 
 Anything else gets the error string `forbidden`.
 
@@ -204,9 +206,9 @@ derived natively from the tab that sent the message, never from the message.
   observers. `applyInternalPageIcon` guards against re-bumping the favicon
   generation for each one.
 - **Calling a finished or stopped `WKURLSchemeTask` raises** an Objective-C
-  exception. The handler tracks active tasks in a main-thread set and answers
-  asynchronous providers through it (the favicon route answers from a
-  background queue).
+  exception. The handler tracks active tasks in its `SchemeTaskTable` and
+  answers asynchronous providers through a ticket (the favicon route answers
+  from a background queue); see Layer 2.
 - **Typed `detour://nowhere` is a search.** `AddressInputClassifier` treats
   only a URL naming an existing page as a URL.
 - **Error-page retry is not trusted.** The `failedURL` in a `browser-error://`

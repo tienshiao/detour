@@ -4,7 +4,7 @@ title: Closed tabs and the Archived Tabs page
 description: What a closed-tab record holds, how Reopen Closed Tab, the close undos and the Archived Tabs page each consume it, how archived records differ from plain closes, and closed Quick Detours filed under their profile's scope (TASK-193.5).
 tags: [tabs, closed-tabs, archive, undo, sidebar]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T08:05:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:16:42Z }
 sources:
   - id: task-332
     resource: backlog:TASK-332
@@ -112,7 +112,7 @@ pinned entry's or favourite's tab (those go dormant instead).
 
 ## Closed Quick Detours
 
-Since TASK-193.5 a closed [Quick Detour](../features/quick-detour.md#the-archive)
+Since TASK-193.5 a closed [Quick Detour](../features/quick-detour-archive.md)
 is a row of the same table, with `spaceID` = its profile's Quick Detour
 scope (`QuickDetour.historySpaceID(forProfileID:)`, the id its history
 visits use) instead of a space's. No migration: every query keyed by a
@@ -131,7 +131,7 @@ Since TASK-307 a [Peek](./peek.md#closed-peeks-come-back-task-307) the user
 closed is a row of the same table too: `spaceID` = the host's space,
 `peekHostTabID` = the host tab's id (v23; nil for every other row), the
 Peek's URL, title, favicon and interaction state, `sortOrder` just after the
-host. It is a plain close, so Reopen Closed Tab and the Archived Tabs page
+host in the normal section (0 for a pinned or favourite host). It is a plain close, so Reopen Closed Tab and the Archived Tabs page
 list and reopen it like a tab, through the same `reopenClosedTabRecord`,
 which hands a row with `peekHostTabID` to `reopenClosedPeek`: back on the
 host as its Peek while the host is a live tab of the space with no Peek,

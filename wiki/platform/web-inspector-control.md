@@ -3,8 +3,10 @@ type: Platform Quirk
 title: Driving the Web Inspector
 description: How Detour opens, switches and closes the docked Web Inspector from the dev toolbar with no public API — the private _WKInspector calls and the frontend's own WI functions that work on macOS 26.7, what was rejected, the guards that hide a button when WebKit drops a call, and the inspector preferences WebKit writes to the app's shared defaults.
 tags: [webkit, inspector, dev-mode, private-api]
-status: draft
+status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T21:00:00Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:26Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: control

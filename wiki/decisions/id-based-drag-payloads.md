@@ -4,7 +4,7 @@ title: ID-based drag payloads and pure drop resolvers
 description: Sidebar drag pasteboards carry stable IDs resolved at drop time, and every drop decision is a pure function over enums, replacing row-number payloads handled inline in the view controller.
 tags: [sidebar, drag-and-drop, decision, testing]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:41:30Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:16:42Z }
 sources:
   - id: commit-b9ef265
     resource: commit:b9ef265
@@ -100,7 +100,7 @@ transaction).
 - **Drop behaviour is unit-testable without AppKit.** `SidebarDragDropTests`
   builds `PinnedItem` and `TabListItem` arrays and asserts on returned enum
   values. `CLAUDE.md` makes this the required route: extend the resolver
-  enums and the suite, then make the pure function pass.
+  enums and the suite along with the pure function.
 - **New surfaces extend enums.** Split tabs added `splitGroup` /
   `splitMember` kinds, an `.intoSplit` destination, and
   `createSplit` / `removeFromSplit` commands; pinned splits added two more

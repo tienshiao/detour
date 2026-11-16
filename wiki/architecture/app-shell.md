@@ -5,7 +5,7 @@ description: "AppDelegate and main.swift — launch and termination, window crea
 resource: ../../Detour/App/AppDelegate.swift
 tags: [architecture, app, menus, sparkle, startup]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T00:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:11:18Z }
 sources:
   - id: task-320
     resource: backlog:TASK-320
@@ -59,9 +59,10 @@ sources:
 
 # Role
 
-`Detour/App/` is three files: `main.swift` (entry point), `AppDelegate.swift`
-(launch, windows, the whole menu bar) and `MenuKeyEquivalentMatcher.swift` (a
-pure helper for menu shortcuts). There is no storyboard, no `@main`, and no
+`Detour/App/` is five files: `main.swift` (entry point), `AppDelegate.swift`
+(launch, windows, the whole menu bar), `MenuKeyEquivalentMatcher.swift` (a
+pure helper for menu shortcuts), `HelpMenu.swift` (the Help menu's links)
+and `BuildInfo.swift`. There is no storyboard, no `@main`, and no
 main menu nib.
 
 # How it works
@@ -100,7 +101,7 @@ entry.
 | Method | Makes |
 |---|---|
 | `createNewWindow()` | A normal window on the default space with nothing selected, then `newTab(nil)`, which opens the command palette in new-tab mode rather than creating a tab. |
-| `createNewWindowWithURL(_:)` | A normal window with one tab on that URL. |
+| `createNewWindowWithURL(_:incognito:)` | A window with one tab on that URL; a Private one when `incognito` is true (a link routed to Private). |
 | `createNewWindow(showing:)` | A normal window on a given space with no tab added; the caller selects what it opened there. |
 | `createNewIncognitoWindow()` | A [Private window](./incognito.md), also followed by `newTab(nil)`. |
 
@@ -110,8 +111,13 @@ non-incognito space. An extension's `windows.create` does not use it: its
 window opens on the caller's profile's own space
 ([opening a window](../extensions/tab-and-window-bridge.md#opening-a-window)).
 
-`application(_:open:)` accepts only `http` and `https` URLs and opens each in
-the key window's active space, or in a new window when there is none. The app
+Links from other apps arrive through `handleGetURLEvent` (the Get URL Apple
+event, installed in `applicationWillFinishLaunching`, TASK-304) and
+documents through `application(_:open:)`. Both call `openExternalURLs`,
+which keeps only `http` and `https` URLs and routes each through
+`resolveExternalLinkRoute` and `openLink` ([Link Routes](../features/link-routing-external-links.md):
+a space, Quick Detour, quarantine or a new window). Links that arrive during
+launch wait in `linksAwaitingLaunch` until the session is restored. The app
 declares itself a handler for those schemes and for HTML documents in
 `Info.plist`.
 
@@ -154,11 +160,11 @@ The bar looks the same: it shows the submenu's title either way.
 
 | Menu | Contents | Dynamic? |
 |---|---|---|
-| App | About, Check for Updates… (only when Sparkle runs), Settings… | No |
-| File | New Tab, Open Location…, Close Tab, Reopen Closed Tab, Pin/Unpin Tab, New Window, New Private Window, New Quick Detour Window (`newQuickDetourWindow`, which shows the Quick Detour launcher panel; its key equivalent is the global hotkey's shortcut, Opt-Cmd-N by default, set by `QuickDetourHotKey`, and pressing it while the panel is up closes it) | No |
-| Edit | Undo/Redo (the **browser** undo manager), Cut/Copy/Copy URL/Paste, Find | No |
+| App | About, Check for Updates… (only when Sparkle runs), Settings…, Hide, Hide Others, Show All, Quit | No |
+| File | New Tab, Open Location…, Open in Space (`openInSpace`, Cmd+O), Import from Arc…, Close Tab, Reopen Closed Tab, Pin/Unpin Tab, New Window, New Private Window, New Quick Detour Window (`newQuickDetourWindow`, which shows the Quick Detour launcher panel; its key equivalent is the global hotkey's shortcut, Opt-Cmd-N by default, set by `QuickDetourHotKey`, and pressing it while the panel is up closes it) | No |
+| Edit | Undo/Redo (the **browser** undo manager), Cut/Copy/Copy URL/Paste, Select All, Find, Find Next, Find Previous | No |
 | View | Toggle Sidebar, Reload, zoom | No |
-| Navigate | Back/Forward, Previous/Next Tab, Show All History, Archived Tabs | No |
+| Navigate | Back/Forward, Previous/Next Tab, Show All History, Archived Tabs, Clear Archived Tabs | No |
 | Spaces | Next/Previous Space, the first nine spaces (static items on ⌃1–⌃9, titled and hidden on open, TASK-295; see [browser commands](../features/browser-commands.md#spaces-by-position-task-295)), one item per later space, Manage Spaces… | `menuNeedsUpdate` |
 | Extensions | One submenu per enabled extension (Show Popup, Options…), then three static items | `menuNeedsUpdate` |
 | Develop | Web Inspector, Load Unpacked Extension…, per-extension inspect and reload items | Rebuilt on a notification |
@@ -190,13 +196,13 @@ window (`createNewWindowWithURL`) when there is none; the choice is the pure
 Settings' Learn more links (TASK-292.11) open the website's feature guides
 (`GuidePage`, URLs under `HelpLinks.detourHelp`) through the same
 `openHelpPage`; see
-[Settings](../features/settings.md#learn-more-links).
+[Settings](../features/settings-learn-more-links.md).
 
 The **Dock menu** (`applicationDockMenu`, built fresh each time macOS asks):
 New Window, New Private Window, then, while any Quick Detour is open and not
 all are minimized, one item flipping between Hide All and Show All Quick
 Detour Windows (TASK-309, `addQuickDetourDockMenuItem`; see
-[Quick Detour](../features/quick-detour.md#the-dock-menu-hide-all--show-all)).
+[Quick Detour](../features/quick-detour-dock-menu.md)).
 
 Two rules for anything that builds an extension menu item:
 
@@ -233,7 +239,9 @@ object.[^spike-295]
 
 So the matcher is a fast path that errs towards `false`, and the `true` path
 re-implements AppKit's enable decision (`CommandDispatch.isEnabled`:
-`validateMenuItem`, else `validateUserInterfaceItem`, else `isEnabled`; the
+when the menu autoenables, `validateMenuItem`, else
+`validateUserInterfaceItem`, else `true`; `item.isEnabled` only when it does
+not; the
 automation endpoint's `run_menu_item` and the command palette use the same
 helper).
 Without that, Next Space would fire with no browser window key.
@@ -289,7 +297,12 @@ Everything that changes behaviour at launch, on `main`:
 | Switch | Kind | Effect |
 |---|---|---|
 | `DETOUR_DATA_DIR` | Environment | Name of the data directory under Application Support (default `Detour`). Scopes the databases, WebKit storage identifiers, autosave names and content blocker storage, and stops Sparkle. See [persistence](./persistence.md). |
-| Any variable starting `XCTest` | Environment (set by the test runner) | `AppDelegate.isRunningUnitTests`. Skips the pending profile data removal retry, the history sweep of deleted spaces, extension update checks and Sparkle. |
+| Any variable starting `XCTest` | Environment (set by the test runner) | `AppDelegate.isRunningUnitTests`. Skips the pending profile data removal retry, the history sweep of deleted spaces, extension update checks, Sparkle, the leftover extension notification removal, `QuickDetourIdleMonitor`, the global hotkey, the automation endpoint and the Arc import offer. |
+| `DETOUR_MCP`, `DETOUR_MCP_PORT` | Environment | Start the [automation endpoint](../features/automation-endpoint.md) for a test run (`AutomationGate`; `DETOUR_MCP=1` needs an isolated `DETOUR_DATA_DIR`). |
+| `DETOUR_GLOBAL_HOTKEY` | Environment, Debug builds | Registers the Quick Detour global hotkey in a Debug build (`QuickDetourHotKey`). |
+| `DETOUR_QUICK_DETOUR_IDLE_SECONDS` | Environment, **DEBUG builds only** | `QuickDetourIdleMonitor`'s idle time. |
+| `DETOUR_TRACKING_FILTER_URL` | Environment, **DEBUG builds only** | `TrackingParameterList.listURL`. |
+| `DETOUR_GPU_ORPHAN_CHECK_SECONDS`, `DETOUR_GPU_ORPHAN_MIN_AGE_SECONDS` | Environment, seconds | `GPUProcessOrphanReaper` timings (check default 30). |
 | `DETOUR_SLEEP_SHOW_BUDGET` | Environment, positive integer | Shows before a tab qualifies for the short sleep rule (default 50). |
 | `DETOUR_SLEEP_SHOW_BUDGET_GRACE_SECONDS` | Environment, seconds | How long such a tab must be off screen (default 900). |
 | `DETOUR_GPU_RECYCLE_SOFT_LIMIT`, `…_HARD_LIMIT` | Environment, positive integer | IOSurface counts (defaults 12,000 and 15,000). |
@@ -297,14 +310,17 @@ Everything that changes behaviour at launch, on `main`:
 | `DETOUR_NATIVE_MESSAGING_HOSTS_DIR` | Environment, **DEBUG builds only** | An extra native messaging manifest directory, searched first. |
 | `ExtensionConsoleLogPublic` | `UserDefaults` bool | Logs bridged extension console text publicly. Off by default because that output can contain secrets. |
 
-A non-positive or unparseable value for the numeric switches is ignored
-rather than disabling the rule. The sleep and GPU switches exist for runtime
+An unparseable value for the numeric switches is ignored rather than
+disabling the rule; the count and check-interval switches also ignore
+non-positive values, the grace and interval seconds only negative ones. The sleep and GPU switches exist for runtime
 harnesses; see [sleeping and archiving](../tabs/sleeping-and-archiving.md),
 [GPU IOSurface limit](../platform/gpu-iosurface-limit.md) and
 [reading runtime logs](../playbooks/reading-runtime-logs.md).
 
-There is no debug automation hook in `AppDelegate` on `main`. Runtime
-harnesses are applied as patches; see
+The MCP [automation endpoint](../features/automation-endpoint.md)
+(`AutomationController`, enabled by the user's setting or by `DETOUR_MCP=1`
+with an isolated data directory) starts at the end of launch; ad-hoc runtime
+harnesses are still applied as patches; see
 [debug harness](../playbooks/debug-harness.md).
 
 # Gotchas

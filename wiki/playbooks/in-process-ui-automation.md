@@ -4,7 +4,7 @@ title: In-process UI automation
 description: How to click, type, swipe, switch appearance and capture views from inside the running app, what only external input can do, and why a locked screen silently breaks all of it.
 tags: [playbook, harness, ui, automation, runtime]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T09:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:04:49Z }
 sources:
   - id: task-169
     resource: backlog:TASK-169
@@ -25,8 +25,8 @@ sources:
     resource: ../../.claude/skills/verify/SKILL.md
     title: The /verify skill (observation channels and permission gotchas)
   - id: task110-readme
-    resource: ../../docs/task-110/README.md
-    title: TASK-110 capture kit
+    resource: ../../docs/capture/README.md
+    title: The website capture kit (TASK-110, moved to docs/capture in TASK-228.3)
   - id: notes-inproc
     resource: "Agent session notes, 2026-09-19 (not in the repository)"
     title: Session notes on in-process UI verification
@@ -68,12 +68,15 @@ equivalent, a swipe, light/dark appearance, a second window, a split, or a
 picture of the result. Do these from the harness before concluding that a
 person has to try it by hand.
 
-Clicks, keys, menu commands, a page's or a view's context menu,
-captures and light/dark are now tools of the
-[automation endpoint](../features/automation-endpoint.md) (TASK-228.1),
-which applies the techniques below from a script with no harness patch. A
-harness is still the way for what it does not cover: swipes, drops and
-hover tracking.
+Clicks, keys, menu commands, a page's or a view's context menu, sidebar
+row selection, captures and light/dark are now tools of the
+[automation endpoint](../features/automation-endpoint.md) (TASK-228.1 and
+its subtasks), which applies the techniques below from a script with no
+harness patch; try it first ([runtime verification](./runtime-verification.md)).
+A harness is still the way for what it does not cover: space swipes (the
+endpoint's `navigation_swipe` drives only the back/forward swipe), drops,
+hover tracking, and components that watch input through a local event
+monitor.
 
 # Steps
 
@@ -113,7 +116,7 @@ and visual checks have to wait; report them as not run, never as passed.
 | A native `<select>` | posted click opens its `NSMenu`; posted Down/Up arrows and Return choose | only with the screen unlocked[^notes-inproc] |
 | A modifier-click on a link (Option, Shift, Cmd) | posted down and up with `modifierFlags: .option` (etc.) at the link | reaches `decidePolicy` with those flags, as a person's click does |
 | The page's context menu, and choosing an item | a posted `rightMouseDown`/`Up` on the element; WebKit builds the menu and calls `BrowserWebView.willOpenMenu`, where a temporary hook can read the items and, from a `.common`-mode timer, `menu.performActionForItem(at:)` then `cancelTracking()` | performs WebKit's own items (they need its live menu), so the action takes the real path; only with the screen unlocked[^harness-185] |
-| Dark mode | `NSApp.appearance = NSAppearance(named: .darkAqua)`, wait, capture | |
+| Dark mode | `NSApp.appearance = NSAppearance(named: .darkAqua)`, wait, capture | the endpoint's `set_appearance` does the same |
 | Split, second window, Private window | create them through `TabStore` / `BrowserWindowController` | |
 | A trackpad swipe between spaces | synthetic continuous scroll events, below | |
 | Sidebar hover reveal/hide | `wc.sidebarHoverZoneEntered(.edge)` / `sidebarHoverZoneExited(.sidebar)`, with `sidebarPointerProbeForTesting` or a window placed relative to the real pointer ([UI probes](./ui-probes.md)) | real tracking-area enter/exit cannot be synthesized; posted `mouseMoved` events produce none[^notes-probes][^task-169] |
@@ -165,13 +168,18 @@ the incoming page renders blank.
 
 ## 4. Capture
 
+The endpoint's `screenshot` (TASK-228.1 phase 3) does the first two rows
+for you: the window content by `cacheDisplay` with the sidebar drawn from
+its layer, no grant, Detour in the background; `source=screen` gives true
+pixels through ScreenCaptureKit. The methods underneath:
+
 | Target | Method | Result |
 |---|---|---|
 | Window content, including web content | `view.bitmapImageRepForCachingDisplay(in:)` then `view.cacheDisplay(in:to:)` on `window.contentView` | works with no grant; the **sidebar comes out blank**[^notes-harness] |
 | The sidebar | `wc.tabSidebar.view.layer?.render(in:)` into an `NSGraphicsContext(bitmapImageRep:)` | 1x image; crop or scale with `sips`[^notes-harness] |
 | The Settings window | `cacheDisplay` in light mode | after switching to `darkAqua` its background renders transparent[^notes-updates] |
 | True pixels, occluded windows, video | `screencapture -x -o -l <windowID>`, `screencapture -v` | needs Screen Recording for the shell's host process; check with one full-screen capture first (all black means no grant)[^notes-capture] |
-| Retina captures on a 1x display | the virtual 2x display in [docs/task-110](../../docs/task-110/README.md) | see [release and website](./release-and-website.md) |
+| Retina captures on a 1x display | the virtual 2x display (`vdisplay.m`) in [docs/capture](../../docs/capture/README.md) (moved from docs/task-110 in TASK-228.3) | see [release and website](./release-and-website.md) |
 
 ```swift
 func snapSidebar(_ wc: BrowserWindowController, to url: URL) {
@@ -209,9 +217,14 @@ edges ([UI probes](./ui-probes.md)).
   mouse-down and mouse-up on a sidebar row went through `NSWindow.sendEvent`
   (first responder moved to a list that accepted it) but the selection did
   not change; nor did it with `tableView.mouseDown(with:)` called directly
-  and the mouse-up queued. Not tried in an active application. Make the
-  selection with `selectRowIndexes` (it runs the delegate's selection
-  handler) and use the posted click for what else the click does.[^task-174]
+  and the mouse-up queued.[^task-174] The cause (TASK-228.9): AppKit's
+  table gives up on a press in a window that is not key unless it becomes a
+  drag. The endpoint's `click` on a row selects it, because the sidebar's
+  table (`needsPanelToBecomeKey`) answers false while
+  `AutomationInput.isHandingPress(to:)` is true; a harness's own posted
+  click still does not. From a harness, make the selection with
+  `selectRowIndexes` (it runs the delegate's selection handler) and use the
+  posted click for what else the click does.
 - **A posted plain click on a web view of an inactive app is swallowed; a
   Cmd-click is not.** In the TASK-191.4 run the user was in another app: the
   posted Cmd-clicks reached the page (macOS delivers a Cmd-click to a
@@ -280,9 +293,14 @@ edges ([UI probes](./ui-probes.md)).
   A region capture (`screencapture -R`) shows whatever is in front: one
   taken after the person brought their own window forward showed it, and
   had to be deleted.
-- **A shell-launched instance is not the key application.** Anything
-  enabled by `NSApp.keyWindow` (for example menu items validated against
-  the key window) cannot be driven; say so.[^notes-updates]
+- **A shell-launched instance is not the key application.** From a
+  harness, anything enabled by `NSApp.keyWindow` (for example menu items
+  validated against the key window) cannot be driven; say so.[^notes-updates]
+  The endpoint covers both: `run_menu_item` validates against the window it
+  names (TASK-228.7), and in a test run `set_window_frame activate=true`
+  makes Detour active with a key window, after which a click makes its
+  window key (TASK-228.10); see
+  [runtime verification](./runtime-verification.md#traps).
 - **Full Keyboard Access cannot be forced for one process.** Neither the
   `-AppleKeyboardUIMode 2` launch argument nor swizzling
   `NSApplication.isFullKeyboardAccessEnabled` changes

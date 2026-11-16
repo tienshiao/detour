@@ -4,7 +4,7 @@ title: Split tabs
 description: The data model of a split (two adjacent tabs sharing a splitGroupID), the contiguity invariants TabStore keeps in every mutation, and where a pinned split's group lives.
 tags: [tabs, split, invariants, tabstore, pinned]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T17:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:06:17Z }
 sources:
   - id: design
     resource: ../../docs/split-tabs-design.md
@@ -114,7 +114,7 @@ construction and checked by `SplitTabTests`.
 two members forward to just past the group. It is applied by
 `newTabInsertionIndex` (so by `insertTab` and `addSplitInNormalSection`),
 `restoreFavoriteAsTab`, the `closeTab` and `closeSplitGroup` undos,
-`reopenClosedTabRecord`, `unpinTab`, `unpinSplitGroup`, `removeTabFromSplit`
+`reopenClosedTabRecord`, `reopenClosedPeek`, `unpinTab`, `unpinSplitGroup`, `removeTabFromSplit`
 and the cross-space `moveTab`. A new insertion path that forgets it can put a
 tab between two panes.
 
@@ -282,7 +282,7 @@ group only if it forms **exactly one run of exactly two**.
 `SplitTabTests` (63 cases) is the suite: the flattener and sanitizers, the snap
 and block moves, every store mutation with its undo, pinned splits including
 dormant members and folder deletion, and persistence across save and load.
-`SplitOpeningTests` (19) covers opening a split from a tab: `splitOpening` for
+`SplitOpeningTests` (20) covers opening a split from a tab: `splitOpening` for
 every kind of tab, the web-view variant keeping the very instance, the
 normal-section split's placement (after the parent's children, past a split at
 the insertion point, before a split starting the section, a second split after

@@ -5,6 +5,8 @@ description: How to render Detour.icon in every macOS appearance and size from t
 tags: [platform, icon, tooling, branding]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-29T08:22:20Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:26Z }
 stale_after: 2027-06-01T00:00:00Z
 sources:
   - id: task-196

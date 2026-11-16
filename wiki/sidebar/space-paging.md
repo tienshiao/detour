@@ -5,7 +5,7 @@ description: The sidebar's horizontal page strip — one page per space plus the
 tags: [sidebar, spaces, archive, animation]
 status: stable
 resource: ../../Detour/Browser/Sidebar/SidebarPageStrip.swift
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:41:30Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:03:24Z }
 sources:
   - id: page-strip
     resource: ../../Detour/Browser/Sidebar/SidebarPageStrip.swift
@@ -172,15 +172,18 @@ are relative dates.
   ([row layout](./row-layout.md), rule 7).
 - Inactive pages are inert: no cell closures, no drag payloads, selection
   changes ignored (`tableView === self.tableView` guards).
-- Only the page the strip rests on accepts keyboard focus
-  (`updatePageKeyboardFocus`); see [keyboard focus](./keyboard-focus.md).
+- A space's tab list never takes the keyboard (TASK-174); the archive page
+  accepts it only while the strip rests on it, and focus left on a page that
+  slid off screen is released to the web page (`updatePageKeyboardFocus`,
+  `resignOffscreenPageFocus`); see [keyboard focus](./keyboard-focus.md).
 
 # Gotchas
 
 - **`rebuildPages()` recreates every space page** whenever the list of space
   IDs changes (add, delete, reorder, undo). It carries the active list's
-  selected row and keyboard focus across, but only if the active page still
-  shows the same space afterwards.[^task-131] Left open by that task's
+  selected row across, but only if the active page still shows the same
+  space afterwards.[^task-131] A rename under way goes down with its row,
+  and the keyboard it held goes to the web page. Left open by that task's
   review: the rebuild resets the list's scroll position (read from the code,
   not confirmed in the app) and ends a rename in progress, which may commit
   a half-typed name. Reusing the page of each surviving space would remove
@@ -197,8 +200,9 @@ are relative dates.
 
 - `SidebarPageStripTests` — the mapping, round trips, out-of-range indexes,
   the fractional button index, the address bar riding the first page.
-- `SidebarPageFocusTests` — which page accepts focus, and what a rebuild
-  carries across.
+- `SidebarPageFocusTests` — that a space's tab list never accepts focus, the
+  archive page only while it shows, where a click or a rename's end leaves
+  the keyboard, and what a rebuild carries across.
 - At runtime a swipe can be driven without a trackpad by sending synthetic
   scroll-phase events to a page's scroll view; the recipe is in the
   [debug harness playbook](../playbooks/debug-harness.md). TASK-82 and

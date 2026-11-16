@@ -6,6 +6,8 @@ resource: ../../Detour/Browser/Window/BrowserWindowController.swift
 tags: [tabs, split, window, appkit, nssplitview, focus]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T17:30:00Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:11:43Z }
 sources:
   - id: window
     resource: ../../Detour/Browser/Window/BrowserWindowController.swift

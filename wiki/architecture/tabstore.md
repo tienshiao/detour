@@ -5,7 +5,7 @@ description: The state singleton that owns profiles, spaces and tabs — its obs
 resource: ../../Detour/Browser/TabStore.swift
 tags: [architecture, state, tabs, undo]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T10:20:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:16:42Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -46,8 +46,8 @@ window controllers read its model objects but change them only through its
 methods.
 
 `TabStore.shared` is the app's instance. The initialiser takes the two
-databases, the profile data remover, the WebKit storage scope and the history
-debounce as parameters, and many test suites build a private store against an
+databases, the profile data remover and its retry delays, the WebKit storage
+scope, the history debounce and the title save delay as parameters, and many test suites build a private store against an
 in-memory database rather than touching `shared`.
 
 # How it works
@@ -90,6 +90,7 @@ weakly and dead entries are pruned on each notify.
 | `tabStoreDidUpdateSpaces()` | Space list or a space's identity changed. |
 | `tabStoreDidAddProfile(_:)` | A profile was created mid-session. Not sent for profiles loaded by `restoreSession`. |
 | `tabStoreDidUpdateClosedTabRecords()` | The `closedTab` table changed. Carries no detail. |
+| `tabStoreDidCloseQuickDetour(_:)` / `tabStoreDidMoveQuickDetour(_:into:)` / `tabStoreDidReplaceQuickDetour(_:with:)` | A [Quick Detour](../features/quick-detour.md) tab left `quickDetourTabs`: torn down, moved into a space alive, or replaced by a tab on another profile. |
 
 Every window receives every callback. Each space-scoped handler in
 `BrowserWindowController` starts with `guard space.id == activeSpaceID`, and
@@ -151,11 +152,11 @@ group — and only then notify. Observers therefore see a tab that is already
 torn down; teardown is what reports the close to extension contexts, not the
 remove callback.
 
-Undo closures capture **ids**, and resolve the space and tab when they run.
-Undo of Delete Space rebuilds a space's tabs as new objects with the old ids,
-so a captured tab object can be an orphan by the time its undo runs
-(TASK-40). The one deliberate exception is the Delete Space undo itself,
-which retains the `Space` instance.
+Undo closures capture the `Space` instance and tab **ids**, and resolve tabs
+when they run. Undo of Delete Space brings back that same `Space` instance
+(captured strongly, TASK-40), so older closures holding it stay valid; it
+rebuilds the space's tabs as new objects with the old ids, so a captured tab
+object can be an orphan by the time its undo runs.
 
 ## Per-tab subscriptions
 
@@ -165,7 +166,8 @@ properties:
 
 | Property | Effect |
 |---|---|
-| `title`, `peekFavicon`, `isPlayingAudio`, `isMuted` | Notify (`tabStoreDidUpdateTab` or `…DidUpdatePinnedEntry`). |
+| `title` | Notify; a session save 5 s later unless one is already pending (`scheduleSaveUnlessPending(after: titleSaveDelay)`, TASK-227). |
+| `peekFavicon`, `isPlayingAudio`, `isMuted` | Notify (`tabStoreDidUpdateTab` or `…DidUpdatePinnedEntry`). |
 | `url`, `favicon` | Notify and `scheduleSave()`. |
 | `isLoading` | Notify; on `false`, `recordHistoryVisit`. |
 | `url`, debounced 1 s | `recordSameDocumentNavigationIfNeeded` (pushState visits). |
@@ -177,7 +179,7 @@ The notify closure looks the tab up in each space's pinned entries, then its
 tabs. A **favorite's** backing tab is in neither, so its changes produce no
 observer callback; favorite tiles subscribe to what they show themselves.
 
-The subscription reads `tab.spaceID` when a visit is recorded rather than
+The subscription reads `tab.historySpaceID` when a visit is recorded rather than
 capturing a space, so a tab rehomed onto another space keeps its subscription
 and records under the space it is in now.
 
@@ -189,9 +191,11 @@ of the file and are described on
 
 ## Persistence triggers
 
-`scheduleSave()` debounces `saveNow()` by 1 second on the main queue.
-`saveNow()` runs immediately on app termination, on window close, and at the
-start of `deleteProfile`. Details and the write order are on
+`scheduleSave()` debounces `saveNow()` by 1 second on the main queue; a
+title change uses `scheduleSaveUnlessPending`, which does not postpone a
+pending save. `saveNow()` runs immediately on app termination, on window
+close, at the start of `deleteProfile`, after an Arc import and from the
+automation endpoint's staging tools. Details and the write order are on
 [persistence](./persistence.md).
 
 # Invariants
@@ -205,8 +209,8 @@ start of `deleteProfile`. Details and the write order are on
   the two `PinnedEntry`s; the backing tabs' `splitGroupID` stays nil.
   `splitGroup(containing:in:)` resolves both kinds.
 - **No route into nothing.** `deleteSpace` refuses a space that a link route or the Default targets, before tearing anything down ([link routing](../features/link-routing.md)).
-- **At least one space.** `deleteSpace` refuses the last one. The guard
-  counts incognito spaces, so "one" can be a Private window's space.
+- **At least one space.** `deleteSpace` refuses the last space and the last
+  non-incognito space (a Private window's space does not count).
   `forceRemoveSpace` skips the guard and is for test teardown only.
 - **A space's profile exists.** `deleteProfile` refuses a profile a space
   uses; `updateSpace` refuses an unknown profile id.
@@ -220,7 +224,9 @@ start of `deleteProfile`. Details and the write order are on
   builds.
 - **`tab.spaceID` names a live space of the tab's profile.** `wake()` resolves
   the configuration through it. Favorite backing tabs are rehomed when their
-  space is deleted.
+  space is deleted. A Quick Detour tab is the exception: it is in no space and
+  carries `quickDetourProfile` instead, until Open in moves it into one
+  (which sets `spaceID` and clears `quickDetourProfile`).
 
 # Gotchas
 

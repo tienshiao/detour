@@ -4,7 +4,8 @@ title: Swift concurrency checking in an AppKit and WebKit app
 description: What turning on complete concurrency checking, main-actor default isolation and the Swift 6 language mode does to Detour — WebKit delegate methods that silently stop being called because the SDK's closure types change, the implicit-deinit isolation error, build settings that leak into Swift packages, which settings carry runtime meaning in each language mode, how the Objective-C entry points were audited before Swift 6 could trap on them, why the test target had to follow, and the one test-class shape XCTest allows in Swift 6.
 tags: [swift, concurrency, webkit, build]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T03:25:41Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:26Z }
+stale_after: 2027-06-01T00:00:00Z
 sources:
   - id: task-231
     resource: backlog:TASK-231
@@ -43,10 +44,13 @@ sources:
 
 # Behavior
 
-The Detour target builds with `SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor`,
-`SWIFT_APPROACHABLE_CONCURRENCY: YES` and `SWIFT_STRICT_CONCURRENCY: complete`
-while still in the Swift 5 language mode (TASK-231). Turning that on taught
-four things.[^task-231-1]
+The Detour and DetourTests targets build with `SWIFT_VERSION: "6"`,
+`SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor`, `SWIFT_APPROACHABLE_CONCURRENCY: YES`
+and `SWIFT_STRICT_CONCURRENCY: complete` (`project.yml`; the `detour-mcp`
+helper is Swift 6 with complete checking and no default isolation). The
+isolation and checking settings went on first, while the app was still in the
+Swift 5 language mode (TASK-231.1), and taught four things;[^task-231-1] the
+language mode followed for the app (TASK-231.6) and the tests (TASK-231.7).
 
 ## WebKit delegate methods can stop being called, with only a warning
 
@@ -132,7 +136,8 @@ audited:[^task-231-6]
   the old one's completion.
 - Callbacks AppKit runs on main but types as nonisolated `@Sendable` closures
   go through `MainActorCallbacks.swift` (`NSAnimationContext.runAnimationGroup(_:onMain:)`,
-  `Timer.scheduledMainTimer`, `NotificationCenter.addMainObserver`) or an
+  `Timer.scheduledMainTimer`, `NotificationCenter.addMainObserver`, and since
+  TASK-325 `NSEvent.trackSwipeEvent(…onMain:)`) or an
   inline, commented `MainActor.assumeIsolated` (KVO change handlers, a
   `Timer` added to the main run loop, `RunLoop.main.perform`, the Carbon
   hot-key handler on the application event target). `assumeIsolated` traps if
@@ -154,7 +159,8 @@ DetourTests. Giving the test target the app's default isolation
 (`SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor`, approachable concurrency), still
 in the Swift 5 mode, made the test methods main-actor isolated and left 5
 errors, all closures and default arguments; XCTest runs synchronous tests on
-the main thread anyway.[^task-231-6]
+the main thread anyway.[^task-231-6] TASK-231.7 then moved the test target to
+the Swift 6 mode as well (next section).
 
 ## XCTest allows only one test-class shape in Swift 6
 

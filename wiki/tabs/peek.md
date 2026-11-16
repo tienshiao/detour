@@ -4,7 +4,7 @@ title: Peek
 description: The overlay that shows a linked page over the current tab; which links open in one, how it is anchored to its host tab, parked, restored and expanded, and how extensions see it.
 tags: [tabs, peek, overlay, navigation, extensions]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T04:55:17Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:12:56Z }
 sources:
   - id: anchor
     resource: ../../Detour/Browser/Window/PeekAnchor.swift
@@ -98,10 +98,12 @@ checked first. Ordinary tabs and dormant tiles have no anchor.
 
 What does **not** peek:
 
-- Cmd+click (background tab) and Option+click (split) win over Shift and over
-  the anchor rule. The order is Cmd, Shift, Option, then the anchor intercept
+- Opt-Cmd+click ([Quick Detour](../features/quick-detour.md)) and Cmd+click
+  (background tab) win over Shift; Shift wins over Option+click (split), and
+  all of them over the anchor rule. The order is Opt-Cmd, Cmd, Shift, Option,
+  then the anchor intercept
   ([tab lifecycle](./tab-lifecycle.md)).
-- A link a [link route](../features/link-routing.md#typed-urls-and-links-clicked-in-a-page)
+- A link a [link route](../features/link-routing-in-page.md)
   sends to another space or a Private window: the route wins over the
   anchor intercept (a cross-host click, a `_blank` link, a tab-style
   `window.open`). A route that keeps the link where it is, or no route,
@@ -244,7 +246,7 @@ switcher uses it to draw the Peek on the host's card
   the page to the dead one. A Quick Detour's Open in (TASK-193.3) is the same
   hand-over without the second object: the Quick Detour's own `BrowserTab`
   moves into the space, so its id, and its registration, stay
-  ([Quick Detour](../features/quick-detour.md#open-in-space)).
+  ([Quick Detour](../features/quick-detour-open-in.md)).
 - **Open in Split View** (`openPeekInSplitView`, the third button) hands the
   same web view to the right pane of a split, so the Peek's back list and page
   state survive. The hand-off runs in the same order as expanding (close the
@@ -285,7 +287,8 @@ A Peek the **user** closes is recorded like a closed tab:
 Escape, Cmd+W) calls `TabStore.recordClosedPeek` before `closePeekOverlay`.
 It writes a [closed-tab record](./closed-tabs-and-archive.md) of the host's
 space with the Peek's URL, title, favicon and interaction state (back/forward
-list and scroll position), `sortOrder` just after the host, and
+list and scroll position), `sortOrder` just after the host in the normal section (0, the top, for a
+pinned or favourite host), and
 `peekHostTabID` = the host's id (migration v23), and registers the undo
 "Close Peek". A Private window's Peek writes no row but can still be undone,
 as a Private tab's close can.
@@ -333,8 +336,8 @@ Details of registration are in
 
 # Edge cases
 
-- **Moving the host across profiles**: the Peek is parked by force, then its URL
-  is retargeted or the Peek is dropped. A Peek the destination cannot show does
+- **Moving the host across profiles**: the Peek is parked by force, then kept,
+  retargeted onto the destination's origin, or dropped, as `planMove` decided. A Peek the destination cannot show does
   not refuse the move; it is an overlay on the tab, not the tab.
 - **Picture-in-picture**: switching away from a host whose Peek is playing
   starts PiP for the Peek and keeps its web view parented for the capture.
@@ -348,8 +351,9 @@ Details of registration are in
 
 # Tests
 
-`PeekAnchorTests` (23: anchor lookup, host resolution including the unfocused
-pane and the "inside a Peek" case, the three peek predicates), `PeekStateTests`
+`PeekAnchorTests` (29: anchor lookup, host resolution including the unfocused
+pane and the "inside a Peek" case, the three peek predicates, the setting's
+effect on the auto-peek rule and `PeekSettings`), `PeekStateTests`
 (save, clear, favicon precedence, `hasPeek`), `RecentTabSwitcherPeekTests`
 (the switcher's entries and the Peek's picture), `FavoritePeekPersistenceTests` (round trip
 through save and restore), `FavoriteTileBadgeTests`,
@@ -360,8 +364,7 @@ the button's rule), `ClosedPeekTests` (the record, Private, reopen with the
 host open, gone or busy, a pinned host, the archive page, undo and a consumed
 record, the v23 migration), `PeekWindowCommandsTests` (Cmd+O's validation and
 expand, Undo in a real window, the extension close not recorded),
-`PeekAnchorTests` (also the setting's effect on the auto-peek rule and
-`PeekSettings`), `PeekHistoryTests` (history under the host's space, the
+`PeekHistoryTests` (history under the host's space, the
 Private exclusions, no second recording after expanding, TASK-306).
 
 Checked at runtime (TASK-307, Nov 8 2026, posted keys and clicks): Cmd+O

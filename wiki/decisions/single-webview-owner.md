@@ -4,7 +4,7 @@ title: Single web view owner
 description: When two windows show the same tab, one window hosts the live web view and the others show a snapshot, with hosting following window focus.
 tags: [decision, architecture, webkit, multi-window]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:06:32Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:09:47Z }
 sources:
   - id: ownership-doc
     resource: ../../docs/webview-ownership.md
@@ -72,7 +72,9 @@ disagree with the view hierarchy; a derived one cannot.
 Navigate, reload, back, forward and palette loads call
 `ensureOwnsWebView()`.
 
-**A non-key window shows a still image, dimmed to 50%.** It does not update.
+**A window that does not host the tab (another window does) shows a still
+image, dimmed to 50%.** A non-key window whose tab no window hosts claims
+the live view itself. It does not update.
 Video in the tab keeps playing in the owning window only.
 
 **"Has a superview" became a signal.** Other code reads a parented container

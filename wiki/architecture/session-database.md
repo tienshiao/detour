@@ -5,7 +5,7 @@ description: The tables of browser.db, what each is for, the foreign keys that s
 resource: ../../Detour/Storage/Database.swift
 tags: [architecture, storage, schema, migrations]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T00:45:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:10:46Z }
 sources:
   - id: task-231-2
     resource: backlog:TASK-231.2
@@ -185,11 +185,11 @@ it ran wipes the debug database rather than failing.
 
 | Record | File |
 |---|---|
-| `ProfileRecord`, `SpaceRecord`, `TabRecord`, `PinnedTabRecord`, `PinnedFolderRecord`, `FavoriteRecord`, `DownloadRecord`, `SiteSettingRecord`, `ExternalAppPermissionRecord`, `LinkRouteRecord`, `LinkRouteDefaultRecord` | [Detour/Storage/Models](../../Detour/Storage/Models) |
-| `ClosedTabRecord`, `ClosedTabSummary` | `ClosedTabRecord.swift` in the same directory. The summary is the same table without the `interactionState` blob. |
+| `ProfileRecord`, `SpaceRecord`, `TabRecord`, `PinnedTabRecord`, `PinnedFolderRecord`, `FavoriteRecord`, `DownloadRecord`, `SiteSettingRecord`, `ExternalAppPermissionRecord`, `LinkRouteRecord`, `LinkRouteDefaultRecord`, `SiteSearchRecord`, `SiteSearchRemovedHostRecord` | [Detour/Storage/Models](../../Detour/Storage/Models) |
+| `ClosedTabRecord`, `ClosedTabSummary` | `ClosedTabRecord.swift` in the same directory. The summary is the same table without the `interactionState` blob and `parentID` (v26), which only the full row carries. |
 | `ExtensionRecord`, `ExtensionStorageRecord`, `ProfileExtensionRecord`, `ExtensionPermissionRecord`, `ExtensionInstalledEventRecord` | [Detour/Extensions/Storage/Models](../../Detour/Extensions/Storage/Models) |
 
-`pendingProfileDataRemoval`, `webKitStorageIdentifier` and `appState` have no
+`pendingProfileDataRemoval`, `webKitStorageIdentifier`, `appState` and `importLink` have no
 record type and are accessed with raw SQL.
 
 Records are plain `Codable` structs. The live model (`Profile`, `Space`,

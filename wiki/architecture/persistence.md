@@ -4,7 +4,7 @@ title: Persistence
 description: What Detour saves, where and when — the two databases, the debounced one-transaction session save, its write order and what it does when it cannot be written, session restore, interaction state, and the DETOUR_DATA_DIR switch.
 tags: [architecture, storage, session, restore]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-29T04:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:16:42Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -85,8 +85,8 @@ Website data (cookies, local storage) is WebKit's, keyed by profile; see
 
 | Data | Written by | When |
 |---|---|---|
-| Spaces, tabs, pinned entries, folders, favorites, all profiles | `TabStore.saveNow()` | 1 s after the last `scheduleSave()`; immediately on app termination, window close and at the start of `deleteProfile`. |
-| One profile | `AppDatabase.saveProfile` | Immediately, in `addProfile` / `updateProfile`. |
+| Spaces, tabs, pinned entries, folders, favorites, all profiles | `TabStore.saveNow()` | 1 s after the last `scheduleSave()`; immediately on app termination, window close, at the start of `deleteProfile`, after an Arc import, and from the automation endpoint's staging tools. |
+| One profile | `AppDatabase.saveProfile` | Immediately, in `addProfile` / `updateProfile`, `adoptImportedProfile`, `ensureDefaultProfile` and `ensureIncognitoProfile`. |
 | Closed-tab records | `pushClosedTab`, `deleteClosedTab…` | Immediately, inside `closeTab`, reopen, undo. Never loaded into memory (TASK-117). |
 | Downloads | `DownloadManager` | Its own 1 s debounce; a save still pending at app termination is written by `flushPendingSave()`. See [downloads](../features/downloads.md). |
 | Extension records, permissions, per-profile enablement | `AppDatabase` calls from the extension layer | Immediately. |
@@ -315,9 +315,14 @@ exists (see the [launch sequence](./overview.md)).
 
 Closed-tab records are not loaded.
 
-`lastDeselectedAt` is restored from the row, or set to "now" when the row has
-none, so a tab with no stamp starts its idle clock at launch instead of being
-slept or archived immediately. The selected tab gets nil (it is on screen).
+For normal tabs, `lastDeselectedAt` is restored from the row, or set to
+"now" when the row has none, so a tab with no stamp starts its idle clock at
+launch instead of being slept or archived immediately. The selected tab gets
+nil (it is on screen). Pinned and favourite backing tabs are rebuilt with nil
+whatever their row holds, although the save writes the value for them
+(TASK-49). An unselected one comes back without a web view, so nothing reads
+the nil until it is woken; its first deselect stamps it (read from the code,
+2026-11-15).
 
 ### Extension pages on restore
 

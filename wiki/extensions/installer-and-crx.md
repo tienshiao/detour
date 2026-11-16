@@ -6,6 +6,8 @@ resource: ../../Detour/Extensions/Installer
 tags: [extensions, install, crx, security]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T23:30:00Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:04:02Z }
 sources:
   - id: task-231-8
     resource: backlog:TASK-231.8

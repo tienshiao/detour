@@ -4,7 +4,7 @@ title: History recording and search
 description: When a visit is recorded, how its title is stored and corrected, how in-page navigations become visits, and which query serves which consumer under which scope.
 tags: [history, tabs, search, privacy, sqlite]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T10:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:01:33Z }
 sources:
   - id: task-306
     resource: backlog:TASK-306
@@ -274,9 +274,9 @@ was widened to the profile by TASK-209 (the user's decision of
 | Palette, empty query | `recentHistory` | the palette's profile's spaces and Quick Detour scope | a URL | the profile's own latest titled visit (`scopedTitleExpression`); the shared title for a title-less visit only while no space outside the profile has visited the URL |
 | Palette, typed | `searchHistory` | same | a URL | same |
 | Palette inline completion and host rows | `bestURLCompletion`, `bestHostCompletions` | same | a URL | same |
-| History page list | `visits` | the profile's spaces | a visit | `COALESCE(v.title, h.title)` |
-| History page search | `searchVisits` | the profile's spaces | a URL, stood for by its latest in-scope, in-range visit that itself matches | same |
-| `chrome.history.search` | `searchURLs` | the calling extension context's profile's spaces | a URL, chosen like a History page search row, with its count and last-visit time aggregated from the profile's own visits | `v.title`; the shared title for a title-less visit only while no space outside the profile has visited the URL |
+| History page list | `visits` | the profile's spaces and Quick Detour scope | a visit | `COALESCE(v.title, h.title)` |
+| History page search | `searchVisits` | same | a URL, stood for by its latest in-scope, in-range visit that itself matches | same |
+| `chrome.history.search` | `searchURLs` | the calling extension context's profile's spaces and Quick Detour scope | a URL, chosen like a History page search row, with its count and last-visit time aggregated from the profile's own visits | `v.title`; the shared title for a title-less visit only while no space outside the profile has visited the URL |
 
 Shared semantics, kept identical on both the FTS side and in
 `HistoryDatabase.titleMatches`:
@@ -350,7 +350,7 @@ derive every time and count from in-scope `historyVisit` rows
 - [History own-title matching](../decisions/history-own-title-matching.md) - the isolation rule and the designs rejected on the way.
 - [History page](./history-page.md) - the profile-scoped reader and the only caller of the delete APIs.
 - [Suggestion pipeline](./suggestion-pipeline.md) - the palette's reader, profile-scoped since TASK-209.
-- [Polyfill layer](../extensions/polyfill-layer.md) - `chrome.history.search`, the other profile-scoped reader.
+- [chrome.history in the polyfill](../extensions/polyfill-history.md) - `chrome.history.search`, the other profile-scoped reader.
 - [Tab lifecycle](../tabs/tab-lifecycle.md) - where loads start and end.
 - [Incognito](../architecture/incognito.md) - why nothing is recorded there.
 

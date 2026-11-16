@@ -4,7 +4,7 @@ title: Profiles and spaces
 description: "A profile owns website data, extensions and settings; a space is a tab group that points at one profile; the active space is per window."
 tags: [architecture, profiles, spaces, undo]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T04:55:17Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:06:17Z }
 sources:
   - id: profile
     resource: ../../Detour/Browser/Profile.swift
@@ -101,8 +101,10 @@ without private-data access; this is suspected, not confirmed.[^private-notes]
 `pinnedEntries`, `pinnedFolders`, `selectedTabID`, `profileID` and a strong
 `profile` reference.
 
-- `makeWebViewConfiguration()` is the single place an ordinary tab's web
-  view configuration is built (an extension page uses its extension
+- `makeWebViewConfiguration()` (through the static
+  `Space.makeWebViewConfiguration(for:inSpace:)`, which Quick Detour pages,
+  with a profile and no space, also use) is the single place an ordinary
+  tab's web view configuration is built (an extension page uses its extension
   context's configuration instead): the profile's data store, the profile's extension
   controller, the link-hover and editable-focus user scripts, content rule
   lists, and the Chrome Web Store install scripts. A configuration is chosen
@@ -206,7 +208,10 @@ leaves no closed-tab record.
 - Same profile: the tab keeps its web view, so back/forward list, scroll and
   form state survive. Extensions get a move, not a close and reopen.
 - Different profile: the web view has to go. The tab is slept (forced) and
-  wakes from the destination's configuration. Its `parentID` is cleared.
+  wakes from the destination's configuration.
+- Either way the tab arrives as a root tab (`parentID` cleared); undoing
+  the move restores the link while the opener is still a normal tab of the
+  home space.
 - Across the incognito boundary: refused (`canMove`). An incognito tab's
   interaction state landing in a persistent space would be written to the
   session database.
@@ -231,7 +236,7 @@ stack: undo closures hold spaces, spaces hold their profile strongly, and
 | `Profile`, `UserAgentMode`, `ArchiveThreshold`, `SleepThreshold`, `SearchEngine` | [Profile.swift](../../Detour/Browser/Profile.swift) |
 | `Space`, space and profile mutations | [TabStore.swift](../../Detour/Browser/TabStore.swift) |
 | Per-window active space | `BrowserWindowController.setActiveSpace(id:selectTab:)` |
-| Settings UI | `ProfilesSettingsViewController`, `SpacesSettingsViewController` under `Detour/Browser/Settings/` |
+| Space and profile UI | The sidebar's [space editor](../sidebar/space-editor.md) (`SpaceEditorView`, TASK-289; create and edit through `BrowserWindowController+TabSidebar`, which call `addSpace` / `updateSpace`); `ProfilesSettingsViewController`, `SpacesSettingsViewController` under `Detour/Browser/Settings/` |
 | Tests | `TabStoreTests`, `UndoAfterDeleteSpaceTests`, `ProfileDeletionUndoTests`, `MoveTabToSpaceTests`, `PinnedTabMoveTests`, `SpaceEntrySelectionTests`, `FavoriteSpaceHandoffTests` |
 
 A test-harness trap from TASK-40: a test body never turns the run loop, so

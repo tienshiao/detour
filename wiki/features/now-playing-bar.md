@@ -3,8 +3,10 @@ type: Feature
 title: Now-playing bar
 description: "The media bar at the bottom of the sidebar for audio playing in a tab the user has left, in any space (modelled on Arc): favicon, Previous, Play/Pause, Next and Mute, expanding on hover to the title, artist, artwork and a dismiss button; the pure rule that decides which tab it shows, how each window evaluates it, and what the controls do."
 tags: [sidebar, media, media-session, picture-in-picture, tabs, ui]
-status: draft
+status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T08:30:00Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:03:57Z }
 sources:
   - id: rule
     resource: ../../Detour/Browser/NowPlaying/NowPlayingRule.swift

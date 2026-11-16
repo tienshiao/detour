@@ -4,7 +4,7 @@ title: Sleeping and archiving
 description: The two rules that put a tab to sleep, the rule that archives one, everything that keeps a tab awake, and how a wake that fails keeps the restored session instead of showing an error page.
 tags: [tabs, sleep, archive, memory, policy]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:43:31Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:12:56Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -91,8 +91,9 @@ which runs on every `windowDidBecomeKey`), and when a window carrying it comes
 back from being fully occluded. `wake()` resets it. It is never persisted.
 
 `DETOUR_SLEEP_SHOW_BUDGET` and `DETOUR_SLEEP_SHOW_BUDGET_GRACE_SECONDS`
-override the two constants, read once at launch; a non-positive or unparseable
-value is ignored rather than disabling the rule.
+override the two constants, read once at launch; an unparseable value, a
+non-positive budget or a negative grace is ignored rather than disabling the
+rule (a grace of 0 is accepted).
 
 In a harness run with the budget at 20 and the grace at 30 s, the sweep slept
 the three hidden tabs and the GPU process's IOSurface count fell from 1649 to
@@ -102,7 +103,8 @@ the three hidden tabs and the GPU process's IOSurface count fell from 1649 to
 
 A tab is not slept by the sweep when any of these holds:
 
-- it is playing audio (`isPlayingAudio`);
+- it is audible (`isAudible`: playing and not page-muted; a muted playing tab
+  can sleep);
 - `lastDeselectedAt == nil` (selected in some window);
 - its `webViewContainer` has a superview, i.e. some window is hosting it right
   now. "Has a superview" means "hosted somewhere" throughout the window code,
@@ -123,9 +125,9 @@ all and loads its home URL from scratch.
 `BrowserTab.sleep(force:)` parks the Peek (`parkPeek`), archives
 `webView.interactionState` into `cachedInteractionState`, releases the web view
 and its container, and sets `isSleeping`. It returns without doing anything
-while the tab plays audio unless `force` is set.
+while the tab is audible unless `force` is set.
 
-`force: true` pauses media first and is used where the web view *must* go
+`force: true` (or a muted playing tab) pauses media first; `force` is used where the web view *must* go
 because the configuration it was built from is no longer right: a space moved
 to another profile (`updateSpace`), a tab carried across profiles
 (`carry`). An extension context reload uses `retarget(to:)` instead, which also
@@ -184,8 +186,8 @@ The archive clock is `BrowserTab.archiveClockStart(now:)`:[^task-305]
 - `now` while the tab, or its Peek, plays sound the user can hear
   (`isAudible`: `_isPlayingAudio` and not page-muted, the same gate sleep, auto
   PiP and the GPU recycler use), so a playing tab is never archived;
-- otherwise the later of `lastDeselectedAt` and `lastAudibleAt`, the moment
-  audible playback last ended. `lastAudibleAt` is stamped whenever `isAudible`
+- otherwise the latest of `lastDeselectedAt`, `lastAudibleAt` (the moment
+  audible playback last ended) and the Peek's `lastAudibleAt`. `lastAudibleAt` is stamped whenever `isAudible`
   goes from true to false: a pause or the end of the media, a mute, the web
   view going away. So once playback stops, "Archive tabs after" restarts from
   the stop, not from the deselection (the user's rule, Nov 8 2026).

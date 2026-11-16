@@ -10,6 +10,9 @@
 * [Extension permissions](permissions.md) - How permission decisions are stored, prompted for and re-applied to every loaded context, the order that makes the restore deterministic, how nativeMessaging is enforced, and what WebKit does with overlapping grants and denials.
 * [Extensions in the Private profile](private-profile-extensions.md) - The rules for extensions in Private windows — off unless allowed per extension, pages in the profile's own non-persistent store, and the WebKit private-data gate that silently stops events without hasAccessToPrivateData.
 * [Frames and content scripts](frames-and-content-scripts.md) - What WebKit does with frames in an extension context — native getAllFrames with its own frame ids, empty URLs and no content scripts for srcdoc and about:blank frames, the limits seen in cross-origin iframes — and what Detour adds for content scripts.
+* [Notification ownership](polyfill-notification-scope.md) - How extension notifications belong to a profile-and-extension owner, why their Notification Center identifiers are opaque, when an owner's notifications are taken away, and how a launch removes the ones an earlier launch left.
+* [Polyfill errors and runtime.lastError](polyfill-errors.md) - How a polyfilled API's callback form sets runtime.lastError on WebKit's runtime, and how a native polyfill error reaches the extension verbatim from a page and a worker despite WebKit's rewrite of sendNativeMessage errors.
+* [Polyfill request gates](polyfill-request-gates.md) - The checks the polyfill bundle and its native handler apply to a request after the sender is verified — which namespaces exist without a permission, which requests the handler refuses, and which profile or space a request acts in.
 
 # Components
 
@@ -21,14 +24,20 @@
 * [Native messaging](native-messaging.md) - How Detour runs Chrome native messaging hosts for extensions — host discovery, the access gate at dispatch, the one-shot and port paths, exactly-once teardown, and what may and may not be logged.
 * [Native port keep-alive](native-port-keep-alive.md) - How Detour keeps an extension's background alive while it holds a native messaging host or relayed WebSocket, why the native side drives it, how a dead background is detected and restarted, and the cases it does not cover.
 * [Offscreen documents](offscreen-documents.md) - Detour's implementation of chrome.offscreen — a hidden web view per extension and profile, the rule that every createDocument settles exactly once, the AudioContext bridge, and why Detour's implementation shadows a native one.
-* [Polyfill layer](polyfill-layer.md) - The JavaScript bundle Detour evaluates in every extension context and the native handler behind it — how it is injected, how a request reaches Swift, how the sender is verified, and how callback-style calls get runtime.lastError.
+* [Polyfill layer](polyfill-layer.md) - The JavaScript bundle Detour evaluates in every extension context and the native handler behind it — how it is injected, how a request reaches Swift and how the sender is verified, with links to the pages on each polyfilled API.
 * [runtime.onInstalled](runtime-installed-event.md) - Why Detour suppresses WebKit's runtime.onInstalled and emits its own from a per-profile version ledger, how the background context claims the event at start-up, and how the claim is restricted to the real background context.
 * [Tab and window bridge](tab-and-window-bridge.md) - How Detour's tabs and windows are presented to WebKit's extension runtime — the WKWebExtensionTab and Window conformances, the rule for when a tab is reported open, closed, moved or active, and what a window lists.
 * [WebSocket relay](websocket-relay.md) - Why a WebSocket opened in an extension service worker deadlocks WebKit, and how Detour replaces it with a socket relayed through a native port to URLSessionWebSocketTask — protocol, lifetime, cookies and deliberate gaps.
 
 # Features
 
+* [chrome.history in the polyfill](polyfill-history.md) - How the polyfill's chrome.history.search reads only the calling profile's history, its argument rules, the 24-hour default range taken from Chrome, and the members that do nothing.
+* [chrome.management in the polyfill](polyfill-management.md) - The permission-free management methods Detour implements — getSelf, uninstallSelf (with its confirmation dialog and the cooldown after a Cancel) and getPermissionWarningsByManifest — and where they differ from Chrome.
+* [chrome.notifications in the polyfill](polyfill-notifications.md) - How Detour's chrome.notifications applies unawaited calls in call order, reads the create signature, answers clear and update as Chrome does, and maps the options onto a macOS banner.
 * [Extension updates](updates.md) - How installed extensions move to newer versions — the update2 poll, the verification gate, the added-permissions hold, deferring an update while the extension is busy, runtime.onUpdateAvailable, and why runtime.reload has to be recognised natively.
+* [Favicons for extensions](polyfill-favicons.md) - How the polyfill turns chrome.runtime.getURL('/_favicon/…') into a profile-scoped detour-favicon:// URL, what an extension page, a frame and a worker get from it, and the favicon.lookup message that was removed.
+* [Notification authorization](polyfill-notification-authorization.md) - When Detour asks macOS for notification authorization on an extension's behalf, how creates and updates wait for the answer, and the bounded wait that keeps an ignored prompt from stalling every profile.
+* [Notification events](polyfill-notification-events.md) - How notifications.onClicked and onClosed reach the creating extension's background through a parked request, what fires for a click, a dismissal or a clear, and how the manager stays in step with Notification Center.
 
 # Investigations
 

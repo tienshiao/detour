@@ -4,7 +4,7 @@ title: Extensions are off in Private unless allowed
 description: Why extensions do not load in the Private profile until the user allows each one, why that was implemented as a changed default rather than a migration, and what was rejected.
 tags: [extensions, privacy, incognito, decision]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T23:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:02:37Z }
 sources:
   - id: database
     resource: ../../Detour/Storage/Database.swift
@@ -59,8 +59,10 @@ Private profile unless the user turns on "Allow in Private" for it.**
 - A context loaded into the Private profile gets `hasAccessToPrivateData`,
   which is exactly what the user's opt-in means to WebKit.
 - Installing, updating, globally re-enabling and pinning an extension never
-  change its Private state. Install and update write no per-profile row; a
-  pin inserts a row carrying the profile's default.
+  change its Private state. Install and update wrote no per-profile row; a
+  pin inserts a row carrying the profile's default. (Since TASK-312 an
+  install writes one ON row, for the normal profile it was installed from;
+  the Private profile is never that target.)
 
 The default was kept after the storage leak that prompted it was closed
 (Private extension pages now run in the profile's ephemeral store). Opting in

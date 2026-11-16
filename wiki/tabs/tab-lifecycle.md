@@ -4,7 +4,7 @@ title: Tab lifecycle
 description: How a tab comes into being, navigates, closes and comes back, which object is its navigation delegate at each point, and when each step reaches the database.
 tags: [tabs, lifecycle, navigation, persistence]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-27T04:55:17Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:16:42Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -58,10 +58,11 @@ sources:
 
 # Summary
 
-A tab is a `BrowserTab` that sits in exactly one of four places: `space.tabs`
+A tab is a `BrowserTab` that sits in exactly one of five places: `space.tabs`
 (a normal tab), `PinnedEntry.tab` (a [pinned entry's](./pinned-tabs-and-folders.md)
-backing tab), `Favorite.tab` (a [favourite's](./favorites.md) backing tab) or
-another tab's `peekTab` (a [Peek](./peek.md)). It is live (has a `WKWebView`) or
+backing tab), `Favorite.tab` (a [favourite's](./favorites.md) backing tab),
+`TabStore.quickDetourTabs` (a [Quick Detour](../features/quick-detour.md)
+window's tab, in no space) or another tab's `peekTab` (a [Peek](./peek.md)). It is live (has a `WKWebView`) or
 [asleep](./sleeping-and-archiving.md). Every structural change goes through
 [`TabStore`](../architecture/tabstore.md), which follows one shape: mutate,
 register undo, notify observers, `scheduleSave()`.
@@ -74,19 +75,23 @@ above; the web view side (who hosts it) is
 
 ## Creation
 
-Every path that adds a normal tab ends in the private `TabStore.insertTab`,
-which sets `spaceID` and `parentID`, computes the index
+Most paths that add a normal tab end in `TabStore.insertTab` (internal; the
+`addTab` family and a Quick Detour's tab moving into a space use it), which sets `spaceID` and
+`parentID`, computes the index
 ([insertion rule](./tab-insertion-and-close-selection.md)), inserts, subscribes
 to the tab's published properties, notifies `tabStoreDidInsertTab` and
-schedules a save. Entering `space.tabs` is also what reports the tab to the
+schedules a save. The rest insert into `space.tabs` directly and notify
+`tabStoreDidInsertTab` themselves: `addTabInSplit(with:rightPane:in:)`,
+`addSplitInNormalSection`, `reopenClosedTabRecord`, the close undos,
+`restoreFavoriteAsTab` and a move to another space. Entering `space.tabs` is also what reports the tab to the
 extension contexts (the list's `didSet`, see
 [tab and window bridge](../extensions/tab-and-window-bridge.md)).
 
 | Trigger | Store call | Selected afterwards |
 |---|---|---|
-| Submitting the [command palette](../features/command-palette.md) in new-tab mode | `addTab(in:)`, then `tab.load(url, typed:)`; a URL a route sends to another space opens there instead ([link routing](../features/link-routing.md#typed-urls-and-links-clicked-in-a-page)) | yes |
+| Submitting the [command palette](../features/command-palette.md) in new-tab mode | `addTab(in:)`, then `tab.load(url, typed:)`; a URL a route sends to another space opens there instead ([link routing](../features/link-routing-in-page.md)) | yes |
 | Cmd+click on a link | `addTab(in:url:parentID:)` with the selected tab as parent | no (a toast says so when the sidebar is collapsed) |
-| Opt-Cmd-click on a link, or on a sidebar tab | no tab: a new [Quick Detour](../features/quick-detour.md#other-entry-points) window (a sidebar tab's address copied; the tab untouched) | — |
+| Opt-Cmd-click on a link, or on a sidebar tab | no tab: a new [Quick Detour](../features/quick-detour-entry-points.md) window (a sidebar tab's address copied; the tab untouched) | — |
 | Context menu "Open Link in New Tab" | sets `contextMenuLinkAction`, replays WebKit's own item, lands in `createWebViewWith` → `addTab(in:url:parentID:)` | no |
 | `window.open` or a `_blank` link in a normal tab | `createWebViewWith` → `addTab(in:openedWith:parentID:)`, with the opener as parent, in the opener's space; the tab's web view is returned to WebKit, which loads the URL | yes, unless the opener is in a space the window is not showing |
 | Option+click on a link, or "Open Link in Split View" | `addTabInSplit(with:url:in:)`, or from a favourite or lone pinned tab `addSplitInNormalSection(copying:rightPane:in:)`, which adds two tabs ([split](./split-tabs.md#opening-a-split-from-a-tab))[^task-185] | yes (the right pane) |
@@ -149,8 +154,10 @@ tab ([history recording](../features/history-recording-and-search.md)).
 
 - A web view no window has claimed is its tab's own delegate (the
   `BrowserTab: WKNavigationDelegate` extension): the content-blocker
-  preferences, the commit, the provisional failure and the events of the
-  unresponsive-load rule, nothing else
+  preferences, the commit, the provisional failure, the events of the
+  unresponsive-load rule, the response policy (download or CRX offer,
+  TASK-205) and the download callbacks (`didBecome download`, the context
+  menu's `_webView:contextMenuDidCreateDownload:`, TASK-324), nothing else
   ([BrowserTab](../architecture/browser-tab.md#its-own-navigation-delegate)
   has the list). A failure after commit is handled by neither delegate
   ([error pages](../features/error-pages.md#failures-after-commit)).
@@ -166,10 +173,10 @@ tab ([history recording](../features/history-recording-and-search.md)).
 **Link policy order** (`decidePolicy(for:in:)`). The order is load-bearing:
 
 1. An internal URL: allowed only when the owning tab authorises it, else cancel.
-2. Opt-Cmd-click to a web URL (TASK-193.5): a new [Quick Detour](../features/quick-detour.md#opt-cmd-click-on-a-link)
+2. Opt-Cmd-click to a web URL (TASK-193.5): a new [Quick Detour](../features/quick-detour-entry-points.md#opt-cmd-click-on-a-link)
    on the page's profile, never routed. With Settings' switch off, or to a
    non-web URL, Opt-Cmd falls to step 3 as before.
-3. Cmd+click: background tab, unless a [link route](../features/link-routing.md#typed-urls-and-links-clicked-in-a-page)
+3. Cmd+click: background tab, unless a [link route](../features/link-routing-in-page.md)
    sends it to another space or a Private window (TASK-191.4).
 4. Shift+click: [Peek](./peek.md).
 5. Option+click: [split](./split-tabs-hosting.md). This must precede step 8,
@@ -181,12 +188,16 @@ tab ([history recording](../features/history-recording-and-search.md)).
    that a route sends elsewhere opens there and the tab stays
    (`linkRoutingEligibility`, TASK-191.4). It wins over step 10
    (`inPageLinkOutcome`).
-10. The pinned/favourite Peek intercept.
+10. The pinned/favourite Peek intercept. With Peek turned off,
+    `PeekAnchor.anchoredLinkAction` answers `.newTab` and the link opens as a
+    selected tab with the anchor as parent (TASK-307).
 11. Allow, after applying the per-host user agent to the *navigating* tab.
 
-The modifier branches (steps 2 to 5) are the pure
-`inPageLinkClickBranch(_:target:quickDetourClickEnabled:)`, which the
-routing rule reads too:
+The modifier precedence (steps 2 to 5) is the pure
+`inPageLinkClickBranch(_:target:quickDetourClickEnabled:)`.
+`decidePolicy(for:in:)` calls it only for step 2 (Quick Detour); steps 3 to 5
+test `modifierFlags` inline in the same order. The routing rule
+(`LinkRoutingEligibility.swift`) calls it for every link:
 
 | Modifiers on a link | Before TASK-193.5 | Since |
 |---|---|---|
@@ -202,7 +213,11 @@ its own Peek intercept; a popup-style one is never routed.
 ## Closing
 
 Cmd+W (`closeCurrentTab`) is a dispatcher, in this order: a presented Peek is
-dismissed and nothing else happens; with no selection the window closes; a
+dismissed (`closePeekOverlayByUser`, which first writes a reopenable record
+with `store.recordClosedPeek`, TASK-307: Reopen Closed Tab brings the Peek
+back on its host, see [Peek](./peek.md) and
+[closed Peeks](./closed-tabs-and-archive.md#closed-peeks)) and nothing else
+happens; with no selection the window closes; a
 pinned entry's tab goes dormant; a favourite's tab is deactivated; otherwise
 the normal tab closes.
 
@@ -245,6 +260,9 @@ another space) deliberately does not call it.
 - **Reopen Closed Tab** (Cmd+Shift+T) takes the newest plain-close record of
   the active space, deletes it and inserts the rebuilt tab at
   `min(sortOrder, count)`, snapped out of any split that now spans that index.
+- A reopened or undone tab keeps its opener link only while the opener is
+  still open: `parentID = space.liveOpenerID(…)` (TASK-332; see
+  [back swipe to the opener](./back-swipe-to-opener.md)).
 - **Undo** (Cmd+Z) and **Redo** (Shift+Cmd+Z) of tab actions are
   `TabStore.undoManager`, shared by all windows. Since TASK-345 a page gets
   both keys first: a page that handles them (`preventDefault`, as canvas web
@@ -252,8 +270,9 @@ another space) deliberately does not call it.
   (WebKit re-sends unhandled keys to AppKit; see
   [A page's key equivalents and its undo](../platform/page-key-equivalents-and-undo.md)).
   Edit > Undo and Redo (`browserUndo:`/`browserRedo:`) run the focused
-  page's own undo while an editable element in it has focus (the web view is
-  the window's first responder and its `editableFieldFocus` flag is set;
+  page's own undo while an editable element in it has focus (the window is
+  key, the web view is its first responder and its `editableFieldFocus` flag
+  is set, `undoTarget`;
   titled from the page, "Undo Typing"), and `TabStore.undoManager` otherwise,
   focus in the palette or the find bar included. Each `BrowserWebView` keeps
   its page's edits on its own undo manager, which WebKit empties when the
@@ -272,6 +291,7 @@ another space) deliberately does not call it.
 | Event | Effect |
 |---|---|
 | Any structural mutation; a tab's `url` or `favicon` changing | `scheduleSave()`: one `saveNow()` 1 s after the last call |
+| A tab's `title` changing | `scheduleSaveUnlessPending(after: titleSaveDelay)`: a save 5 s later, never postponing one already pending (TASK-227) |
 | Closing a tab | the `closedTab` row is written immediately, outside `saveNow()` |
 | Window close | `saveNow()` |
 | App termination | undo stack cleared, then `saveNow()` |

@@ -5,6 +5,8 @@ description: How a WKWebView on macOS hands a Cmd key to the page first and give
 tags: [webkit, keyboard, undo, menus, responder-chain]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T21:00:00Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:44Z }
 stale_after: 2027-06-01T00:00:00Z
 sources:
   - id: task-345

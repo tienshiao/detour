@@ -4,7 +4,7 @@ title: Testing extensions
 description: Which kind of extension test proves what — pure rules, the polyfill in a bare web view, a real WebKit extension context, the production Profile wiring, a runtime check with API Explorer, and the signed build — with the fixtures and the traps.
 tags: [extensions, testing, playbook, fixtures]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T09:20:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:00:07Z }
 sources:
   - id: claude-md
     resource: ../../CLAUDE.md
@@ -99,13 +99,13 @@ All in `ExtensionTestSupport.swift` unless noted.
 | Fixture | Use |
 |---|---|
 | `makeTestExtension(id:manifestJSON:files:)`, `installTestExtension`, `loadTestContext` | Write an unpacked extension to a temp directory, save it, load it into a profile. Tests generate their extensions; they do not load `TestExtensions/` |
-| `waitUntil(_:timeout:pollInterval:_:)`, `pollUntil(timeout:pollInterval:_:)` | `waitUntil` polls a condition the test needs (used across ~57 files, not only extension tests). On timeout it records `XCTFail` at the waiting line *and* throws `WaitTimedOut`, so the test body stops there; before TASK-245 it only recorded the failure and returned, and the test went on with stale state. The `XCTFail` stays so a `do`/`catch` or `try?` around the wait cannot hide the timeout. A wait whose timeout is an expected outcome (the closed-gate leg of `ExtensionPrivateStoreTests`) uses `pollUntil`, which returns `false` and never fails |
+| `waitUntil(_:timeout:pollInterval:_:)`, `pollUntil(timeout:pollInterval:_:)` | `waitUntil` polls a condition the test needs (used across about 80 test files, not only extension tests). On timeout it records `XCTFail` at the waiting line *and* throws `WaitTimedOut`, so the test body stops there; before TASK-245 it only recorded the failure and returned, and the test went on with stale state. The `XCTFail` stays so a `do`/`catch` or `try?` around the wait cannot hide the timeout. A wait whose timeout is an expected outcome (the closed-gate leg of `ExtensionPrivateStoreTests`) uses `pollUntil`, which returns `false` and never fails |
 | `registerProbeTab(for:in:)` / `unregisterProbeTab` | Make a plain web view a tab WebKit knows. **Call it before the page loads** |
 | `askWorker(from:message:transport:)` | One round trip to the worker, returning both `reply` and `lastError`. `.direct` from an extension page, `.contentScriptRelay` from a web page |
 | `workerReplyIsEmpty` | A null reply means either "the worker answered nothing" or "WebKit could not reach it"; `"timeout"` means the callback never fired |
 | `postRawPolyfillEnvelope` | Post to the bridge bypassing the polyfill, so a test can claim any extension id |
 | `callbackOutcomeJS`, `promiseOutcomeJS` | Record how a call settled in callback form (`runtime.lastError`) and promise form |
-| `FakeNativeMessagingHost` | A host process found through `DETOUR_NATIVE_MESSAGING_HOSTS_DIR`: silent by default; its `Behavior` writes fixed bytes, echoes (`.echoesCounted` with its process visible to `processCount()`), or answers one request and then exits or stays alive, or ignores SIGTERM (see [native messaging](./native-messaging.md#tests)) |
+| `FakeNativeMessagingHost` | A host process found through `DETOUR_NATIVE_MESSAGING_HOSTS_DIR`: silent by default; its `Behavior` writes fixed bytes, echoes (`.echoesCounted` with its process visible to `processCount()`), or answers one request and then exits or stays alive, or ignores SIGTERM, closes its stdin (TASK-265), or is a wrapper script that runs its host without `exec` (TASK-274) (see [native messaging](./native-messaging.md#tests)) |
 | `LoopbackHTTPServer` | Real http documents for frame tests; a different port is a different origin. A `pending`/`stalled`/`truncated` route's connection is held in the same critical section that records its path, so once a path shows up in `requestedPaths`, `release(_:)` finds its connection (before TASK-237 a release could slip in between and leave the load hanging) |
 | `LoopbackWebSocketServer` | An echo server for the [relay](./websocket-relay.md) |
 | `CRX3TestSupport.swift` | Builds signed CRX3 files in the test |
@@ -128,14 +128,17 @@ host, and strips the prefix.
 
 | Variable | What runs |
 |---|---|
-| `TEST_RUNNER_DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1` | Six background-page unload legs: three baseline legs, about 37 s, 127 s and 300 s,[^task-62] and three that close one of the background's ports (TASK-141), about 47 s, 128 s and 38 s; see [service worker unload rules](../platform/service-worker-unload-rules.md) |
+| `TEST_RUNNER_DETOUR_MEASURE_BACKGROUND_PAGE_UNLOAD=1` | Twelve unload legs in `ExtensionPolyfillProfileWiringTests`: three baseline background-page legs (a–c), about 37 s, 127 s and 300 s,[^task-62] three that close one of the background's ports (d–f, TASK-141), about 47 s, 128 s and 38 s, and six on the anchor port (TASK-142): e′ and f′, g and g′ (the background closes its own runtime port, without and with the anchor), h and h′ (a service-worker background); see [service worker unload rules](../platform/service-worker-unload-rules.md) |
 | `TEST_RUNNER_DETOUR_MEASURE_WORKER_UNLOAD=1` (and `…_SECONDS`, default 300) | A worker held only by the keep-alive, then released |
 | `TEST_RUNNER_DETOUR_MEASURE_PRIVATE_WORKER=1` (and `…_SECONDS`) | The Private-profile worker answering after 90 s instead of a few |
+| `TEST_RUNNER_NOTIFICATION_UNLOAD_LEG=1` | About a minute: a worker with a parked notification `awaitEvent` is still unloaded by WebKit's idle timer, and a later click wakes it and is delivered (`ExtensionNotificationEventTests`) |
+| `TEST_RUNNER_DETOUR_REAL_CRX_FILES=<id>=<path>:…` | Downloaded store CRX files checked against the production install gate under their store ids (`CRXInstallGateTests`) |
 | `TEST_RUNNER_DETOUR_DATA_DIR=<name>` | A private data directory, needed when two test runs overlap |
 
-These are measurements of WebKit's timers
-([service worker unload rules](../platform/service-worker-unload-rules.md)).
-Leave them off in normal runs.
+The unload legs are measurements of WebKit's timers
+([service worker unload rules](../platform/service-worker-unload-rules.md)),
+and the CRX leg needs files that are not in the repository. Leave them off
+in normal runs.
 
 # TestExtensions
 

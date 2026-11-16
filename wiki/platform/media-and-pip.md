@@ -4,7 +4,7 @@ title: Media and picture-in-picture
 description: WebKit media behaviour Detour has to accommodate — picture-in-picture needs the video's view on screen to start and to return, a standalone video URL ends its navigation with error 204, and audio and capture state gate sleeping and GPU process recycling.
 tags: [webkit, media, picture-in-picture, navigation, tabs]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T08:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:26Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-79
@@ -185,9 +185,10 @@ arrive and waiting on one would hang the call.[^task-121]
 
 ## Audio and capture as gates
 
-- `TabStore.sleepStaleTabs` never sleeps a tab that is playing audio;
-  `BrowserTab.sleep(force:)` refuses unless forced, and a forced sleep pauses
-  media first — see [sleeping and archiving](../tabs/sleeping-and-archiving.md).
+- `TabStore.sleepStaleTabs` never sleeps an audible tab (`isAudible`; a
+  muted tab playing media can sleep); `BrowserTab.sleep(force:)` refuses an
+  audible tab unless forced, and pauses media first when forced or when a
+  muted tab is still playing — see [sleeping and archiving](../tabs/sleeping-and-archiving.md).
 - `teardown()` and `retarget(to:)` call `pauseAllMediaPlayback` before
   releasing the web view.
 - The [GPU process recycler](./gpu-iosurface-limit.md) will not kill the GPU

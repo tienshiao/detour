@@ -5,7 +5,7 @@ description: How Detour runs Chrome native messaging hosts for extensions — ho
 resource: ../../Detour/Extensions/Runtime/NativeMessagingHost.swift
 tags: [extensions, native-messaging, security, logging]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T06:20:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:05:28Z }
 sources:
   - id: task-232
     resource: backlog:TASK-232
@@ -271,8 +271,12 @@ error, as before; its single message can never fill the queue.
 
 Both paths also carry Detour's own traffic: `detourPolyfill` (the
 [polyfill layer](./polyfill-layer.md)'s worker transport and the keep-alive
-port) and `detourWebSocketRelay` (the [WebSocket relay](./websocket-relay.md)).
-Those names never spawn a process.
+port), `detourKeepAliveAnchor` (the keep-alive's
+[anchor port](./native-port-keep-alive.md#the-anchor-task-142)) and
+`detourWebSocketRelay` (the [WebSocket relay](./websocket-relay.md)).
+Those names never spawn a process. The anchor and the relay are port-only:
+a one-shot `sendNativeMessage` to either is refused ("… is a port-only
+host").
 
 ## The access gate
 
@@ -283,7 +287,7 @@ worker *is* `sendNativeMessage`. The real gate is therefore at dispatch:
 
 | Result | When | Effect |
 |---|---|---|
-| `.polyfillHost`, `.webSocketRelayHost` | Host name is one of Detour's own | Accepted without the manifest permission; the saved decision is never read |
+| `.polyfillHost`, `.keepAliveAnchorHost`, `.webSocketRelayHost` | Host name is one of Detour's own | Accepted without the manifest permission; the saved decision is never read |
 | `.allowed` | Manifest declares `nativeMessaging`, no saved denial | Host is looked up and spawned |
 | `.denied` | Manifest does not declare it, or the context cannot be attributed | Refused: "nativeMessaging permission not declared" / "Unrecognized extension context" |
 | `.deniedByUser` | Saved `nativeMessaging` decision is a denial | Refused with Chrome's "Access to the specified native messaging host is forbidden." before any host object exists |
@@ -387,8 +391,10 @@ running `Termination.grace` (2 s) later is sent SIGKILL; before TASK-241 a
 host that ignored or blocked SIGTERM stayed running as a child of Detour
 after its port or request was gone.[^task-241] The wait runs on a global
 queue and holds the `Process`, never the host, so a teardown from `deinit`
-still escalates and the host is not kept alive. It checks
-`Process.isRunning` first: that goes false when Foundation reaps the child,
+still escalates and the host is not kept alive. It checks that the host, or
+anything left in its process group, is still alive first (`isAlive`, see
+[the host's process tree](#the-hosts-process-tree)). `Process.isRunning`
+goes false when Foundation reaps the child,
 and until the reap the pid is a zombie's and cannot be reused, so a host
 that exited on SIGTERM (1Password's does) is sent nothing more. A host that
 had already exited when the teardown ran gets no signal at all.
@@ -488,7 +494,7 @@ the same sweep limited to the hosts started from the executables it names
 (each registry entry keeps its manifest `path`), so a test ends only its own
 fixtures' hosts and never one another suite left in the test
 host.[^task-277]
-`terminateAllSpawnedHosts(within:)` sends SIGTERM to each running one's
+`terminateAllSpawnedHosts(within:refusingNewHosts:)` sends SIGTERM to each running one's
 process group, waits for them all together, polling `isAlive` (the host or
 anything left in its group), then sends SIGKILL to the groups still
 alive ([the host's process tree](#the-hosts-process-tree)). It logs `NM QUIT: N host(s) sent SIGTERM, M … sent SIGKILL`. It blocks
@@ -506,12 +512,13 @@ reports are main-actor tasks and the app exits first.
   host for a teardown, because it delays the quit. A host that exits on
   SIGTERM takes milliseconds (measured: 2 ms), so the second is only spent
   on a host that ignores SIGTERM.
-- **SIGTERM to Detour**: `installSIGTERMHandler()` (the first thing in
-  `applicationDidFinishLaunching`) sets SIGTERM to `SIG_IGN` and handles it
+- **SIGTERM to Detour**: `installSIGTERMHandler()` (at the start of
+  `applicationDidFinishLaunching`, after only a test-run setting) sets SIGTERM to `SIG_IGN` and handles it
   with a `DispatchSource` on a global queue (made by
   `makeHostEndingSignalSource(_:endHosts:)`). That works even when the main
-  thread is busy or hung. The handler ends the hosts in the same way, then
-  cancels the source (it sees the re-sent signal too, whatever the
+  thread is busy or hung. The handler ends the hosts in the same way (and
+  removes the [automation endpoint](../features/automation-endpoint.md)'s
+  file, which no quit path would), then cancels the source (it sees the re-sent signal too, whatever the
   disposition), restores `SIG_DFL` and sends SIGTERM to itself again. The app
   still dies of the signal, with exit status 143, and runs no quit path: no
   quit alert, no save. Worth doing because SIGTERM is what a `kill`, a

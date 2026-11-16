@@ -5,6 +5,8 @@ description: Why security keys and passkeys fail instantly in a WKWebView browse
 tags: [webkit, webauthn, passkeys, signing, entitlements]
 status: draft
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-09T09:40:00Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:26Z }
 stale_after: 2027-05-01T00:00:00Z
 sources:
   - id: task-313

@@ -44,8 +44,6 @@ sources:
     title: ContentBlockerWhitelistTests.swift
 ---
 
-# Site settings
-
 Per-site preferences live in one table of the
 [session database](./session-database.md), `siteSetting`, so each new
 per-site switch adds a `SiteSetting` case rather than a table.[^task-187]
@@ -53,7 +51,7 @@ Content blocking was the first, automatic picture in picture the
 second,[^task-188] dev mode the third.[^task-186-5] Adding the dev-mode case
 needed no migration: the table stores `setting` as text.
 
-## Table
+# Table
 
 `siteSetting(profileID, site, setting, value)`, primary key
 `(profileID, site, setting)`, `profileID` cascading from `profile`.
@@ -90,7 +88,7 @@ notification or rule-list rebuild needed. The open Private web views are torn
 down with their spaces before the discard runs. Picture in picture and dev
 mode read the store when they decide, too.[^task-195][^whitelist-tests]
 
-## SiteSettingsStore
+# SiteSettingsStore
 
 `SiteSettingsStore.shared` (over `AppDatabase.shared`) reads the whole table
 once when it is created and keeps a per-profile cache; `set` and `clear` write
@@ -126,7 +124,7 @@ Each setting owns its matching rule (`SiteSetting.site(_:covers:)`):
 both occur. Its key is the dev-mode host line's string, so two local apps
 on different ports are two sites; only `http`/`https` pages have one.[^task-186-5][^dev-mode-tests]
 
-## Content blocking's site list
+# Content blocking's site list
 
 `ContentBlockerWhitelist` kept its API (`isWhitelisted`, `toggleHost`,
 `hostsForProfile`, the pure `covers` / `entriesCovering`) and now reads and

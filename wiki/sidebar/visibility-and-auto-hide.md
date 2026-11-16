@@ -6,6 +6,8 @@ tags: [sidebar, window, state-machine, popover]
 status: stable
 resource: ../../Detour/Browser/Window/SidebarVisibilityState.swift
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:45:28Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:11:43Z }
 sources:
   - id: state
     resource: ../../Detour/Browser/Window/SidebarVisibilityState.swift

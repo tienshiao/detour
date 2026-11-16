@@ -3,8 +3,10 @@ type: Platform Quirk
 title: Controlling a page's media from the app
 description: "What WebKit on macOS 26.7 lets an embedder do to media playing in a page it is not showing — pause and resume (public suspend/resume, which covers iframes and Web Audio but blocks the page's own play until lifted), page mute (private _setPageMuted:, which keeps _isPlayingAudio true), Media Session handlers and metadata (no API: a page-world wrapper plus an isolated-world reader), and observing picture in picture (webkitpresentationmodechanged; _isPictureInPictureActive is always NO)."
 tags: [webkit, media, media-session, picture-in-picture, private-api]
-status: draft
+status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T08:30:00Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:26Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: spike

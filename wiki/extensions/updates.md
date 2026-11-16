@@ -5,6 +5,8 @@ description: How installed extensions move to newer versions — the update2 pol
 tags: [extensions, updates, crx, polyfill]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T09:55:00Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:04:02Z }
 sources:
   - id: updater
     resource: ../../Detour/Extensions/Updates/ExtensionUpdater.swift

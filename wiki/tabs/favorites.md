@@ -4,7 +4,7 @@ title: Favourites
 description: Per-profile tiles above the tab list, each with an optional backing tab that lives on the profile rather than in any space; how they are selected, moved, parked, peeked and kept visible to extensions.
 tags: [tabs, favorites, sidebar, profile, peek]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-12T23:47:17Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:12:56Z }
 sources:
   - id: model
     resource: ../../Detour/Browser/Favorite.swift
@@ -136,10 +136,12 @@ may go nowhere. Sidebar drop validation asks
 
 A favourite's tab is anchored to `Favorite.url` exactly as a pinned tab is
 anchored to its home URL: links leaving that host open in a [Peek](./peek.md)
-(`PeekAnchor.anchorURL` checks pinned entries first, then favourites).[^task-42]
+(`PeekAnchor.anchorURL` checks pinned entries first, then favourites), or in
+a new tab while Settings > General > Peek is off.[^task-42]
 
-A Peek that was open when the user switched away is parked on the backing tab
-(`peekURL`, `peekInteractionState`, `peekFaviconURL`) and survives a relaunch.
+A Peek left open when the user switches away stays on the backing tab
+(hidden; parked once the tab sleeps), its state mirrored to `peekURL`,
+`peekInteractionState` and `peekFaviconURL`, and survives a relaunch.
 The tile then shows a small chip with the Peek's favicon in its top-right
 corner, so a click that will drop the user into an overlay from an earlier
 session is not a surprise.[^task-47] The chip reads

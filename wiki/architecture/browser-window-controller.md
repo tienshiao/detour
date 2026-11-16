@@ -5,7 +5,7 @@ description: The per-window controller — what each of its extension files hand
 resource: ../../Detour/Browser/Window/BrowserWindowController.swift
 tags: [architecture, window, selection, webkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-10T09:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:11:33Z }
 sources:
   - id: window-controller
     resource: ../../Detour/Browser/Window/BrowserWindowController.swift
@@ -53,14 +53,19 @@ The class is split across extension files under
 
 | File | Conformance / subject | Handles |
 |---|---|---|
-| `BrowserWindowController.swift` | Core, `NSWindowDelegate`, `NSMenuItemValidation`, `CommandPaletteDelegate`, `FindBarDelegate`, `WKScriptMessageHandler`, `DownloadManagerObserver`, `NSSplitViewDelegate` | Setup, space switching, `selectTab`, claiming web views, snapshots, split hosting and its animation veneer, find bar, Peek overlay, menu actions, close paths, window events. |
+| `BrowserWindowController.swift` | Core, `NSWindowDelegate`, `NSMenuItemValidation`, `CommandContext`, `CommandPaletteDelegate`, `FindBarDelegate`, `WKScriptMessageHandler`, `DownloadManagerObserver`, `NSSplitViewDelegate`, `TabHoverCardHost` | Setup, space switching, `selectTab`, claiming web views, snapshots, split hosting and its animation veneer, find bar, Peek overlay, menu actions, close paths, window events. |
 | `+TabStore.swift` | `TabStoreObserver` | Turning store callbacks into sidebar updates and selection repair. |
 | `+TabSidebar.swift` | `TabSidebarDelegate` | Every sidebar gesture: select, close, move, pin, split, favorites, folders, spaces, archive. |
 | `+Navigation.swift` | `WKNavigationDelegate` | Navigation policy (modifier clicks, Peek, external apps, downloads, CRX installs), commit and failure forwarding, process termination, authentication challenges, blocked-load counting. |
 | `+WKUIDelegate.swift` | `WKUIDelegate` | `window.open`, `window.close`, JavaScript dialogs, file upload, media capture permission, return from Picture in Picture. |
 | `+ExternalApps.swift` | — | Confirming non-HTTP URL schemes ([external apps](../features/external-apps.md)). |
 | `+RecentTabSwitcher.swift` | — | Control+Tab MRU overlay ([tab switching](../tabs/tab-switching.md)). |
-| `BrowserWebView.swift` | `WKWebView` subclass | Pane focus on `becomeFirstResponder`, the page's own undo manager and editing flag (TASK-345), mouse button 3 = back, link context menu items. |
+| `+LinkRouting.swift` | — | Link Routes for typed URLs and in-page links ([link routing](../features/link-routing.md)). |
+| `+NavigationSwipe.swift` | — | Detour's own back swipe, which can close a tab to its opener (TASK-325, [back swipe to the opener](../tabs/back-swipe-to-opener.md)). |
+| `+NowPlaying.swift` | — | The [now-playing bar](../features/now-playing-bar.md), window side. |
+| `+DevToolbar.swift` | — | [Dev mode](../features/dev-mode.md)'s in-page toolbar per hosted pane. |
+| `+Automation.swift` | — | The automation indicator ([automation endpoint](../features/automation-endpoint.md)). |
+| `BrowserWebView.swift` | `WKWebView` subclass | Pane focus on `becomeFirstResponder`, the page's own undo manager and editing flag (TASK-345), mouse button 3 = back, link context menu items; `swipe(with:)` and `scrollWheel(with:)` hook Detour's own back swipe (TASK-325); in a browser window `goBack(_:)`, `goForward(_:)` and their `validateUserInterfaceItem` hand Back/Forward to the controller (TASK-331). |
 
 `WKExtensionWindowConformance.swift` (in `Detour/Extensions/Runtime/`) makes the
 controller a `WKWebExtensionWindow`.
@@ -73,15 +78,19 @@ window.contentView
     ├── sidebarItem  → TabSidebarViewController.view
     └── contentItem  → contentContainerView
                         ├── webViewContainer | hostedSplitView | snapshotImageView
-                        ├── peek overlay + peek web view
                         ├── splitDropZoneView, splitRevealOverlay (transient)
+                        ├── navigationSwipe.finishingOverlay (transient)
                         ├── emptyStateLabel
+                        ├── dragHandle (WindowDragView, top strip)
                         ├── findBar, linkStatusBar
-                        └── dragHandle (WindowDragView, top strip)
+                        ├── automationIndicator
+                        ├── peek overlay + peek web view
+                        └── contentScrim (while the command palette is open)
 ```
 
 Content views are added `positioned: .below, relativeTo: dragHandle`, so the
-drag strip stays on top. The tab's container is laid out with **frames and
+drag strip stays above them. The automation indicator and the Peek overlay
+are added with a plain `addSubview` and sit above `dragHandle`. The tab's container is laid out with **frames and
 autoresizing masks**, never constraints: Auto Layout on a `WKWebView` breaks
 the docked Web Inspector. See [AppKit gotchas](../platform/appkit-gotchas.md).
 
@@ -114,11 +123,17 @@ back/forward buttons).
 
 The one path that changes what a window shows. In order:
 
-1. Resolve the id through `displayableTab`; an unknown id is a no-op.
+1. Resolve the id through `displayableTab`; an unknown id is a no-op. Then
+   `navigationSwipeWillSelect` drops a finished back swipe's veneer when the
+   selection goes elsewhere (TASK-325).
 2. Dismiss the command palette.
-3. Leave the previous tab: start Picture in Picture if it plays audio, hide
-   the Peek UI, stamp `lastDeselectedAt` and capture its switcher preview
-   (`stampDeselected`, for both panes of a split).
+3. Leave the previous tab: stamp `lastDeselectedAt` and capture its switcher
+   preview (`stampDeselected`, for both panes of a split) before hiding the
+   Peek UI, so the Peek is pictured with its host; start Picture in Picture
+   for the outgoing Peek (before the hide) and tab when
+   `entersPictureInPictureOnLeaving` holds. That asks
+   `AutomaticPictureInPicture.shouldEnter`: playing audio, not muted, not a
+   tab being closed, and the site's Picture in Picture switch on (TASK-188).
 4. `removeContentViews()`.
 5. Set `selectedTabID` and `space.selectedTabID`.
 6. Wake what is needed: a dormant partner of a pinned split is activated;
@@ -127,32 +142,43 @@ The one path that changes what a window shows. In order:
    (under `suppressingSelectionCallbacks`, so the table's selection callback
    does not re-enter `selectTab`).
 8. **Claim or snapshot**: claim the web view if this window is key, or if no
-   member's container is hosted anywhere; otherwise show a snapshot.
-9. Restore the tab's Peek, announce the active tab to extensions, and give
-   the page keyboard focus when nothing else holds it (TASK-128).
+   member's container is hosted anywhere; otherwise show a snapshot. Then
+   `dropOpenerUnderlays` for the members (on screen again, they are pictured
+   when they leave next, TASK-325).
+9. Exit Picture in Picture for the tab and its Peek, give each member back
+   media the now-playing bar paused (`nowPlayingTabWasSelected`), restore the
+   tab's Peek, announce the active tab to extensions, and give the page
+   keyboard focus when the palette was showing or nothing else holds it
+   (`paletteWasShowing || isKeyboardFocusUnheld`, TASK-128).
 
 `selectTab` is not idempotent for a live tab: it re-parents content, dismisses
 the palette, cycles Picture in Picture and re-announces activation. Callers
 that only need hosting to match the model use `refreshSplitHostingIfNeeded()`
 or `ensureOwnsWebView()` instead.
 
-`deselectAllTabs()` is the empty state: no selection, the "tab peace" label
-(hidden while the command palette is open, TASK-297), disabled navigation
-buttons.
+`deselectAllTabs()` is the empty state: no selection, the `emptyStateLabel`
+("Where to next?" when the space has tabs or pinned entries, "A rare moment
+of tab peace." otherwise; hidden while the command palette is open,
+TASK-297), disabled navigation buttons.
 
 ## Claiming content
 
 `claimWebView(for:)` wakes any member with no web view, then hosts one
 container (`claimSingleWebView`) or two in an `NSSplitView`
 (`claimSplitWebViews`), then calls `loadIfStalled()` on each member as a
-safety net for a web view with no content. The single-owner mechanics are on
+safety net for a web view with no content, and last `refreshDevToolbars()`,
+`refreshNavigationSwipeModes()` and `bindNavigationSwipePanes()` (whether each
+hosted pane gets Detour's own back swipe, TASK-325). The single-owner mechanics are on
 [web view ownership](./webview-ownership.md); the split view on
 [split tabs hosting](../tabs/split-tabs-hosting.md).
 
 `wireOwnedWebView` makes the window the `navigationDelegate` and `uiDelegate`
-of a web view it hosts and registers itself for the `linkHover` and
+of a web view it hosts, undoes any own-swipe mode (`resetNavigationSwipeMode`;
+the claim applies the mode afresh), and registers itself for the `linkHover` and
 `editableFieldFocus` script messages (a Peek's page gets `editableFieldFocus`
-only, from `claimPeekWebView`, TASK-345). Two consequences:
+only, from `claimPeekWebView`, TASK-345). `removeContentViews()` cancels a
+back swipe being tracked and resets the swipe mode of each page it removes.
+Three consequences:
 
 - The handlers go through `WeakScriptMessageHandler`.
   `userContentController.add(_:name:)` retains what it is given, and until
@@ -204,7 +230,7 @@ Closing a pinned tab arrives as `tabStoreDidUpdatePinnedEntry` with
 
 | Event | What happens |
 |---|---|
-| `windowDidBecomeKey` | Tells `ExtensionManager` the active space, claims the selected tab's web view, restores its Peek. |
+| `windowDidBecomeKey` | Tells `ExtensionManager` the active space and records it as used (`store.noteSpaceUsed`), claims the selected tab's web view, restores its Peek, then `focusWebContentIfUnheld()` (TASK-135). |
 | Occlusion change to visible | Counts a show against the hosted tabs' show budget (`noteShown`). |
 | `windowWillClose` | Saves Peek state, stamps the tab deselected, removes script handlers, hands back navigation delegates, `store.saveNow()`, removes observers, and removes the incognito space if this is a Private window. |
 | `showWindow` (first time) | Puts keyboard focus on the page, or on nothing, never on a sidebar control. |

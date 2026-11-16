@@ -5,6 +5,8 @@ description: How Detour's tabs and windows are presented to WebKit's extension r
 tags: [extensions, tabs, windows, webkit, lifecycle]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-28T05:00:00Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:07:05Z }
 sources:
   - id: lifecycle
     resource: ../../Detour/Extensions/Runtime/ExtensionTabLifecycle.swift

@@ -4,7 +4,7 @@ title: Dev mode
 description: "Which URLs count as local development (localhost, *.localhost, 127.0.0.0/8 in any IPv4 spelling, [::1], 0.0.0.0, *.test over http/https), the per-site override and its popover switch, the one function the effective state goes through, how a dev-mode tab's sidebar row, split half and favourite tile are marked with a host line and, on the window's selected row only (like Arc), a hazard border, and the striped toolbar above a dev-mode page (inside the tab's container, frame-based so the docked Web Inspector keeps working) with its capture buttons (visible area and full page, to the clipboard or Downloads) and its Console, Network and element picker buttons."
 tags: [dev-mode, sidebar, tabs, url-rules, site-settings]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T07:52:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:01:00Z }
 sources:
   - id: rule
     resource: ../../Detour/Browser/DevMode/DevMode.swift
@@ -315,6 +315,28 @@ The favourite tile owns a `HazardBorderView` and binds the live tab's `$url`
 in `refreshDevMode()`, called wherever the tile is built or reused, like
 its favicon binding.
 
+### Colours: why brand orange
+
+The hazard colour is the app icon's orange plate, rgb(255, 118, 0), in both
+appearances, with near-black dashes; the toolbar keeps faint grey stripes.
+The user chose it from five options captured side by side at 2x in light and
+dark (2026-10-24).[^task-197] Measured WCAG contrast of the bright half
+against the sidebar and the selected row:[^harness-197]
+
+| Option | Light: sidebar / selected | Dark: sidebar / selected |
+|---|---|---|
+| `systemYellow` (the original) | 1.27 / 1.07 | 10.87 / 9.14 |
+| brand orange #FF7600 (chosen) | 2.26 / 1.89 | 5.73 / 4.82 |
+| `systemOrange` #FF9500 | 1.85 / 1.55 | 7.47 / 6.28 |
+
+Rejected: yellow, because on the light-blue sidebar only the black dashes
+showed, so the border read as a dotted black line; `systemOrange`, which
+washed out to amber on the light tint; a 2 pt line, more sign-like but heavy
+around the selected row and loud in dark mode; orange-tinted toolbar stripes,
+pleasant peach in light mode but muddy brown (#3C3128) in dark. In dark mode
+the near-black dashes almost vanish (about 1.3:1) whatever the hazard colour,
+so there the bright half carries the border.
+
 ## The dev toolbar
 
 A 30 pt bar across the top of a dev-mode tab's web content, modelled on
@@ -523,7 +545,7 @@ the event goes straight to the button.[^drag-strip]
 
 # Tests
 
-`DevModeTests` (41 tests): every host form above and its look-alikes, the
+`DevModeTests` (42 tests): every host form above and its look-alikes, the
 schemes, nil and hostless URLs, the label's ports, brackets, case and user
 info, the row and split markings, the selected-row display rule (single,
 split halves, unmarked, the host line independent of selection), a sleeping
@@ -547,12 +569,14 @@ frame, a container resize, a web view that lost its gap, a container shorter
 than the bar; and the container applying it (shown, hidden, never made, the
 web view re-framed by someone else, resize, zero-size first, the corner
 masks for an unflipped and a flipped web view, the label, the accessibility
-labels, a trailing group).[^toolbar-tests] `DevToolbarHostingTests` (11, in a
+labels, a trailing group).[^toolbar-tests] `DevToolbarHostingTests` (13, in a
 Private window so the switch writes nothing): local and remote tabs,
 navigation, switching tabs, the switch both ways, a split with one local
 pane and its unfocused pane navigating, a Peek, the URL click (and focusing
-the other pane first), and the copy button writing its own pane's URL to a
-private pasteboard (`urlPasteboard`).[^hosting-tests]
+the other pane first), the toast moving below a toolbar under its spot, the
+copy button writing its own pane's URL to a private pasteboard
+(`urlPasteboard`), and that URL keeping its tracking parameters while Copy
+URL for the same tab strips them (TASK-326).[^hosting-tests]
 
 `WebInspectorControlTests` (22, TASK-186.4): the toggle rule (closed,
 same tab, other tab, unknown tab), the frontend's tab types, which buttons a
@@ -620,29 +644,6 @@ captured in light and dark.[^harness-1865]
 - [Favourites](../tabs/favorites.md) and [Pinned tabs and folders](../tabs/pinned-tabs-and-folders.md) — which URL a dormant item reads.
 - [Split tabs](../tabs/split-tabs.md) — why a split row marks halves.
 - [Suggestion pipeline](./suggestion-pipeline.md) — `AddressInputClassifier`, the separate typed-input rule.
-
-
-## Colours: why brand orange
-
-The hazard colour is the app icon's orange plate, rgb(255, 118, 0), in both
-appearances, with near-black dashes; the toolbar keeps faint grey stripes.
-The user chose it from five options captured side by side at 2x in light and
-dark (2026-10-24).[^task-197] Measured WCAG contrast of the bright half
-against the sidebar and the selected row:[^harness-197]
-
-| Option | Light: sidebar / selected | Dark: sidebar / selected |
-|---|---|---|
-| `systemYellow` (the original) | 1.27 / 1.07 | 10.87 / 9.14 |
-| brand orange #FF7600 (chosen) | 2.26 / 1.89 | 5.73 / 4.82 |
-| `systemOrange` #FF9500 | 1.85 / 1.55 | 7.47 / 6.28 |
-
-Rejected: yellow, because on the light-blue sidebar only the black dashes
-showed, so the border read as a dotted black line; `systemOrange`, which
-washed out to amber on the light tint; a 2 pt line, more sign-like but heavy
-around the selected row and loud in dark mode; orange-tinted toolbar stripes,
-pleasant peach in light mode but muddy brown (#3C3128) in dark. In dark mode
-the near-black dashes almost vanish (about 1.3:1) whatever the hazard colour,
-so there the bright half carries the border.
 
 [^task-186]: Dev mode for local development URLs, sidebar row and in-page dev toolbar
 [^arc-row]: Arc's dev-mode sidebar row (reference image)

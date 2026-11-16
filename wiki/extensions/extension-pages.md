@@ -4,7 +4,7 @@ title: Extension pages in tabs
 description: A tab showing a webkit-extension:// page is tied to one loaded context's origin, which dies on every context reload and every relaunch; how such tabs, pinned tiles, favourites and closed-tab records are rehomed, restored, refused or closed.
 tags: [extensions, tabs, persistence, pinned, favorites]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:00:07Z }
 sources:
   - id: page-url
     resource: ../../Detour/Extensions/Runtime/ExtensionPageURL.swift
@@ -235,7 +235,7 @@ Moves across the incognito boundary are refused.[^task-38]
 
 # Related
 
-- [Storage](./storage.md) — the same per-load origin loses IndexedDB, and the proposed stable base URL.
+- [Storage](./storage.md) — what of an origin's storage WebKit moves to the next origin (IndexedDB, `localStorage`) and what it does not.
 - [Pinned tabs and folders](../tabs/pinned-tabs-and-folders.md), [Favorites](../tabs/favorites.md) — dormant tiles.
 - [Closed tabs and archive](../tabs/closed-tabs-and-archive.md) — the records that carry `extensionID`.
 - [Sleeping and archiving](../tabs/sleeping-and-archiving.md) — what a sleeping tab is.

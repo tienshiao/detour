@@ -5,6 +5,8 @@ description: How a sidebar table row maps to a pinned item or a tab-list item, w
 tags: [sidebar, layout, split-tabs, invariants]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T17:17:19Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:11:43Z }
 sources:
   - id: sidebar-layout
     resource: ../../Detour/Browser/Sidebar/SidebarLayout.swift

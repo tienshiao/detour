@@ -4,7 +4,7 @@ title: Debug harness
 description: How to drive and observe the running app from a temporary, environment-gated block in AppDelegate — the pattern, the seeding calls, the stub drag info, and how to keep it out of commits.
 tags: [playbook, harness, runtime, debugging]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-13T00:33:19Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:04:49Z }
 sources:
   - id: app-delegate
     resource: ../../Detour/App/AppDelegate.swift
@@ -41,14 +41,22 @@ sources:
     title: A GPU process WebKit failed to kill stays alive and freezes every tab connected to it
 ---
 
-There is no permanent automation hook in Detour. Runtime checks that need
-more than "launch and look at the database" are done with a temporary block
-of code in `AppDelegate`, switched on by an environment variable, that
-seeds state, drives the app on timers and writes what it sees to a log
-file. It is reverted before commit. TASK-89 proposes replacing this with a
-permanent Debug-only hook; until that exists, this page is the pattern.
+The first route for a runtime check is now the
+[automation endpoint](../features/automation-endpoint.md) (`DETOUR_MCP=1`,
+`scripts/detour-mcp`; TASK-228.1, which superseded TASK-89's permanent
+hook): state, input, menus, screenshots and page and extension contexts from
+a script, with no patch to the app. For what it does not reach, a runtime
+check is done with a temporary block of code in `AppDelegate`, switched on
+by an environment variable, that seeds state, drives the app on timers and
+writes what it sees to a log file. It is reverted before commit. This page
+is that pattern.
 
 # When to use
+
+When the endpoint cannot do it ([runtime verification](./runtime-verification.md),
+step 5): drops, swipes between spaces, hover tracking, frame-by-frame
+animation, input a component sees only through a local event monitor, or
+calls into private state no tool exposes. Then:
 
 - The behaviour under test needs the real window, sidebar or web views
   (hosting, focus, animation, drop handling, navigation delegates).
@@ -125,7 +133,8 @@ Rules that make it dependable:
 | A button or menu item | `button.performClick(nil)`, `NSApp.sendAction(_:to:from:)` |
 | Something private | add a small `debugX` accessor in a `// TEMP` extension of the class, in the same patch |
 
-`data:` URLs make deterministic pages with a known title. For real clicks
+`data:` URLs make deterministic pages with a known title; they load in a
+selected tab since TASK-159 (2026-10-04, `DataURLTabTests`). For real clicks
 and keys see [in-process UI automation](./in-process-ui-automation.md).
 
 ## 3. Launch, wait, read, kill — as one command
@@ -205,6 +214,10 @@ These exist in the shipped code and are useful from a harness run:
 | Variable or argument | Effect | Where |
 |---|---|---|
 | `DETOUR_DATA_DIR` | data directory name | `detourDataDirectoryName()` |
+| `DETOUR_MCP=1`, `DETOUR_MCP_PORT` | the automation endpoint for a test run (only with an isolated `DETOUR_DATA_DIR`); a fixed port instead of an ephemeral one | `AutomationGate` |
+| `DETOUR_GLOBAL_HOTKEY=1` | lets a Debug build register Quick Detour's global hotkey | `QuickDetourHotKeyAvailability` |
+| `DETOUR_QUICK_DETOUR_IDLE_SECONDS` | Quick Detour's idle timeout in seconds (Debug builds only) | `QuickDetourIdleMonitor` |
+| `DETOUR_TRACKING_FILTER_URL` | the tracking-parameter list's download URL, to serve a fixture (Debug builds only) | `TrackingParameterList` |
 | `DETOUR_NATIVE_MESSAGING_HOSTS_DIR` | extra native-host manifest directory, searched first (Debug builds only) | `NativeMessagingHost.searchDirectories` |
 | `DETOUR_SLEEP_SHOW_BUDGET`, `DETOUR_SLEEP_SHOW_BUDGET_GRACE_SECONDS` | shrink the show-budget sleep rule | `TabStore` |
 | `DETOUR_GPU_RECYCLE_SOFT_LIMIT`, `_HARD_LIMIT`, `_INACTIVE_GRACE_SECONDS`, `_USER_IDLE_SECONDS`, `_MIN_INTERVAL_SECONDS`, `DETOUR_GPU_RECYCLE_CHECK_SECONDS` | make the GPU recycler fire quickly | `GPUProcessRecycler` |
@@ -256,10 +269,13 @@ reference.
 - **Timers hide races.** `after(2)` works on an idle machine and fails on
   a busy one. Poll for the condition (the document exists, the favicon
   arrived) instead of sleeping where the step matters.
-- **A `file:` or `data:` page does not load in the selected tab.** The
-  window's navigation policy does not load those schemes in a web view it
-  has claimed (TASK-159): a tab that is selected right after `addTab` stays
-  empty, with no error. Serve the fixture from a local HTTP server
+- **A `file:` page does not load in the selected tab.** The window's
+  navigation policy hands every scheme outside
+  `ExternalAppLaunchPolicy.schemesLoadedInTheBrowser` to the external-app
+  path and cancels it, so a tab that is selected right after `addTab` stays
+  empty, with no error. `data:` had the same problem until TASK-159 added
+  it to that set (the TASK-175 harness's comment still says otherwise).
+  Serve a file fixture from a local HTTP server
   (`python3 -m http.server --bind 127.0.0.1 --directory <dir>`), started by
   the same command that launches the app.[^task-175]
 - **The harness window is hidden to WebKit.** An app launched from a shell

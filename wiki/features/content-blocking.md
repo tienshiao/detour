@@ -4,7 +4,7 @@ title: Content blocking
 description: "The built-in blocker: EasyList-family filter lists compiled to WKContentRuleLists, per-profile list toggles, the per-site switch implemented through a WebKit preferences SPI, and the blocked-resource counter."
 tags: [content-blocker, webkit, profiles, spi, privacy]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T01:40:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:04:01Z }
 sources:
   - id: task-329
     resource: backlog:TASK-329
@@ -128,8 +128,12 @@ app-wide switch in Settings > Content Blocking (TASK-337: off, it is neither
 fetched nor used, by any of the three paths; see
 [Copy URL](copy-url.md#turning-it-off-task-337)), the test host never
 downloads it, and a Debug build takes its address from
-`DETOUR_TRACKING_FILTER_URL`. `EasyListParser` still drops
-`$removeparam` lines from the four content-blocking lists.
+`DETOUR_TRACKING_FILTER_URL`. `EasyListParser` has no `$removeparam`
+handling of its own (TASK-329's description says it drops them; the code
+does not): a bare `$removeparam` is not a known option, so the line stays a
+pattern that matches nothing, while `$removeparam=name` passes as an unknown
+`=` option and the line compiles as a block rule for its pattern. Read from
+the code, not checked against the shipped lists.
 
 ## Fetch, parse, compile
 

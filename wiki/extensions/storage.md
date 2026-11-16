@@ -4,7 +4,7 @@ title: Extension storage
 description: Where an extension's data lives in Detour — WebKit's chrome.storage areas keyed by profile and extension id, the polyfilled storage.managed, and the origin-keyed storage (IndexedDB, localStorage) that WebKit moves to each context load's new base URL, so it survives relaunches.
 tags: [extensions, storage, webkit, persistence]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:40Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:02:26Z }
 sources:
   - id: profile
     resource: ../../Detour/Browser/Profile.swift
@@ -98,6 +98,10 @@ The polyfill writes one key of its own into every extension's
 - **Profile deletion** — handled separately, because WebKit's website-data
   removal does not touch the `WebExtensions/` directory
   ([profile data removal](../architecture/profile-data-removal.md)).
+- **End of a Private session** — `Profile.resetPrivateSession` unloads every
+  Private context, removes its extension data and wipes the Private store's
+  website data, then loads the allowed contexts again (TASK-298;
+  [private profile extensions](./private-profile-extensions.md)).
 
 ## `storage.managed`
 
@@ -148,10 +152,15 @@ extension origin, created the minute the app last launched and carrying
 24–26 MB of IndexedDB, with `LastSeenBaseURL` naming it; 1Password keeps
 nothing in Cache Storage.[^task-99]
 
-The rename happens on the store the context's web views use. Before TASK-90
-the pages were on the default store, and on 2026-09-20 each profile store was
-found holding the previous launch's origin next to the current one, which is
-why TASK-99 was filed believing the data was lost at every launch. Those
+The rename happens on the store the context's web views use. On 2026-09-20
+each profile store was found holding the previous launch's origin next to the
+current one, which is why TASK-99 was filed believing the data was lost at
+every launch. TASK-99's close put the orphans down to the pages running on the
+default store until ccde7e1 (TASK-90), but that commit changed only the
+[interaction keeper](./data-store-and-itp.md); the persistent profiles' pages
+moved to their own store on 2026-09-13 (TASK-70, commit 9939373a) and the
+Private profile's on 2026-09-20 (TASK-73), so for the persistent profiles that
+explanation does not fit and the cause is not settled. Those
 orphans are gone: WebKit's `removeStaleExtensionWebsiteData` removes every
 `webkit-extension://` origin no loaded context owns, once per controller (the
 `StaleExtensionOriginsCleared` file in the controller's storage directory

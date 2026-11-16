@@ -5,7 +5,7 @@ description: "The tab model — an optional WKWebView with published state, slee
 resource: ../../Detour/Browser/BrowserTab.swift
 tags: [architecture, tabs, webkit, sleep]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-29T04:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:12:07Z }
 sources:
   - id: browser-tab
     resource: ../../Detour/Browser/BrowserTab.swift
@@ -99,15 +99,15 @@ stored in `extensionPropertyObservers`).
 `makeWebView(configuration:)` is the only place Detour builds a tab web view.
 It enables developer extras and Picture in Picture (a private C function),
 registers the `browser-error://` and `detour://` scheme handlers if the
-configuration has none, installs the internal page bridge and the favicon
-link bridge, and returns a `BrowserWebView` with `isInspectable = true`.
+configuration has none, installs the internal page bridge, the favicon
+link bridge and the `MediaSessionBridge`, and returns a `BrowserWebView` with `isInspectable = true`.
 Extension pages are the exception: they adopt a plain `WKWebView` built from
 the extension context's configuration.
 
 `webView` has a `didSet` that registers the view with
-`ExtensionPageHostRegistry` and `FaviconLinkBridge`. Property observers do
-not run during `init`, so the two initialisers that take or build a web view
-register explicitly. A third initialiser that sets `webView` must do the same.
+`ExtensionPageHostRegistry`, `FaviconLinkBridge` and `MediaSessionBridge`.
+Property observers do not run during `init`, so the two initialisers that
+take or build a web view make the three registrations explicitly. A third initialiser that sets `webView` must do the same.
 
 `webViewContainer` (`WebViewContainerView`) wraps the web view. WebKit docks
 the Web Inspector as a **sibling** of the web view, so windows host and move
@@ -125,8 +125,10 @@ container that lost its web view.
 | `retarget(to:)` | Released | **Discarded** | (caller's business) |
 | `teardown()` | Released, media paused | Lost | `didClose` |
 
-- `sleep()` does nothing while the tab plays audio unless `force` is true.
-  It parks the tab's Peek first.
+- `sleep()` does nothing while the tab is audible unless `force` is true
+  (the guard is `force || !isAudible`; `isAudible` = playing and not muted).
+  A muted tab that still plays sleeps, its media paused first as on a forced
+  sleep. It parks the tab's Peek before releasing the web view.
 - `wake()` asks `spaceID`'s space for a configuration. For a
   `webkit-extension://` URL it uses the owning extension context's
   configuration instead, resolved by origin host
@@ -230,11 +232,14 @@ described on [favicons](../features/favicons.md).
 A tab is the `WKNavigationDelegate` of its own web view until a window claims
 it (`wireOwnedWebView`). A tab opened in the background — Cmd+click, an
 extension's `tabs.create({active: false})` — loads before any window is its
-delegate. The tab's delegate implements only what the window would forward:
+delegate. The tab's delegate (`extension BrowserTab: WKNavigationDelegate`)
+implements only what the window would forward:
 
 | Callback | Why it is needed while unclaimed |
 |---|---|
-| `decidePolicyFor:preferences:` | Applies the internal page policy and the per-site content blocker switch. With no delegate WebKit uses default preferences (TASK-69). |
+| `decidePolicyFor:preferences:` | Applies the internal page policy and the per-site content blocker switch. With no delegate WebKit uses default preferences (TASK-69). Returns `.download` when `shouldPerformDownload` (an `<a download>`). |
+| `decidePolicyFor navigationResponse`, `navigationResponse:didBecome download`, `navigationAction:didBecome download` | The window's response rule (`responseHandling(for:)`, TASK-205): a response WebKit cannot show, or sent as an attachment, downloads; a CRX is offered for install. Without it a background tab opened on a download link (Cmd+click) never downloaded and stayed empty. The download is listed in the tab's space's windows, and a tab that never showed a page is closed (`DownloadOpenedTab`). |
+| `_webView:contextMenuDidCreateDownload:` | Download Linked File / Download Image from the context menu (TASK-324); the tab keeps its page. |
 | `didCommit` | Without it a stalled background load kept its URL as its title until the load finished (TASK-114). |
 | `didFailProvisionalNavigation` | Without it a failing background load never showed the error page (TASK-122). `didFail`, the failure of a navigation that already committed, is deliberately **not** implemented, here or in the window: the committed document stays on screen (TASK-178, see [error pages](../features/error-pages.md#failures-after-commit)). |
 | `didStartProvisionalNavigation`, `_webViewWebProcessDidBecomeUnresponsive:`, `_webViewWebProcessDidBecomeResponsive:` | The events of the unresponsive-load rule (TASK-176); a background tab's blocked process is replaced the same way as an on-screen one. `webViewWebContentProcessDidTerminate` is deliberately **not** implemented here: doing so would switch off WebKit's own reload of a crashed background page when it is next shown. |
@@ -255,7 +260,9 @@ after commit and so reaches no tab since TASK-178). See
 ## Bookkeeping other subsystems read
 
 - `showsSinceWake` / `noteShown()` — how many times a window has hosted this
-  web view since it was built; drives the show-budget sleep rule
+  web view since it was built, counted at each claim and when an occluded
+  window owning the tab becomes visible (`handleWindowOcclusionStateChanged`);
+  drives the show-budget sleep rule
   ([GPU IOSurface limit](../platform/gpu-iosurface-limit.md)).
 - `isLoadProgressStalled` / `sidebarProgress` — a hidden load whose progress
   has not moved for `loadStallInterval` (2 s). `isLoading` stays true
@@ -289,8 +296,9 @@ after commit and so reaches no tab since TASK-178). See
   `applyUserAgent()`, `owningProfile` and the user agent notification. A tab
   that belongs to a space of a private `TabStore` in a test resolves no space
   there and wakes with a bare `WKWebViewConfiguration()`.
-- `owningProfile` falls back to `extensionRegisteredProfile` because favorite
-  and Peek tabs can have no space of their own.
+- `owningProfile` resolves the space's profile, then `quickDetourProfile` (a
+  Quick Detour tab has no `spaceID`), then `extensionRegisteredProfile`,
+  because favorite and Peek tabs can have no space of their own.
 - `applySpoofedUserAgent(for:)` both sets the Chrome user agent for the
   Chrome Web Store hosts and **restores** the profile's for every other host.
   It must be called on the tab that is navigating, never on the selected tab.

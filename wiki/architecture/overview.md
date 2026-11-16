@@ -4,7 +4,7 @@ title: Architecture overview
 description: The whole app on one page — profiles, spaces, tabs and windows, the singletons that hold them, how the parts talk to each other, and the launch sequence.
 tags: [architecture, state, startup]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:06:47Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:16:42Z }
 sources:
   - id: architecture-doc
     resource: ../../docs/architecture.md
@@ -30,6 +30,9 @@ sources:
   - id: project-yml
     resource: ../../project.yml
     title: project.yml
+  - id: quick-detour-window
+    resource: ../../Detour/Browser/QuickDetour/QuickDetourWindowController.swift
+    title: QuickDetourWindowController.swift
 ---
 
 # Summary
@@ -59,11 +62,11 @@ Two rules shape most of the code and are easy to break:
 |---|---|---|---|
 | Profile | `Profile` (class) | `TabStore.profiles` | [Profiles and spaces](./profiles-and-spaces.md) |
 | Space | `Space` (class, in `TabStore.swift`) | `TabStore.spaces` | [Profiles and spaces](./profiles-and-spaces.md) |
-| Tab | `BrowserTab` (`NSObject`) | `Space.tabs`, a `PinnedEntry`, a `Favorite`, or another tab's `peekTab` | [BrowserTab](./browser-tab.md) |
-| Window | `BrowserWindowController` | `AppDelegate.windowControllers` | [BrowserWindowController](./browser-window-controller.md) |
+| Tab | `BrowserTab` (`NSObject`) | `Space.tabs`, a `PinnedEntry`, a `Favorite`, `TabStore.quickDetourTabs`, or another tab's `peekTab` | [BrowserTab](./browser-tab.md) |
+| Window | `BrowserWindowController` (browser windows); `QuickDetourWindowController` (one page, no sidebar) | `AppDelegate.windowControllers`; `QuickDetourWindowController.openControllers` | [BrowserWindowController](./browser-window-controller.md), [Quick Detour](../features/quick-detour.md) |
 
-A tab can live in four places, and code that walks "all tabs" has to visit
-all four:
+A tab can live in five places, and code that walks "all tabs" has to visit
+all five:
 
 1. `space.tabs` — the normal tab list.
 2. `space.pinnedEntries[n].tab` — the backing tab of a live
@@ -72,10 +75,15 @@ all four:
 3. `profile.favorites[n].tab` — the backing tab of a live
    [favorite](../tabs/favorites.md). Favorites belong to the profile, not to a
    space, so this tab is in no space's lists.
-4. `hostTab.peekTab` — the tab shown in a [Peek](../tabs/peek.md) overlay.
+4. `TabStore.quickDetourTabs` — the one tab of each open
+   [Quick Detour](../features/quick-detour.md) window. It is in no space and
+   only its own window ever hosts its web view.
+5. `hostTab.peekTab` — the tab shown in a [Peek](../tabs/peek.md) overlay
+   (the host is a normal, pinned or favourite tab; a Quick Detour window
+   has no Peek).
 
-`Space.displayableTab(id:)` is the one predicate for "is this a tab a window
-on this space can show"; it covers the first three. Copies of that test that
+`Space.displayableTab(id:)` is the one predicate for "is this a tab a browser
+window on this space can show"; it covers the first three. Copies of that test that
 forgot favorites dropped a selected favorite on space switch (TASK-54).
 
 ## Singletons
@@ -117,7 +125,7 @@ Notifications in the browser core:
 | Name | Posted by | Effect |
 |---|---|---|
 | `webViewOwnershipChanged` | The window that just took a tab's web view | Other windows showing that tab switch to a snapshot. |
-| `spaceTabsNeedRehost` | `TabStore.updateSpace` (profile swap), `Profile.retargetExtensionPages` | Windows on the space re-select their displayed tab so it wakes from the new configuration. |
+| `spaceTabsNeedRehost` | `TabStore.updateSpace` (profile swap), `Profile.retargetExtensionPages`, `ExtensionManager.closeExtensionPages` (a favourite showing a page of the extension) | Windows on the space re-select their displayed tab so it wakes from the new configuration. |
 | `tabRestoredByUndo` | Undo of Close Tab | The window on that space selects the restored tab. |
 | `"UserAgentDidChange"` (string literal) | `TabStore.updateProfile` | Every `BrowserTab` of the profile re-applies its user agent. |
 | `contentBlockerRulesDidChange` | `ContentBlockerManager` | Windows re-apply rule lists to the web views they own. |
@@ -134,14 +142,17 @@ page's own (each `BrowserWebView` has one). Cmd+Z reaches the page first
 
 ## Launch sequence
 
-`AppDelegate.applicationDidFinishLaunching`, in order:
+`AppDelegate.applicationDidFinishLaunching`, in order (the main steps):
 
-1. `setupMainMenu()`.
+1. `setupMainMenu()`, then the user's shortcuts applied to it
+   (`ShortcutBindingStore`, see [keyboard shortcuts](../features/keyboard-shortcuts.md))
+   and the Quick Detour global hotkey started.
 2. Open `AppDatabase.shared` and `HistoryDatabase.shared` (migrations run
    here).
 3. `TabStore.shared.retryPendingProfileDataRemovals()` — must precede
    anything that creates a profile's data store or extension controller. See
-   [profile data removal](./profile-data-removal.md).
+   [profile data removal](./profile-data-removal.md). Then leftover extension
+   notifications are removed (not while another Detour process runs).
 4. Schedule, 5 s later, `HistoryDatabase.expireOldVisits()` and
    `TabStore.sweepHistoryOfDeletedSpaces()`.
 5. `ContentBlockerManager.shared.initialize()`.
@@ -149,8 +160,13 @@ page's own (each `BrowserWebView` has one). Cmd+Z reaches the page first
    `ExtensionUpdater.shared.startPeriodicChecks()`.
 7. Create and show the first `BrowserWindowController`.
 8. `TabStore.shared.restoreSession()`, then `ensureDefaultSpace()`.
-9. `startArchiveTimer()` and `GPUProcessRecycler.shared.start()`.
+9. `startArchiveTimer()`, `QuickDetourIdleMonitor.shared.start()`,
+   `GPUProcessRecycler.shared.start()` and `GPUProcessOrphanReaper.shared.start()`.
 10. Set the window's active space and selected tab from the restored session.
+11. Open the links that arrived before launch finished, start the
+    [automation endpoint](../features/automation-endpoint.md) if enabled
+    (`AutomationController.startIfEnabled`), and 1.5 s later offer the
+    [Arc import](../features/arc-import.md) if it applies.
 
 The window exists **before** the session is restored. It becomes a
 `TabStoreObserver` in its initialiser and is given its space in step 10.
@@ -158,8 +174,9 @@ Extension contexts load asynchronously after step 6, which is why restore
 cannot rewrite extension page URLs itself and registers
 [pending origins](../extensions/extension-pages.md) instead.
 
-Steps 3, 4 (the sweep) and the updater start are skipped in the XCTest host.
-See [app shell](./app-shell.md).
+The XCTest host skips several of these (step 3, the sweep, the updater, the
+idle monitor, the automation endpoint and more); the full list is on
+[app shell](./app-shell.md#launch-switches).
 
 ## Where each area's pages are
 

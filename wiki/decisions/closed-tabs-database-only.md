@@ -5,6 +5,8 @@ description: Why the closed-tab stack has no in-memory mirror and no launch load
 tags: [tabs, closed-tabs, persistence, decision, database]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:43:31Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:11:43Z }
 sources:
   - id: task-117
     resource: backlog:TASK-117

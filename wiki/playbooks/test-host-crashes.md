@@ -5,6 +5,8 @@ description: What to do when xcodebuild prints TEST FAILED although no test fail
 tags: [playbook, tests, crash, webkit, xcodebuild]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:44:19Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:05:20Z }
 sources:
   - id: popup-tests
     resource: ../../DetourTests/ExtensionMenuPopupDecisionTests.swift

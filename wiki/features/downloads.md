@@ -4,7 +4,7 @@ title: Downloads
 description: "How a navigation becomes a download, what DownloadManager tracks and persists, how a Private window's downloads are kept apart and cancelled when it closes, the sidebar popover and badge, the fly-to-button animation, and the CRX path that reuses the list."
 tags: [downloads, webkit, navigation, persistence, incognito]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T01:09:15Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:16:00Z }
 sources:
   - id: manager
     resource: ../../Detour/Browser/Downloads/DownloadManager.swift
@@ -80,7 +80,8 @@ and its partial file removed; the window asks first.
 
 ## What turns a navigation into a download
 
-All of it is in `BrowserWindowController`'s navigation delegate:
+The rule is `BrowserWindowController`'s navigation delegate's, and
+`BrowserTab`'s own delegate and the Quick Detour window apply the same rows:
 
 | Where | Condition | Policy |
 |---|---|---|
@@ -132,7 +133,7 @@ download has started (`DownloadOpenedTab`, the rule
   `WKDownload`, and WebKit does not stop it with its web view.
 
 A routed link also puts back what it changed; see
-[Link Routes](./link-routing.md#links-from-other-apps).
+[Link placement](./link-routing-placement.md#a-routed-link-that-is-a-download).
 
 The order inside the action policy matters. An **Option-click** on a link is
 handled earlier (it opens the link in a split pane), and that branch must stay
@@ -302,12 +303,11 @@ See [installer and CRX](../extensions/installer-and-crx.md).
 
 # Edge cases
 
-- **Only the window's delegate downloads.** A tab's own navigation delegate
-  (the delegate of a web view no window has claimed yet) allows every action
-  and implements neither the response policy nor the `didBecome` callbacks.
-  Read from the code, not checked at runtime: a response that needs
-  downloading in a never-shown background tab is not turned into a download
-  until a window owns the tab.
+- **A never-shown background tab downloads too** (TASK-205). A tab's own
+  navigation delegate (the delegate of a web view no window has claimed yet)
+  answers `shouldPerformDownload` with `.download`, applies
+  `responseHandling(for:)`, and implements both `didBecome` callbacks and the
+  context-menu one, under its space's scope and with no animation.[^task-205]
 - **Old `completedAt` values are save times.** Before TASK-143 every save
   wrote the current time into `completedAt` for every completed item, so a row
   written by an older build holds the time of its last save, not of the
@@ -375,6 +375,8 @@ file.
   no click, a stale one, one from the future or one outside the content
   start in the middle. `TossPathTests` cover the shared toss.
 - `WebKitDelegateReachabilityTests.testEveryNavigationDelegateTakesContextMenuDownloads`.
+- `DownloadOpenedTabPolicyTests` (the pure close rule) and
+  `DownloadOpenedTabTests` (a tab opened for a download closes, TASK-205).
 
 Not covered by tests: `downloadDidFinish` and `didFailWithError` with a real
 `WKDownload`, the one-line call in `applicationWillTerminate`, the quit

@@ -4,7 +4,7 @@ title: Extensions are on only where installed or turned on
 description: Why a missing profileExtension row now means off in every profile, so a new profile starts with no extensions and an install is on only in the profile it came from; the migration that kept existing setups unchanged, how the install's profile is chosen, and what was rejected.
 tags: [extensions, profiles, privacy, decision]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T23:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:21:15Z }
 sources:
   - id: database
     resource: ../../Detour/Storage/Database.swift
@@ -74,7 +74,7 @@ else the first normal profile in `TabStore` order:
 |---|---|
 | Chrome Web Store, or any CRX link, in a browser tab | the profile of the tab the package was opened in (read when the response arrives, resolved again after the download) |
 | CRX link in a Quick Detour | that window's profile |
-| Extensions › Install Extension… (unpacked folder) | every browser window front to back (`browserWindowControllersFrontToBack`), each window's active space's profile |
+| Develop › Load Unpacked Extension… | every browser window front to back (`browserWindowControllersFrontToBack`), each window's active space's profile |
 | Settings › Extensions › Load Unpacked Extension… | the same; Settings is skipped, so it is the window behind Settings |
 
 So a Private window in front gives the next normal window's profile, a CRX

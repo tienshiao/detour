@@ -4,7 +4,7 @@ title: Two databases
 description: Session state and browsing history live in separate SQLite files, browser.db and history.db.
 tags: [decision, storage, history, privacy]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:30:20Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:01:33Z }
 sources:
   - id: architecture-doc
     resource: ../../docs/architecture.md
@@ -79,6 +79,11 @@ text column. Nothing removes a deleted space's visits automatically, so:
   reset, replaced or failed to restore, the store comes up with a fresh
   default space whose id matches no visit, and without the guard every visit
   would look orphaned and be deleted (TASK-87).
+- [Quick Detour](../features/quick-detour.md) visits are filed under a
+  per-profile scope that is no space's (`QuickDetour.historySpaceID(forProfileID:)`).
+  The sweep keeps the scopes of live profiles (`alsoKeeping:`) but does not
+  count them for the guard, since they are derived from profile ids and
+  would otherwise "recognise" a session that failed to restore.
 
 **History knows spaces, not profiles.** The history database cannot join to
 `space` to find a profile's spaces. Callers pass the space ids in

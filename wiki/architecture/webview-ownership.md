@@ -4,7 +4,7 @@ title: Web view ownership
 description: A tab's web view is hosted by at most one window; the others draw a dimmed snapshot, and hosting moves to whichever window becomes key.
 tags: [architecture, webkit, window, multi-window]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:06:32Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:09:47Z }
 sources:
   - id: window-controller
     resource: ../../Detour/Browser/Window/BrowserWindowController.swift
@@ -53,8 +53,9 @@ split moves as a whole: both pane containers inside one `NSSplitView`.
 `claimWebView(for:)` runs when:
 
 - the window becomes key (`windowDidBecomeKey`), including when an agent's
-  click through the [automation endpoint](../features/automation-endpoint.md)
-  makes it key: with Detour active it does, as a person's click does; in the
+  click through the [automation endpoint](../features/automation-endpoint-input.md#which-window-is-key)
+  makes it key: with Detour active it does, as a person's click does (only
+  for a visible window on the current desktop Space); in the
   background it never does (the user's decision, TASK-228.10);
 - `selectTab(id:)` runs in the key window;
 - `selectTab(id:)` runs in a background window **and** no member's container
@@ -110,7 +111,9 @@ pane is empty.
 
 `selectTab` clears `localSnapshot`, so a snapshot is never reused for a
 different tab. It takes no bitmap of the tab it leaves; the per-switch
-picture is the Control+Tab preview, which uses `takeSnapshot`.
+pictures are the Control+Tab preview and, for a tab with an open child, the
+[back-swipe](../tabs/back-swipe-to-opener.md) opener underlay
+(`captureOpenerUnderlayIfNeeded`, TASK-325); both use `takeSnapshot`.
 
 ## What "not owning" disables
 
@@ -168,9 +171,13 @@ that woke it hosts it because nobody else could. See
 | `webViewContainer`, `ensureWebViewContainer()`, `WebViewContainerView` | [BrowserTab.swift](../../Detour/Browser/BrowserTab.swift) |
 | `Notification.Name.webViewOwnershipChanged` | top of `BrowserWindowController.swift` |
 
-There is no unit test of the cross-window handoff itself; it is view
-hierarchy behaviour and is checked at runtime with two windows on one space.
-See [runtime verification](../playbooks/runtime-verification.md).
+The handoff is unit-tested through the delegate calls:
+`WebViewHandoffFocusTests` (a second window's `windowDidBecomeKey` takes the
+container, and focus), `AutomationInputTests` (`assertOwner`: one window
+hosts, the other shows the snapshot, for agent clicks, TASK-228.10) and the
+shared-tab cases of `WindowCloseReleaseTests`. What it looks like is checked
+at runtime with two windows on one space; see
+[runtime verification](../playbooks/runtime-verification.md).
 
 # Related
 

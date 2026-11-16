@@ -5,7 +5,7 @@ description: "history.db — one shared row per URL, one row per visit scoped to
 resource: ../../Detour/Storage/HistoryDatabase.swift
 tags: [architecture, storage, history, fts5, search]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T00:52:01Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:01:51Z }
 sources:
   - id: task-231-2
     resource: backlog:TASK-231.2
@@ -316,7 +316,7 @@ Three entry points, all profile-scoped in SQL and all reporting a
 |---|---|
 | `deleteVisits(ids:spaceIDs:allVisitsOfURL:from:until:)` | Named visits; with `allVisitsOfURL`, every in-scope visit of those URLs within the window (search mode shows one row per URL). |
 | `deleteVisits(spaceIDs:since:)` | Everything in scope at or after a cutoff; nil clears the scope. |
-| `deleteVisits(notInSpaceIDs:)` | The launch sweep of spaces that no longer exist. |
+| `deleteVisits(notInSpaceIDs:alsoKeeping:)` | The launch sweep of spaces that no longer exist; `alsoKeeping` keeps live profiles' Quick Detour scopes. |
 
 Each stages per-URL counts in a temp table, deletes, then repairs the shared
 `historyURL` rows in four set-based statements regardless of size:
@@ -343,7 +343,9 @@ The launch sweep has two guards because its scope is "everything else": an
 empty list of existing spaces deletes nothing, and at least one existing
 space must own a visit. The second covers a session database that was reset
 or failed to restore, where a fresh default space would make all history
-look orphaned.
+look orphaned. The Quick Detour scopes passed in `alsoKeeping` are kept but
+not counted by either guard: they are derived from profile ids, so they
+would "recognise" a session that failed to restore.
 
 Closed-tab records in the session database are not touched by history
 deletion.

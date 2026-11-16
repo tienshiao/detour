@@ -4,8 +4,11 @@ title: Find in page
 description: "The Cmd+F find bar: a per-window FindBarView driving WKWebView.find on the selected tab, with a match counter computed separately in JavaScript."
 tags: [find, webkit, keyboard, window]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T02:50:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:18Z }
 sources:
+  - id: find-session
+    resource: ../../Detour/Browser/Window/FindInPageSession.swift
+    title: FindInPageSession.swift
   - id: find-bar
     resource: ../../Detour/Browser/Window/FindBarView.swift
     title: FindBarView.swift
@@ -56,7 +59,10 @@ controller:
 
 The close button's key equivalent is Escape, which is how Escape reaches the
 bar while the field has focus. The bar's height is taken from a `ToastView`'s
-fitting size so the two stay in step.
+fitting size so the two stay in step. The bar sits 12 pt from the content
+area's top-left corner; `updateFindBarPlacement` moves it down by the
+[dev toolbar](./dev-mode.md)'s height while a hosted pane's toolbar lies
+under that spot (TASK-186.2), so it never covers the toolbar's controls.
 
 # Edge cases
 
@@ -67,8 +73,9 @@ These follow from reading the code; none has a test.
   `innerText` omits, and its case folding is JavaScript's `toLowerCase`. When
   WebKit finds a match but the script counts zero, the label reads "Not
   found" while a match is highlighted.
-- **State is per window, not per tab.** `lastFindQuery`, `findMatchCount` and
-  `findMatchIndex` live on the window controller, and selecting another tab
+- **State is per window, not per tab.** The query, count and index
+  (`lastQuery`, `matchCount`, `matchIndex`) live in the window's one
+  `FindInPageSession`, and selecting another tab
   neither hides the bar nor resets them. Searching the same text on the new
   tab is treated as "not a new query", so the count from the previous tab is
   reused until the text changes.

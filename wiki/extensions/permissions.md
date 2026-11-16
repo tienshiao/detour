@@ -5,6 +5,8 @@ description: How permission decisions are stored, prompted for and re-applied to
 tags: [extensions, permissions, security, webkit]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:04:02Z }
 sources:
   - id: task-339
     resource: backlog:TASK-339
@@ -375,7 +377,7 @@ three to decide whether to re-arm after a later grant. When `notifications`
 stops being active in a profile, its notifications there go and the wait is
 answered with this refusal (`ExtensionManager.revokeNotificationsWhereNotPermitted`,
 after every saved-decision change and grant removal; see
-[Polyfill layer](./polyfill-layer.md#an-owners-notifications-go-with-its-scope)).
+[Notification ownership](./polyfill-notification-scope.md#an-owners-notifications-go-with-its-scope)).
 
 The grant dictionary is read, not `hasPermission(_:)`. WebKit's
 `permissionState` answers `.unknown` for every name outside

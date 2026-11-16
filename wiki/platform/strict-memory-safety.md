@@ -3,8 +3,11 @@ type: Platform Quirk
 title: Strict memory safety checking (SE-0458)
 description: What Swift 6.2's opt-in strict memory safety checking reports for the Detour target (218 warnings, most of them AppKit, Carbon and Objective-C runtime interop), why it was a one-time audit rather than a setting left on, how the code that parses bytes from outside the app was made clean, and how to run the audit again.
 tags: [swift, memory-safety, build, security]
-status: draft
+status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T04:48:28Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:26Z }
+stale_after: 2027-06-01T00:00:00Z
 sources:
   - id: task-231-8
     resource: backlog:TASK-231.8

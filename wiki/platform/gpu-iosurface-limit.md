@@ -4,7 +4,7 @@ title: GPU process IOSurface limit
 description: After days of uptime WebKit's GPU process reaches the kernel's 16,384-IOSurface limit, WebGL and canvas die in every page and YouTube stops playing; how it was diagnosed, the show-budget sleep rule and the GPU process recycler that contain it.
 tags: [webkit, gpu, performance, sleeping, media]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-13T00:32:53Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:26Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-104
@@ -32,8 +32,8 @@ sources:
     resource: ../../docs/task-104
     title: Harness patch, sampler scripts, standalone spike and CSV results
   - id: iosurfacepool
-    resource: https://github.com/WebKit/WebKit/blob/main/Source/WebCore/platform/graphics/cg/IOSurfacePool.cpp
-    title: WebKit IOSurfacePool.cpp
+    resource: https://github.com/WebKit/WebKit/blob/main/Source/WebCore/platform/graphics/cg/IOSurfacePool.mm
+    title: WebKit IOSurfacePool.mm (IOSurfacePool.cpp until 2026-10-23)
   - id: task-175
     resource: backlog:TASK-175
     title: A GPU process WebKit failed to kill stays alive and freezes every tab connected to it
@@ -174,7 +174,7 @@ resets it.
 | Idle | normal, unpinned tabs | out of sight ≥ the profile's `sleepThreshold` |
 | Show budget | any tab, including pinned entries' and favourites' backing tabs | `showsSinceWake` ≥ `sleepShowBudget` (50) **and** out of sight ≥ `sleepShowBudgetGrace` (15 min) |
 
-Shared preconditions: not playing audio, container not parented in any
+Shared preconditions: not audible (`isAudible`; a muted tab can sleep), container not parented in any
 window, `lastDeselectedAt` set. A profile set to never sleep is honoured by
 both. A split sleeps only when every partner also qualifies. A pinned entry
 or favourite stays live with its tab asleep, so it wakes into its saved
@@ -229,7 +229,7 @@ Every 120 s (`DETOUR_GPU_RECYCLE_CHECK_SECONDS`) it:
 | < 12,000 (`softLimit`) | keep |
 | ≥ 12,000 | recycle once the app has been inactive ≥ 5 min (`inactiveGrace`) |
 | ≥ 15,000 (`hardLimit`) | also recycle as soon as the app is inactive, or while it is active once there has been no keyboard or pointer input for 60 s (`userIdleGrace`) |
-| any | never while a tab plays audio or captures camera or microphone; never within 1 h of the last recycle (`minimumInterval`) |
+| any | never while a tab plays audible audio (`BrowserTab.isAudible`: muted playback does not count, TASK-192) or captures camera or microphone; never within 1 h of the last recycle (`minimumInterval`) |
 
 Why each gate exists:
 
@@ -301,7 +301,7 @@ vmmap <gpu pid> | grep '^IOSurface' | grep -c PURGE=E
 - [WebKit helper diagnostics](../playbooks/webkit-helper-diagnostics.md) — finding WebKit's helper processes.
 - [Reading runtime logs](../playbooks/reading-runtime-logs.md) — `log show` recipes and their traps.
 - [Debug harness](../playbooks/debug-harness.md) — how env-gated harness patches like the one in `docs/task-104` are applied.
-- [WebKit source lookup](./webkit-source-lookup.md) — reading `IOSurfacePool.cpp` and the GPU process sources.
+- [WebKit source lookup](./webkit-source-lookup.md) — reading `IOSurfacePool.mm` (formerly `.cpp`) and the GPU process sources.
 
 [^task-104]: GPU process leaks IOSurfaces until the 16384 per-process limit
 [^task-105]: GPU-process recycle valve

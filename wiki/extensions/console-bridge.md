@@ -5,6 +5,8 @@ description: How console output and uncaught errors from extension contexts reac
 tags: [extensions, logging, diagnostics, security]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:48:49Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:07:05Z }
 sources:
   - id: polyfill
     resource: ../../Detour/Extensions/Runtime/ExtensionAPIPolyfill.swift

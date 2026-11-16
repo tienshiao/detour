@@ -4,7 +4,7 @@ title: Release and website
 description: How a signed, notarized Detour DMG is built and published (Sparkle appcast on R2, GitHub release, website), and how the website's screenshots and feature loops are captured from a staged demo profile.
 tags: [playbook, release, sparkle, notarization, website, capture]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-23T02:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:04:49Z }
 sources:
   - id: build-release
     resource: ../../scripts/build-release.sh
@@ -101,6 +101,9 @@ From the script's header:
    `detour-website` Worker (`npx wrangler login`; `npx wrangler whoami`
    checks it). The OAuth token expires; wrangler refreshes it, which needs
    write access to `~/Library/Preferences/.wrangler/`.
+6. For the website step: the Node version in the website's `.nvmrc`,
+   installed with nvm.fish (`~/.local/share/nvm/v<version>/bin`); the script
+   refuses another Node.
 
 ## Where a release goes
 
@@ -108,7 +111,7 @@ From the script's header:
 |---|---|---|
 | DMG | GitHub pre-release `v<version>` on `tienshiao/detour` | the website's download buttons |
 | DMG, `Detour<build>-<build>.delta` files, `appcast.xml` | R2 bucket `detour-updates`, served as `https://updates.detourbrowser.com/` | Sparkle in the installed app (`SUFeedURL`) |
-| Version, links, `.dmg` size | `../detour-website` (`public/index.html`, `public/sitemap.xml`), deployed with `wrangler deploy` (Worker `detour-website`, static assets) | detourbrowser.com |
+| Version, `.dmg` size, release date | `../detour-website` (`WEBSITE_DIR`), an Astro site that states them only in `src/data/release.json`; built and deployed with `wrangler deploy` (Worker `detour-website`, static assets) | detourbrowser.com |
 
 `build/` (git-ignored) is the release archive: every earlier DMG,
 `appcast.xml` and the deltas stay there between releases, because
@@ -129,6 +132,7 @@ What it does, in order:
 
 | Step | Detail |
 |---|---|
+| Check | `scripts/sign-app.sh --check` (the profile, the signing identity and the entitlements) before anything is bumped or built |
 | Version | with an argument: sets `CFBundleShortVersionString` and increments `CFBundleVersion` in `Detour/Resources/Info.plist` (an edit you then commit) |
 | Project | `xcodegen generate` |
 | Build | `xcodebuild -scheme Detour -configuration Release clean build` |
@@ -162,7 +166,7 @@ be run again:
 | Git | commit `Info.plist` and the notes, annotated tag `v<version>`, push `main` and the tag |
 | GitHub | pre-release `v<version>` with the DMG, body = compare link + the notes' items |
 | Update server | `wrangler r2 object put --remote`: the DMG, this build's deltas, then `appcast.xml` last so the feed never names a file not yet uploaded; then the live feed and DMG size are checked with `curl` |
-| Website | replaces the previous version and size (taken from the page's schema block) everywhere in `index.html`, sets the sitemap's `lastmod`, commits, pushes, deploys a `git archive` of the commit (not the working copy, which holds `.DS_Store` files), checks the live page |
+| Website | sets `version`, `dmgSize` and `date` in `src/data/release.json` (the date is also the home page's sitemap `lastmod`), commits, builds a `git archive` of the commit (not the working copy, which holds `.DS_Store` files) with `npm ci` and `npm run build` under the `.nvmrc` Node, pushes only after the build succeeds, deploys that build, checks the live page; a dry run builds too, from the last commit |
 
 ## Traps
 
@@ -188,10 +192,9 @@ be run again:
   `Detour-*` DerivedData directory in glob order that held a Release
   product, which with several checkouts or worktrees can be another
   checkout's older build. They now ask `xcodebuild -showBuildSettings` for
-  this checkout's products directory. The new lookup was exercised on its
-  own (real and stubbed `xcodebuild` output); a full release run with it
-  has not been made yet. publish-release.sh's preflight now mounts the
-  DMG and compares the app's version and build with `Info.plist`.
+  this checkout's products directory; every release since 0.3.1 was built
+  that way. publish-release.sh's preflight also mounts the DMG and compares
+  the app's version and build with `Info.plist`.
 - **The version edit is uncommitted** after build-release.sh. A release
   built from a dirty tree cannot be reproduced; publish-release.sh commits
   the bump with the notes and tags that commit, and refuses any other
@@ -314,7 +317,7 @@ Recording grant for the process that runs the shell.[^notes-capture]
 - [Signed-build verification](./signed-build-verification.md) — the test deployment of a signed build.
 - [In-process UI automation](./in-process-ui-automation.md) — driving the app and capturing views.
 - [Debug harness](./debug-harness.md) — the pattern DemoStage was an instance of.
-- [Automation endpoint](../features/automation-endpoint.md) — the staging tools and the fixture format.
+- [Automation endpoint: capture staging](../features/automation-endpoint-staging.md) — the staging tools and the fixture format.
 - [App shell](../architecture/app-shell.md) — Sparkle wiring and launch switches.
 - [Updates](../extensions/updates.md) — extension updates, which are unrelated to Sparkle.
 

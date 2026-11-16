@@ -5,6 +5,8 @@ description: WebKit vends chrome.* objects from a weak wrapper cache and serves 
 tags: [extensions, webkit, polyfill, javascriptcore, quirk]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:08:53Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:07:05Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: docs-patching
@@ -98,7 +100,7 @@ the static getter; the probes showed otherwise, and it now says so.
   WebKit sets inside a failing callback is an ordinary JS `Error`, though, and
   its `message` can be redefined: that is how the relay hands the callback the
   original text instead of WebKit's prefixed one (see
-  [Polyfill layer](./polyfill-layer.md#error-text-from-both-transports)).
+  [Polyfill errors](./polyfill-errors.md#error-text-from-both-transports)).
 - `runtime.reload` cannot be shadowed: the TASK-123 work found it to be a
   read-only static value of the runtime wrapper, where an own property is
   masked.[^task-123] WebKit's reload unloads and reloads the same context

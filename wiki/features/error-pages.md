@@ -4,7 +4,7 @@ title: Error pages
 description: "What a failed load looks like: the browser-error:// page, which failures earn one (only those before commit) and which are ignored, how the tab keeps the URL the user asked for, and how retry, restore and background tabs behave."
 tags: [navigation, errors, webkit, tabs]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-13T06:07:51Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:12:00Z }
 sources:
   - id: scheme-handler
     resource: ../../Detour/Browser/Window/ErrorSchemeHandler.swift
@@ -73,6 +73,7 @@ failure. Both delegates are pure forwarders:
 | Web view state | Delegate | Calls |
 |---|---|---|
 | owned by a window | `BrowserWindowController` | `tab(owning:)?.didFailProvisionalNavigation(error:)` |
+| a [Quick Detour](./quick-detour.md) window's page | `QuickDetourWindowController` | `page.didFailProvisionalNavigation(error:)` |
 | never claimed, or its window closed | the `BrowserTab` itself | the same method |
 
 `BrowserTab.didFailProvisionalNavigation(error:)`:
@@ -104,7 +105,7 @@ a navigation that already committed. See
 [Failures after commit](#failures-after-commit).
 
 `showErrorPage` sets `tab.url` to the failed URL, clears the favicon, bumps
-`faviconGeneration`, resets `previousHost`, and loads the error URL.
+`faviconGeneration`, resets `previousFaviconSite`, and loads the error URL.
 
 ## Failures after commit
 
@@ -183,7 +184,7 @@ The error document must never become "the page this tab is showing":
 | web view shows the error page, `lastAttemptedURL` known | `loadRecordedURL(lastAttemptedURL)` |
 | web view shows the error page, nothing recorded | plain `load(_:)` of the `failedURL` from the error URL. Untrusted: any page can navigate to an error URL naming any `failedURL`, so it does not get to arm an internal page |
 | web view shows nothing (no URL, or `about:blank` after a failed restore) | `loadRecordedURL(lastAttemptedURL ?? url)` |
-| otherwise | `webView.reload()` |
+| otherwise | `issue(.reload)`: `webView.reload()`, in a fresh web process if this one is known not to be answering ([unresponsive web process](../platform/unresponsive-web-process.md)) |
 
 Going **back or forward into** an error entry does not show the stale error
 page: the window's `decidePolicy` cancels the `.backForward` navigation and
@@ -219,7 +220,8 @@ loads the original URL again.
   or not, and it is not a usable "connection refused" fixture.[^task-122]
 - **Crashed web content process.** Not an error page:
   `webViewWebContentProcessDidTerminate` reloads the tab, at most twice in a
-  row (`noteProcessTermination`); past the cap the pane stays blank until a
+  row (`noteProcessTermination`; terminations more than 30 s apart start a
+  new count); past the cap the pane stays blank until a
   manual reload. A process the tab replaced because it was not answering a
   load is not counted
   ([unresponsive web process](../platform/unresponsive-web-process.md)).

@@ -4,7 +4,7 @@ title: UI probes
 description: Measurements to paste into a debug harness when clicks do not land, a window edge will not resize, or keyboard focus is somewhere unexpected — hit-test maps, resize-region probes, first-responder and key-view loop dumps, layout gaps.
 tags: [playbook, harness, appkit, focus, hit-testing]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-10T07:45:28Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:05:20Z }
 sources:
   - id: task-169
     resource: backlog:TASK-169
@@ -48,7 +48,11 @@ lands on an off-screen sidebar control") turned out to be false when the
 key-view loop was actually dumped.[^notes-keyloop]
 
 All of them run inside a [debug harness](./debug-harness.md), a couple of
-seconds after launch.
+seconds after launch. For one point, ask the
+[automation endpoint](../features/automation-endpoint.md) first:
+`scripts/detour-mcp call hit_test window_id=1 x=… y=…` says what a click
+there would reach (view class, accessibility role and label, frame) with
+no harness ([runtime verification](./runtime-verification.md)).
 
 # When to use
 
@@ -94,6 +98,15 @@ for y in stride(from: Int(b.maxY) + 3, through: max(0, Int(b.minY) - 9), by: -1)
 }
 for (k, v) in legend.sorted(by: { $0.value < $1.value }) { log("legend \(v) = \(k)") }
 ```
+
+The endpoint's `hit_test` uses window-content points with a top-left
+origin, and hit-tests with a mouse press as the current event, as AppKit's
+dispatch does. This bare `frameView.hitTest` grid runs with whatever event
+is current, and a view-based `NSTableView` answers differently then: with
+a press current it returns itself for a row's label, otherwise the label's
+`NSTextField`. Over table rows, trust `hit_test` for where a real click
+lands; the map is for overlapping views and `mouseDownCanMoveWindow`,
+which `hit_test` does not report.
 
 Reading it: `#` is the control, each letter is another view's class chain
 (with `(moves)` where `mouseDownCanMoveWindow` is true, which is how a

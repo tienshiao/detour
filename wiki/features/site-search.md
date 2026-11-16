@@ -4,7 +4,7 @@ title: Site search
 description: "Keyword shortcuts in the command palette that search one site (TASK-287): typing a keyword then Tab or Space enters a mode with the site's name as a chip, Return opens the site's results URL; the app-wide list in the siteSearch table (migration v21, a starter set seeded once), its rules, the Settings > Search pane that edits it, and entries discovered from a site's OpenSearch description (TASK-288, migration v22)."
 tags: [command-palette, search, settings]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-07T11:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:02:00Z }
 sources:
   - id: task-287
     resource: backlog:TASK-287
@@ -262,7 +262,8 @@ yellow, green and orange.
 
 ## Settings > Search
 
-`SearchSettingsViewController`, after Profiles in the toolbar. One bordered
+`SearchSettingsViewController`, between Quick Detour and Extensions in the
+toolbar (the panes are ordered by topic since TASK-347). One bordered
 list fills the pane (a list pane: `scrollsBodyAsWhole` false, minimum 400 pt)
 with Name, Keyword and Address columns and a +, −, pencil bar. + and the
 pencil (or a double-click) open `SiteSearchForm` in an `NSAlert` sheet: its

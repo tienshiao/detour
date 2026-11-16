@@ -5,7 +5,7 @@ description: How Detour keeps an extension's background alive while it holds a n
 resource: ../../Detour/Extensions/Runtime/NativeHostKeepAlive.swift
 tags: [extensions, service-worker, native-messaging, webkit, 1password]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-03T06:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:05:28Z }
 sources:
   - id: state
     resource: ../../Detour/Extensions/Runtime/NativeHostKeepAlive.swift
@@ -332,11 +332,15 @@ the other end and leaves the same state: page loaded, port open, no replies.
 
 # Reading the log
 
-Category `extension-manager`. Everything except the two watchdog lines is
-**info** level: use `log stream --level info` or `log show --info`, and
-remember info lines age out of the store within minutes.
+Category `extension-manager`. Everything except the watchdog lines and the
+failures (a ping, a restart's load or a delivery that failed) is **info**
+level: use `log stream --level info` or `log show --info`, and remember info
+lines age out of the store within minutes.
 
-- `Keep-alive port opened for <ext>` / `closed` / `superseded by a newer one`
+- `Keep-alive port opened for <ext>` / `closed` / `superseded by a newer one`;
+  `closed … (context unloaded)` when the context goes, and
+  `closed … (background unloaded; reported through its anchor)` when the
+  anchor reports an unload (TASK-142)
 - `Keep-alive armed for <ext>: N native host(s) connected` / `disarmed`
 - `Keep-alive ping #n sent to <ext>` / `Keep-alive reply #n from <ext> (N ms)`
 - `Replaced background context of <ext>: tore down N stale native host(s) and M relayed WebSocket(s)`
@@ -344,15 +348,20 @@ remember info lines age out of the store within minutes.
 
 Traps: these lines carry **no profile name** (tell workers apart by the
 `connectNative … in profile X` lines); "native host(s)" counts relayed
-sockets too; `superseded` right after an idle unload is expected and was seen
-in the 2026-09-21 run.[^task-21]
+sockets too; `superseded` right after an idle unload was expected and was
+seen in the 2026-09-21 run, before the anchor (TASK-142) reported unloads
+itself.[^task-21]
 
 # Gotchas
 
 - **Stale comments.** The doc comment on `restartUnresponsiveBackground` and
   a paragraph in `nativePortKeepAliveJS` still say a `chrome.offscreen`
   document's close terminates the worker. TASK-68's own correction found that a coincidence; the trigger was
-  the ITP pass that ran in the same millisecond.[^task-68]
+  the ITP pass that ran in the same millisecond.[^task-68] And the comment
+  above `watchPort` in `nativePortKeepAliveJS` says WebKit's removal of a
+  collected port runs its `onDisconnect` listeners; TASK-142's own
+  measurement (in a worker) found they do not run, which is why such a port
+  waits for the next ping (see "Where it does not hold").[^task-142]
 - **Take the registry entry before disconnecting.** Every teardown removes
   the whole entry first, so the callbacks it sets off find nothing to
   release. Reordering this double-releases a host.

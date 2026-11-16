@@ -6,6 +6,8 @@ resource: ../../Detour/Detour.icon
 tags: [branding, icon, decision]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-29T08:22:20Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:11:43Z }
 sources:
   - id: task-196
     resource: backlog:TASK-196

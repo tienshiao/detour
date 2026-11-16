@@ -6,6 +6,8 @@ resource: ../../Detour/Extensions/Runtime/OffscreenDocumentHost.swift
 tags: [extensions, offscreen, polyfill, webkit]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:07:05Z }
 sources:
   - id: host
     resource: ../../Detour/Extensions/Runtime/OffscreenDocumentHost.swift

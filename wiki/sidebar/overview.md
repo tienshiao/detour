@@ -4,7 +4,7 @@ title: Sidebar overview
 description: A map of the sidebar — TabSidebarViewController, its pages, cells and pure helper files — and how actions flow through TabSidebarDelegate to the window controller and TabStore.
 tags: [sidebar, overview, appkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:41:30Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:03:43Z }
 sources:
   - id: sidebar-vc
     resource: ../../Detour/Browser/Sidebar/TabSidebarViewController.swift
@@ -50,8 +50,8 @@ callbacks come back down as new state.
 
 Everything that is a *rule* — which row is what, where a drop goes, which
 page sits where — is a pure function in its own file, unit-tested without
-AppKit. The view controller is large (about 3,500 lines) but is meant to stay
-a dispatcher.
+AppKit. The view controller is large (about 4,200 lines in November 2026) but
+is meant to stay a dispatcher.
 
 # Parts
 
@@ -66,7 +66,8 @@ a dispatcher.
 | `ArchivePageView` | [ArchivePageView.swift](../../Detour/Browser/Sidebar/ArchivePageView.swift) | The Archived Tabs page, left of the first space; see [closed tabs and archive](../tabs/closed-tabs-and-archive.md) |
 | `TabCellView`, `FolderCellView`, `NewTabCellView`, `SeparatorCellView`, `TabRowView` | [TabCellView.swift](../../Detour/Browser/Sidebar/TabCellView.swift), [FolderCellView.swift](../../Detour/Browser/Sidebar/FolderCellView.swift) | Row views; see [tab cell](./tab-cell.md) |
 | `FavoritesBarView` | [FavoritesBarView.swift](../../Detour/Browser/Sidebar/FavoritesBarView.swift) | The tile grid above the list; see [favorites](../tabs/favorites.md) |
-| Bottom bar | controller | Downloads button with activity badge, the space buttons strip, Add Space |
+| Bottom bar | controller | Downloads button with activity badge, the space buttons strip, Add Space (opens the [space editor](./space-editor.md)) |
+| `SpaceEditorView` | [SpaceEditorView.swift](../../Detour/Browser/Spaces/SpaceEditorView.swift) | Takes the page area while a space is made or edited (`beginSpaceEditor`); see [space editor](./space-editor.md) |
 | `FocusGatedTableView`, `DraggableTableView`, `DraggableScrollView`, `DraggableClipView`, `DraggableBarView`, `FadeShadowView` | [SidebarComponents.swift](../../Detour/Browser/Sidebar/SidebarComponents.swift) | Small AppKit subclasses: focus gating, drag bookkeeping, window dragging from empty areas, the swipe hook |
 | `SettingsPopoverViewController` | [SettingsPopoverViewController.swift](../../Detour/Browser/Sidebar/SettingsPopoverViewController.swift) | The per-site popover (the host as header; content blocking; picture in picture and dev mode, left out of a Quick Detour's; extensions) the address bar's button and a Quick Detour's bar open |
 
@@ -113,7 +114,7 @@ round trip until this was added.[^commit-b9ef265]
 
 ## Up: sidebar → window → store
 
-`TabSidebarDelegate` has nearly sixty methods, most with empty default
+`TabSidebarDelegate` has over sixty methods, most with empty default
 implementations. `BrowserWindowController` implements them in
 [BrowserWindowController+TabSidebar.swift](../../Detour/Browser/Window/BrowserWindowController+TabSidebar.swift).
 The window, not the sidebar, owns the consequences of a gesture: settling

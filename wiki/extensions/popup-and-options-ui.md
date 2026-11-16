@@ -4,7 +4,7 @@ title: Extension popup, menu and options page
 description: The browser-side entry points to an extension — the pinned sidebar buttons, the Extensions menu, the action popup popover and how it takes the popup's size, and the options page — and the rule that nothing but an explicit present may read an action's popupWebView.
 tags: [extensions, ui, popup, appkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:00:07Z }
 sources:
   - id: popover
     resource: ../../Detour/Extensions/UI/ExtensionPopoverController.swift
@@ -57,6 +57,9 @@ sources:
   - id: webkit-action
     resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionActionCocoa.mm
     title: WebKit, WebExtensionActionCocoa.mm (popupWebView, _WKWebExtensionActionWebView, _WKWebExtensionActionPopover; read 2026-10-28)
+  - id: menu-items
+    resource: ../../Detour/Extensions/UI/ExtensionMenuItems.swift
+    title: ExtensionMenuItems.swift (what the Extensions menu and the palette offer)
   - id: harness-220
     resource: ../../docs/harness/task220-harness.patch
     title: TASK-220 runtime harness and results
@@ -76,8 +79,10 @@ in a tab. The one rule that cost real trouble: **reading
 |---|---|---|
 | Pinned extension button (faux address bar) | `FauxAddressBar.pinnedExtensionStack` → `tabSidebarDidRequestShowExtensionPopup` | The popup |
 | Extension list in the site-settings popover | `SettingsPopoverViewController.onExtensionClick` / `onPinToggle` | The popup; pin or unpin |
+| Quick Detour title bar button | `QuickDetourTitleBar.onExtensionClick` → `QuickDetourWindowController.performExtensionAction` | The popup, in the Quick Detour's own profile and tab |
 | Extensions menu → *extension* → Show Popup | `AppDelegate.extensionMenuClicked` | The popup |
 | Extensions menu → *extension* → Options… | `AppDelegate.extensionOptionsMenuClicked` | The options page |
+| Command palette: Show Extension Popup, Extension Options | `BrowserCommands.showExtensionPopup` / `extensionOptions`, the same actions as the menu items; the choices are the window's profile's, from `ExtensionMenuItems` (TASK-320) | The popup; the options page |
 | Settings → Extensions → Settings… | `ExtensionsSettingsViewController` | The options page |
 | `browser.action.openPopup()` | `ExtensionManager.webExtensionController(_:presentActionPopup:…)` | The popup |
 | `runtime.openOptionsPage()` | `…openOptionsPageFor…` | The options page |
@@ -90,7 +95,9 @@ text. `extensionActionDidChangeNotification` and
 
 ## Showing a popup (`ExtensionPopoverController.show`)
 
-1. Take the context from `ExtensionManager.context(for:)` and the tab from the
+1. Take the context from the profile the controller was given (a Quick
+   Detour window and the automation endpoint pass theirs), else from
+   `ExtensionManager.context(for:)`; the tab is the one it was given, else the
    key window's `extensionActiveTab` — the presented [Peek](../tabs/peek.md)
    when one is up, so the popup and any `activeTab` grant name the page the
    user is looking at.[^task-51]
@@ -175,7 +182,9 @@ every key-equivalent dispatch, that is, on every Cmd+key press.[^task-55]
 
 Two guards:
 
-- `ExtensionMenuPopupDecision.hasPopup` takes the action through a protocol,
+- `ExtensionMenuPopupDecision.hasPopup` (reached through
+  `ExtensionMenuItems.hasPopup`, which the menu and the command palette share)
+  takes the action through a protocol,
   `ExtensionActionPopupDeclaring`, that has only `presentsPopup`. Code that
   decides through it cannot reach the web view; the type is the guard. The
   manifest's `default_popup` is the fallback when no context is loaded.
@@ -219,8 +228,9 @@ window. For a Private profile it only ever uses its own window.
   Settings… button is hidden by design; its settings live in its own app
   page.[^notes-updates]
 - `ExtensionManager.context(for:)` answers for the last-active space's
-  profile. The popup path relies on that matching the window the user clicked
-  in.
+  profile. The browser window's popup paths (sidebar button, Extensions
+  menu) rely on that matching the window the user clicked in; a Quick Detour
+  passes its own profile.
 - An `NSPopover` window is 26 points larger than its content in each
   direction (the arrow and border): a 126 × 126 window in a window list is
   100 × 100 content.[^task-220]

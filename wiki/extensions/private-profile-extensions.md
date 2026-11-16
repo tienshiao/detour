@@ -4,7 +4,7 @@ title: Extensions in the Private profile
 description: The rules for extensions in Private windows — off unless allowed per extension, pages in the profile's own non-persistent store, and the WebKit private-data gate that silently stops events without hasAccessToPrivateData.
 tags: [extensions, privacy, incognito, webkit, data-store]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T23:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:02:26Z }
 sources:
   - id: profile
     resource: ../../Detour/Browser/Profile.swift
@@ -68,12 +68,12 @@ The third point cost a week of misdiagnosis and is the one to remember.
 | Pinning an extension in Private inserts a row carrying the default, so a pin does not allow it | `toggleExtensionPinned` |
 | "Allow in Private" writes only the Private profile's row and loads or unloads the context at once; a disable closes its extension pages | `ExtensionsSettingsViewController.allowInPrivateToggled`, `ExtensionManager.setEnabled(id:profileID:enabled:)` |
 | The switch is disabled while the extension is globally off, but keeps the saved choice | same |
-| Install, update and global re-enable write no per-profile row, so they never change the Private state | `ExtensionPrivateDefaultTests` |
+| An install writes an ON row for the profile it came from only, and a Private target is ignored; update and global re-enable write no per-profile row. None of them changes the Private state | `ExtensionManager.install(from:publicKey:options:turningOnIn:)`, `ExtensionPrivateDefaultTests` |
 | Every context loaded into an incognito profile gets `hasAccessToPrivateData = true` | `Profile.loadExtensionContext` |
 | The incognito controller is `.nonPersistent()` and its `webViewConfiguration.websiteDataStore` is the profile's `dataStore` | `Profile.extensionController` |
 | The Private profile's worker never receives `runtime.onInstalled` | [runtime.onInstalled](./runtime-installed-event.md) |
 | `windows.create` from a Private context (a Private window's or a quarantine's) always opens a Private window, whatever `incognito` says | `ExtensionManager.opensPrivateWindow`; see [opening a window](./tab-and-window-bridge.md#opening-a-window) (TASK-214) |
-| `notifications.*` is scoped by profile: the Private copy of an extension and its normal-profile copy never list, clear, update or resolve clicks on each other's notifications. The Private profile's notifications go when the Private session ends (`TabStore.endPrivateSessionIfUnused`), and identifiers are opaque, so nothing the system stores names the Private profile | `ExtensionNotificationManager.Owner`; see [polyfill layer](./polyfill-layer.md#chromenotifications-is-scoped-by-profile) (TASK-238) |
+| `notifications.*` is scoped by profile: the Private copy of an extension and its normal-profile copy never list, clear, update or resolve clicks on each other's notifications. The Private profile's notifications go when the Private session ends (`TabStore.endPrivateSessionIfUnused`), and identifiers are opaque, so nothing the system stores names the Private profile | `ExtensionNotificationManager.Owner`; see [notification ownership](./polyfill-notification-scope.md) (TASK-238) |
 | `windows.create({incognito: true})` from a normal context is refused unless the extension is allowed in Private (missing row = not allowed) | `ExtensionManager.refusesPrivateWindow`; see [opening a window](./tab-and-window-bridge.md#opening-a-window) (TASK-224) |
 
 Consequences worth knowing:
@@ -165,8 +165,6 @@ native port setup. None was involved.
   from the source, not tested.[^notes-private]
 - **Leftovers.** Extension data written to the default store by Private
   extension pages in builds before 2026-09-20 is not cleaned up.
-- **Teardown.** Nothing unloads the Private contexts or discards the store
-  when the last Private window closes.
 
 # Tests
 

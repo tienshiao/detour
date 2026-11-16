@@ -4,7 +4,7 @@ title: Tab switching by keyboard
 description: Cmd+Option+Up/Down steps through a space's sidebar rows in order; Control+Tab switches between recently used tabs with a preview overlay. Both treat a split as one item.
 tags: [tabs, keyboard, switcher, mru, sidebar]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T11:31:06Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:06:17Z }
 sources:
   - id: task-308
     resource: backlog:TASK-308
@@ -235,7 +235,7 @@ Cmd+Option+Up/Down no manual pass was recorded.[^task-107]
 
 `TabNavigationTests` (11) and `RecentTabOrderTests` (19) cover the pure order
 and state, and the Control+W rules for normal, split, pinned, pinned-split,
-favourite and stale cards; `RecentTabSwitcherMonitorTests` (14) covers which
+favourite and stale cards; `RecentTabSwitcherMonitorTests` (15) covers which
 keys the monitor swallows and which it passes on, and Control+W's effect on
 the list and the highlight; `RecentTabSwitcherCloseTests` (5) runs the
 closes in a real window; `RecentTabSwitcherPeekTests` (7) covers which

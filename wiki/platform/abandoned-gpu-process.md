@@ -5,6 +5,8 @@ description: A GPU process that WebKit "terminated" while its main thread was bl
 tags: [webkit, gpu, hang, diagnostics, performance]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-13T00:56:11Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:26Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-175

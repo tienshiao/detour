@@ -96,7 +96,7 @@ creates a global that does not exist.
     ([native port keep-alive](../extensions/native-port-keep-alive.md));[^task-16]
   - `runtime.lastError` for callback-style polyfill calls is set by WebKit
     itself, through a native round trip that always fails
-    ([Polyfill layer](../extensions/polyfill-layer.md));[^task-23]
+    ([Polyfill errors](../extensions/polyfill-errors.md#callback-form-and-runtimelasterror));[^task-23]
   - a `runtime.reload()` is recognised by the background context restarting
     ([Updates](../extensions/updates.md)).[^task-123]
 - Modules that need a namespace re-read it at each use and cache nothing:

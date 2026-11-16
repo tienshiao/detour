@@ -5,6 +5,8 @@ description: WebKit and macOS behaviours that crash the DetourTests host, make i
 tags: [webkit, tests, storage, crashes, isolation]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-04T02:43:07Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:26Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-36

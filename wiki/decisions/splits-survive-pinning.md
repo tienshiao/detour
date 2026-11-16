@@ -5,6 +5,8 @@ description: Why pinning a whole split keeps it a split, and why a pinned split'
 tags: [tabs, split, pinned, decision, model]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:43:31Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:11:43Z }
 sources:
   - id: design
     resource: ../../docs/split-tabs-design.md

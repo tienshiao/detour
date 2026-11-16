@@ -4,7 +4,7 @@ title: WebKit's back swipe and unhandled scrolls
 description: WKWebView's two-finger back swipe starts only when the back list has an item, no SPI makes it target anything else, and the one signal that a scroll went unused by the page (the private _webView:didNotHandleWheelEvent:) arrives only while the view's own back/forward gesture is off and left-edge rubber-banding is excluded — measured with a spike on macOS 26.7 for TASK-325.
 tags: [webkit, gestures, navigation, scrolling, spi]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T21:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:26Z }
 stale_after: 2027-05-01T00:00:00Z
 sources:
   - id: spike
@@ -138,9 +138,10 @@ now: [Back swipe to the opener](../tabs/back-swipe-to-opener.md).
 In the app (macOS 26.7) a tab web view's `_rubberBandingEnabled` reads 15
 (all edges) by default, and the mode's 14 and 10 read back as set.
 
-Untested: whether `NSEvent.trackSwipeEvent` started from that callback in
-Detour tracks a real trackpad gesture. Synthetic events cannot drive it, so
-that needs a person at a trackpad. Three-finger "swipe between pages"
+`NSEvent.trackSwipeEvent` started from that callback in Detour does track a
+real trackpad gesture: synthetic events cannot drive it, so this was a hand
+check, which the user ran on a real trackpad on 2026-11-15 and reported
+working.[^task-325] Three-finger "swipe between pages"
 arrives as `swipe(with:)`, not scroll events, and WebKit ignores it while
 its gesture is off (and does nothing with it without a back item). Scroll-based
 tracking applies only when `NSEvent.isSwipeTrackingFromScrollEventsEnabled`

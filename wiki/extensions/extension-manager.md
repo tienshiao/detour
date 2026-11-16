@@ -6,6 +6,8 @@ resource: ../../Detour/Extensions/Runtime/ExtensionManager.swift
 tags: [extensions, lifecycle, profiles, webkit]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T23:30:00Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:04:02Z }
 sources:
   - id: extension-manager
     resource: ../../Detour/Extensions/Runtime/ExtensionManager.swift

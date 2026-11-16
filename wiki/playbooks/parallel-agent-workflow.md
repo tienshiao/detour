@@ -4,7 +4,7 @@ title: Parallel agent workflow
 description: How several agents work on this repository at once without breaking each other — one worktree, build directory and test data directory each, one build at a time, explicit review targets, and integration through a branch a person merges.
 tags: [playbook, agents, worktrees, git, review, tests]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:44:19Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:05:20Z }
 sources:
   - id: claude-md
     resource: ../../CLAUDE.md
@@ -79,8 +79,9 @@ env TEST_RUNNER_DETOUR_DATA_DIR=DetourTests-<task> \
   -only-testing:DetourTests/<Suite> > "$OUT/test.log" 2>&1
 ```
 
-- A private `-derivedDataPath` per worktree. Never commit it (`.derived`
-  is not in `.gitignore` on `main`).
+- A private `-derivedDataPath` per worktree. `.derived/` is in
+  `.gitignore` since 2026-10-10; a branch cut before that does not ignore
+  it, so add files by path there, never `git add -A`.
 - A private test data directory per run. Without it every run uses
   `~/Library/Application Support/DetourTests/`, and `TestEnvironmentSetup`
   resets shared state at bundle start, so concurrent runs corrupt each
@@ -148,10 +149,15 @@ GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash <base>
 
 ## 8. Runtime-verify without blocking the editors
 
-To run a long harness while other agents keep editing, build from a
-separate worktree at a fixed commit with its own DerivedData, and kill
-only the process whose path is that build's
-([runtime verification](./runtime-verification.md)).[^notes-parallel]
+The first route is the automation endpoint (`DETOUR_MCP=1`,
+`scripts/detour-mcp`; see
+[runtime verification](./runtime-verification.md)). Each agent launches
+its own build with its own `DETOUR_DATA_DIR` name, so each run writes its
+own `mcp-endpoint.json` (URL, port, token, pid) and listens on its own
+ephemeral port; stop it by that file's `pid`, never by name. To run a
+long check, endpoint script or harness, while other agents keep editing,
+build from a separate worktree at a fixed commit with its own
+DerivedData, and kill only the process whose path is that build's.[^notes-parallel]
 
 # Traps
 

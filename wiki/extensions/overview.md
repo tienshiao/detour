@@ -4,7 +4,7 @@ title: Web Extension support
 description: How Detour runs Chrome MV3 extensions — WebKit's native WKWebExtension runtime, Detour's polyfill layer for the APIs WebKit lacks, and the host integration around them — with a file map and the known gaps.
 tags: [extensions, webkit, polyfill, overview]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T08:18:18Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:00:07Z }
 sources:
   - id: docs-extensions
     resource: ../../docs/extensions.md
@@ -24,6 +24,9 @@ sources:
   - id: task-99
     resource: backlog:TASK-99
     title: Give each context a stable base URL so extension storage survives a relaunch
+  - id: task-247
+    resource: backlog:TASK-247
+    title: notifications.onClicked and onClosed are never delivered to the extension
   - id: task-81
     resource: backlog:TASK-81
     title: windows.getCurrent from a background worker reports "Window not found" with no key window
@@ -77,21 +80,22 @@ The decision to build on WebKit's runtime, and what it replaced, is in
 | Lifecycle singleton and controller delegate | `Runtime/ExtensionManager.swift`, `ExtensionManager+Updates.swift`, `ExtensionManager+OptionsPage.swift`; the per-profile half is in [Profile.swift](../../Detour/Browser/Profile.swift) | [ExtensionManager](./extension-manager.md) |
 | Polyfill JS and its native handler | `Runtime/ExtensionAPIPolyfill.swift`, `Runtime/ExtensionPolyfillHandler.swift` | [Polyfill layer](./polyfill-layer.md), [Chrome runtime patching](./chrome-runtime-patching.md) |
 | Permissions | `Storage/Models/ExtensionPermissionRecord.swift`, `Model/WebExtension.swift`, `Profile.applySavedHostAccessDecisions` | [Permissions](./permissions.md) |
-| Install | `Installer/ExtensionInstaller.swift`, `CRXUnpacker.swift`, `CRX3Verifier.swift` | [Installer and CRX](./installer-and-crx.md) |
+| Install | `Installer/ExtensionInstaller.swift`, `CRXUnpacker.swift`, `CRX3Verifier.swift`, `CRXInstallGate.swift`; `Runtime/ExtensionInstallTarget.swift` (the profile an install turns on in) | [Installer and CRX](./installer-and-crx.md) |
 | Updates | `Updates/` (`ExtensionUpdater`, `ExtensionUpdatePolicy`, `ExtensionUpdateDeferral`, `StagedExtensionUpdate`, `UpdateManifest`) | [Updates](./updates.md) |
 | Storage | WebKit's `chrome.storage`; `storageManagedJS` | [Storage](./storage.md) |
 | Tabs and windows as WebKit sees them | `Runtime/WKExtensionTabConformance.swift`, `WKExtensionWindowConformance.swift`, `ExtensionTabLifecycle.swift`, `ExtensionTabObserver.swift`, `ExtensionActiveTab.swift` | [Tab and window bridge](./tab-and-window-bridge.md) |
 | `runtime.onInstalled` | `Runtime/RuntimeInstalledEvent.swift`, `Storage/Models/ExtensionInstalledEventRecord.swift`, `ExtensionPageHostRegistry.swift` | [runtime.onInstalled](./runtime-installed-event.md) |
 | Offscreen documents | `Runtime/OffscreenDocumentHost.swift` | [Offscreen documents](./offscreen-documents.md) |
-| Popup, Extensions menu, options page | `UI/ExtensionPopoverController.swift`, `ExtensionMenuPopupDecision.swift`, `ExtensionOptionsPageEntry.swift` | [Popup and options UI](./popup-and-options-ui.md) |
+| Popup, Extensions menu, options page | `UI/ExtensionPopoverController.swift`, `ExtensionMenuPopupDecision.swift`, `ExtensionMenuItems.swift`, `ExtensionOptionsPageEntry.swift` | [Popup and options UI](./popup-and-options-ui.md) |
 | Extension pages open in tabs | `Runtime/ExtensionPageURL.swift`, `Profile.retargetExtensionPages` | [Extension pages](./extension-pages.md) |
 | Frames and content scripts | `webNavigationJS`, `contentPolyfillJS` | [Frames and content scripts](./frames-and-content-scripts.md) |
-| Native messaging hosts | `Runtime/NativeMessagingHost.swift`, `NativeConnectLogLimiter.swift` | [Native messaging](./native-messaging.md) |
+| Native messaging hosts | `Runtime/NativeMessagingHost.swift`, `NativeHostEnding.swift`, `NativeConnectLogLimiter.swift` | [Native messaging](./native-messaging.md) |
 | Keeping a worker alive | `Runtime/NativeHostKeepAlive.swift` | [Native port keep-alive](./native-port-keep-alive.md), [service worker unload rules](../platform/service-worker-unload-rules.md) |
 | WebSocket in workers | `Runtime/WebSocketRelay.swift` | [WebSocket relay](./websocket-relay.md) |
 | Worker console in the unified log | `consoleJS`, `Runtime/ConsoleBridgeLimiter.swift` | [Console bridge](./console-bridge.md) |
-| Private profile | `hasAccessToPrivateData`, `profileExtension` default | [Private profile extensions](./private-profile-extensions.md) |
+| Private profile | `hasAccessToPrivateData`, the Private profile's `profileExtension` row (`Storage/Models/ProfileExtensionRecord.swift`) | [Private profile extensions](./private-profile-extensions.md) |
 | Tracking prevention vs extension origins | `Runtime/ExtensionOriginInteractionKeeper.swift` | [Data store and ITP](./data-store-and-itp.md) |
+| Load errors and the stub registry for the automation endpoint | `Runtime/ExtensionErrorLog.swift`, `ExtensionPolyfillStubs.swift` | [Automation endpoint](../features/automation-endpoint.md) |
 | Small native backends | `Runtime/IdleMonitor.swift`, `ExtensionNotificationManager.swift`, `FaviconSchemeHandler.swift` | this page |
 | Unused | `Runtime/ModuleBundler.swift` (`ExtensionManager.useModuleBundler` is `false`) | — |
 
@@ -114,8 +118,8 @@ Paths are relative to [Detour/Extensions](../../Detour/Extensions).
 | `offscreen` | Polyfill | Shipped WebKit has none ([Offscreen documents](./offscreen-documents.md)) |
 | `idle` | Polyfill | `IdleMonitor` |
 | `notifications` | Polyfill | `ExtensionNotificationManager` (`UNUserNotificationCenter`) |
-| `history` | Polyfill | Absent without the `history` permission. Only `search` is real, and it reads the calling profile's history only ([polyfill layer](./polyfill-layer.md)); `getVisits` answers `[]`, the writes are no-ops |
-| `management` | Polyfill | `getSelf`, `getAll`, `uninstallSelf` (removes the extension from every profile, optionally after an alert), `getPermissionWarningsByManifest` (the install prompt's lines); `setEnabled` is a permission-gated no-op. Without the `management` permission the namespace holds `getSelf`, `uninstallSelf` and `getPermissionWarningsByManifest` ([polyfill layer](./polyfill-layer.md#the-permission-free-management-methods)) |
+| `history` | Polyfill | Absent without the `history` permission. Only `search` is real, and it reads the calling profile's history only ([chrome.history](./polyfill-history.md)); `getVisits` answers `[]`, the writes are no-ops |
+| `management` | Polyfill | `getSelf`, `getAll`, `uninstallSelf` (removes the extension from every profile, optionally after an alert), `getPermissionWarningsByManifest` (the install prompt's lines); `setEnabled` is a permission-gated no-op. Without the `management` permission the namespace holds `getSelf`, `uninstallSelf` and `getPermissionWarningsByManifest` ([chrome.management](./polyfill-management.md)) |
 | `fontSettings.getFontList` | Polyfill | System font families only |
 | `sessions` | Polyfill | `restore` reopens a closed tab; `getRecentlyClosed` and `getDevices` answer `[]` |
 | `search.query` | Polyfill | Opens the profile's search engine in a new tab |
@@ -149,20 +153,22 @@ Paths are relative to [Detour/Extensions](../../Detour/Extensions).
   `sidePanel`, `tabGroups` or `chrome.debugger`: an extension gets whatever
   WebKit itself vends for those, if anything. Several are the subject of the
   [Claude extension epic](./claude-extension-epic.md).
-- The polyfilled `idle`, `notifications`, `history` and `management` event
-  objects accept listeners but never fire ([Polyfill layer](./polyfill-layer.md)).
-- An extension's origin changes at every launch, so its IndexedDB,
-  `localStorage` and service worker registration do not survive one; only
-  `chrome.storage` does.[^task-99]
+- The polyfilled `idle`, `history` and `management` event objects, and
+  `notifications.onButtonClicked`, accept listeners but never fire
+  ([Polyfill layer](./polyfill-layer.md#gotchas)). `notifications.onClicked` and
+  `onClosed` are delivered to the background context
+  ([notification events](./polyfill-notification-events.md)).[^task-247]
+- An extension's origin changes at every launch. WebKit moves its IndexedDB
+  and `localStorage` to the new origin at each load, so those survive, but
+  not its Cache Storage or service worker registration
+  ([Storage](./storage.md)).[^task-99]
 - `windows.getCurrent` from a background context has been seen failing with
   "Window not found"; the likely cause is that Detour reports a focused window
   only when the profile has the key window.[^task-81]
-- A window is announced to WebKit only when a context loads or the window
+- A browser window is announced to WebKit only when a context loads or the window
   becomes key, and a window with nothing selected reports no tabs.[^task-132-22][^task-132-21]
 - No content scripts in `srcdoc` / `about:blank` frames
   ([Frames and content scripts](./frames-and-content-scripts.md)).
-- A CRX installed by hand is not signature-checked; only updates are
-  ([Installer and CRX](./installer-and-crx.md)).
 
 # Related
 
@@ -173,6 +179,7 @@ Paths are relative to [Detour/Extensions](../../Detour/Extensions).
 - [Seeding extensions](../playbooks/seeding-extensions.md) — getting an extension into an isolated profile for a runtime check.
 
 [^task-99]: Give each context a stable base URL so extension storage survives a relaunch
+[^task-247]: notifications.onClicked and onClosed are never delivered to the extension
 [^task-81]: windows.getCurrent from a background worker reports "Window not found" with no key window
 [^task-132-21]: A window with nothing selected reports no tabs to extensions
 [^task-132-22]: Tell WebKit when a browser window opens or closes

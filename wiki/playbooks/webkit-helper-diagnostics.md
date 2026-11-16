@@ -5,7 +5,7 @@ description: How to attribute CPU in a WebKit helper process (Networking, WebCon
 tags: [playbook, webkit, diagnostics, cpu, indexeddb, extensions]
 status: stable
 stale_after: 2027-04-01T00:00:00Z
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-12T23:47:45Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:05:20Z }
 sources:
   - id: task-50
     resource: backlog:TASK-50
@@ -218,7 +218,8 @@ Everything else is on
   the open files and the write-ahead log, not memory of the last
   case.[^task-90]
 - **Blaming Detour's log reporter.** The polyfill's console bridge is
-  injected only in background and popup contexts and swallows its own
+  injected only in extension contexts (background, popup, options and
+  extension pages, offscreen documents), never in content scripts, and swallows its own
   transport's rejection, so it is not part of a content-script
   `sendMessage` loop.[^notes-cpu]
 - **A killed worker comes back and the files vanish again.** If the cause

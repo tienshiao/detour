@@ -5,6 +5,8 @@ description: "The card shown beside the sidebar when the pointer rests on a tab 
 tags: [sidebar, tabs, hover, thumbnails, ui]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-24T11:31:06Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:03:57Z }
 sources:
   - id: rules
     resource: ../../Detour/Browser/HoverCard/HoverCardRules.swift

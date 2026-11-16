@@ -4,7 +4,7 @@ title: Favicons
 description: "How a tab finds its icon (an optimistic /favicon.ico guess, an early link report from a private content world, an end-of-load lookup), and the two shared loaders that hand icons to AppKit and to web views."
 tags: [favicons, webkit, sidebar, caching, content-world]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-25T00:38:52Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:04:00Z }
 sources:
   - id: loader
     resource: ../../Detour/Browser/Shared/FaviconLoader.swift
@@ -90,7 +90,9 @@ Three sources, in the order they usually land:
    evaluates the same selector in the page and downloads the result if it
    differs from `faviconURL`. Kept as a fallback.
 
-`downloadFavicon(from:generation:optimistic:)` applies a result only if the
+`downloadFavicon(from:generation:optimistic:)` fetches nothing for a
+[quarantine](./quarantine.md)'s tab: `FaviconLoader` uses the app's own URL
+session, outside the page's store (TASK-194). It applies a result only if the
 generation is still current. A page-declared icon marks
 `declaredFaviconGeneration`, and an optimistic result for that generation is
 then discarded, so a slow `/favicon.ico` cannot replace the declared icon.
@@ -167,7 +169,7 @@ A lookup that finds nothing in scope makes no network request.[^task-152]
 | Route | Gate | No icon |
 |---|---|---|
 | `detour-favicon://<extension host>/_favicon/?pageUrl=…&size=…` (`FaviconSchemeHandler`) | the host must be an extension context loaded in the handler's own profile, holding the `favicon` manifest permission; the lookup is scoped to that profile's spaces | a 1×1 transparent PNG, so the extension's `<img>` shows nothing. A refused request gets the same pixel |
-| `detour://history/favicon?pageUrl=…&size=…` | served only into the internal History document | a 404; the page hides the image |
+| `detour://history/favicon?pageUrl=…&size=…` | served only into the internal History document | the load fails (`URLError(.fileDoesNotExist)`; the code's comments call it a 404, but no HTTP response is sent); the page hides the image |
 
 ## The extension route belongs to a profile
 
@@ -204,7 +206,7 @@ web-accessible frames can read it.
 
 A service worker's `fetch` of the route reaches the handler but its answer
 cannot be read: see the worker row in
-[polyfill layer](../extensions/polyfill-layer.md#favicons-are-profile-scoped).
+[favicons for extensions](../extensions/polyfill-favicons.md).
 
 # Invariants
 

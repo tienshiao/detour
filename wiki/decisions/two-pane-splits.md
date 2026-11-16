@@ -5,6 +5,8 @@ description: Why a split tab is modelled as a shared splitGroupID on two ordinar
 tags: [tabs, split, decision, model]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:43:31Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:11:43Z }
 sources:
   - id: design
     resource: ../../docs/split-tabs-design.md

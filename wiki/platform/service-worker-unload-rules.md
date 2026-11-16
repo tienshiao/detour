@@ -4,7 +4,7 @@ title: Service worker unload rules
 description: WebKit's rules for unloading an extension's background — the 30-second timer, the 2-minute inactive-ports rule and what counts as activity — plus the ways a worker dies without its page closing and the native ports WebKit drops without telling anyone.
 tags: [webkit, extensions, service-worker, native-messaging, platform]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T02:15:18Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:05:28Z }
 stale_after: 2027-01-01T00:00:00Z
 sources:
   - id: webkit-cocoa
@@ -58,6 +58,9 @@ sources:
   - id: task-247
     resource: backlog:TASK-247
     title: "Extensions: notifications.onClicked and onClosed are never delivered to the extension"
+  - id: task-256
+    resource: backlog:TASK-256
+    title: "Extensions: a port's onDisconnect fires in the context that called port.disconnect() (WebKit, fixed upstream in 325256@main)"
 ---
 
 # Behavior
@@ -197,9 +200,11 @@ three times when the host side ended the port.[^task-16][^task-21] A port
 the background closes itself re-arms nothing, so the tick already scheduled
 applies (the +29.7 s above).
 
-Not measured: a service worker background (the bookkeeping is per hidden
-page and shared, and the earlier worker observations fit), a signed build,
-and how often real extensions close a port while they are being held. It is
+A service worker background behaves the same (measured for TASK-142): with
+the keep-alive armed but no anchor, a runtime port closed at +10 s left the
+first unanswered ping to be noticed at +45 s.[^task-142] Not measured: a
+signed build, and how often real extensions close a port while they are
+being held. It is
 a candidate explanation for the worker cycling seen after a 1Password lock
 on 2026-09-13, which was attributed to the worker's own timers by
 elimination and never reproduced.[^task-68]
@@ -215,7 +220,10 @@ it (WebKit main, `WebExtensionAPIPort.cpp`, `WebExtensionAPIRuntime.cpp`,
 - **A port's removal goes out before its `onDisconnect` listeners run**
   (`fireDisconnectEventIfNeeded` calls `remove()` first), and a page's own
   `port.disconnect()` takes the same path, so its own listeners fire too
-  (Chrome does not fire them for the closing side). A port nobody holds is
+  (Chrome does not fire them for the closing side). That last part is a
+  WebKit bug, fixed upstream on 2026-10-30 (325256@main) and still present
+  in shipped WebKit (macOS 26.7); see
+  [native messaging](../extensions/native-messaging.md#gotchas).[^task-256] A port nobody holds is
   removed when it is collected, and then its listeners do **not** run
   (measured in a worker: the extension's own `onDisconnect` never fired, and
   the other side's later close found nothing).
@@ -319,3 +327,4 @@ the revision closest to the then-shipped macOS WebKit.[^notes-webkit]
 [^task-68]: The armed keep-alive does not stop WebKit unloading a worker
 [^notes-webkit]: Session notes on WebKit's unload source and log locations
 [^task-247]: Extensions: notifications.onClicked and onClosed are never delivered to the extension
+[^task-256]: Extensions: a port's onDisconnect fires in the context that called port.disconnect()

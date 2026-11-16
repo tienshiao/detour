@@ -4,7 +4,7 @@ title: Runtime verification
 description: How to build, launch, drive and observe Detour in an isolated profile (the /verify skill), through the automation endpoint where it reaches, including how to be sure the app you launched is the build you just made.
 tags: [playbook, verify, runtime, isolation]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-14T09:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:04:49Z }
 sources:
   - id: task-228-1
     resource: backlog:TASK-228.1
@@ -112,8 +112,9 @@ What `DETOUR_DATA_DIR=<name>` isolates:
 | `browser.db`, `history.db`, installed extension files | yes | everything under `~/Library/Application Support/<name>/` (`detourDataDirectory()`) |
 | Profile website data stores and extension controllers | yes | `WebKitStorageScope` derives a different WebKit identifier per data directory; the files still live in the shared `~/Library/WebKit/com.detourbrowser.mac/` |
 | Window frame and split view autosave | yes | `UserDefaultsScope` suffixes the autosave names |
+| Detour's own preferences (hotkey, content blocker, automation setting, …) | yes | `UserDefaultsScope.defaults`, the suite `com.detourbrowser.mac.<name>` |
 | Sparkle | not started | `AppDelegate.startsUpdater` is false outside the default directory; the launch logs `Sparkle updater not started` |
-| The rest of the `com.detourbrowser.mac` defaults domain | **no** | e.g. `ExtensionConsoleLogPublic` is shared with the installed app |
+| The rest of the `com.detourbrowser.mac` defaults domain | **no** | AppKit's own keys, and `ExtensionConsoleLogPublic` (read from `UserDefaults.standard`), are shared with the installed app |
 | WebKit's default (non-identifier) website data store | **no** | keyed by bundle id |
 
 Details: [persistence](../architecture/persistence.md),
@@ -208,9 +209,11 @@ keys and downloads.[^task-228-1] Effects that finish after a call returns
 
 What the endpoint does not cover yet: input that a component sees only
 through a local event monitor (Control-Tab's switcher, sidebar swipes, the
-hover card), drags and drops, hover tracking, frame-level animation, and
-windows other than browser windows (Settings: `run_menu_item` opens it,
-`screencapture -l` sees it). For those, a harness.
+hover card), drags and drops, hover tracking and frame-level animation. For
+those, a harness. Quick Detour, quarantine and Settings windows are
+addressable since TASK-228.7 (`list_windows` gives their `kind`;
+`screenshot` and `hit_test` take any of them; input into Settings in a test
+run only), so `screencapture -l` is no longer needed for Settings.
 
 Other channels:
 
@@ -243,7 +246,10 @@ pgrep -f "$APP/Contents/MacOS/Detour"
   real event: a `CGEvent` posted to `.cghidEventTap`, which moves the real
   pointer and reaches only the frontmost app. A `CGEvent.postToPid` click is
   ignored by an inactive app and by WebKit. Driving Detour this way competes
-  with a user at the machine; TASK-228.1 is the in-process alternative.
+  with a user at the machine. The endpoint's `click` hands real events to
+  the view in-process, with Detour in the background; TASK-324's checks ran
+  that way (step 5), but a component that watches clicks through a local
+  event monitor does not see them.
 - **Never `pkill Detour`, `killall Detour` or
   `tell application "Detour" to quit`.** An installed Detour from
   `/Applications` has the same name and may be someone's running browser.
@@ -269,7 +275,7 @@ pgrep -f "$APP/Contents/MacOS/Detour"
   production bundle ID (`com.detourbrowser.mac`), so `open URL`,
   `open -a <debug app> URL` without `-n`, or `NSWorkspace.open` without a
   new instance can hand it to the user's running `/Applications/Detour.app`.
-  Safe ways, all used for TASK-191.2 ([link routing](../features/link-routing.md#runtime-check-links-from-other-apps)):
+  Safe ways, all used for TASK-191.2 ([link routing](../features/link-routing-external-links.md#delivering-test-links-safely)):
   a Get URL Apple Event built with `NSAppleEventDescriptor(processIdentifier:)`
   for the PID you launched, refusing unless that PID's executable is the
   `.derived` build and unless `AEDeterminePermissionToAutomateTarget(...,
@@ -282,8 +288,9 @@ pgrep -f "$APP/Contents/MacOS/Detour"
   WebKit, Caches and HTTPStorages folders afterwards.
 - **`-AppleInterfaceStyle Dark` at launch does not make the app dark.** The
   argument is accepted but the windows stay light (2026-10-28, TASK-220
-  re-check). Set `NSApp.appearance = NSAppearance(named: .darkAqua)` from the
-  harness instead; an extension page then reports
+  re-check). Use the endpoint's `set_appearance appearance=dark`, which sets
+  `NSApp.appearance` (from a harness: `NSApp.appearance =
+  NSAppearance(named: .darkAqua)`); an extension page then reports
   `prefers-color-scheme: dark`.
 - **Make the harness wait for its captures.** On a saturated machine a
   shell watcher can fall seconds behind a timer-driven harness and shoot a
@@ -291,16 +298,25 @@ pgrep -f "$APP/Contents/MacOS/Detour"
   Run the steps in sequence and start each only once every PNG requested so
   far exists, and have the watcher read only the log's new lines
   ([TASK-186.5 harness](../../docs/harness/task186-5-harness.patch)).
-- **Capture by window number, not region.** A shell-launched app stays behind
+- **Capture by window number, not region.** The endpoint's `screenshot`
+  draws inside Detour and needs neither; for `screencapture` (true pixels,
+  glass materials, video): a shell-launched app stays behind
   the frontmost app, so `screencapture -R` picks up whatever covers it;
   `screencapture -l <windowNumber>` captures the window even when covered,
   and a child panel's number gives it composited over its parent.
 - **The isolated app is not the key application** when launched from a
   shell, so behaviour keyed on `NSApp.keyWindow` cannot be driven that
-  way.[^notes-updates] A check that needs key windows (the web view hand-off
-  between two windows, TASK-135) is launched by the user with `open -n`
-  (no `-g`) and the screen unlocked: the app is then active, windows become
-  key, and a posted Cmd+backtick cycles them. The harness waits for
+  way.[^notes-updates] In a test run the endpoint gets around it:
+  `set_window_frame activate=true` brings Detour to the front with that
+  window key, and while Detour is active an endpoint click in a window that
+  is not key makes it key, as a person's does, and the web view moves to
+  it (TASK-228.10, checked with two windows on one tab). It takes the focus
+  from the person's app, so run it while nobody uses the Mac. Menu items
+  need no key window: `run_menu_item` validates against the window it names
+  (TASK-228.7). Before the endpoint, a check that needed key windows
+  (TASK-135) was launched by the user with `open -n` (no `-g`) and the
+  screen unlocked: the app is then active, windows become key, and a posted
+  Cmd+backtick cycles them. The harness waits for
   `NSApp.isActive` before its first step and logs `NSApp.keyWindow` at every
   step, so a run another app interrupted shows in its own log.
 - **Write outputs to a directory you can read back later.** A sandboxed and
@@ -325,7 +341,7 @@ pgrep -f "$APP/Contents/MacOS/Detour"
 
 - [Build and test](./build-and-test.md) — build directories and the one-build-at-a-time rule.
 - [Debug harness](./debug-harness.md) — driving the app from inside.
-- [Automation endpoint (MCP)](../features/automation-endpoint.md) — state, selection, URLs and menu commands from a script, with no harness patch (TASK-228.1; input and screenshots in later phases).
+- [Automation endpoint (MCP)](../features/automation-endpoint.md) — every tool: state, input, menus, screenshots, page and extension contexts, capture staging, from a script with no harness patch (TASK-228.1 and its subtasks).
 - [In-process UI automation](./in-process-ui-automation.md) — clicks, keys and captures without external input.
 - [UI probes](./ui-probes.md) — hit-test maps and focus dumps.
 - [Seeding extensions](./seeding-extensions.md) — an extension in an isolated profile.

@@ -3,8 +3,8 @@ type: Feature
 title: Import from Arc
 description: "What the Arc importer reads and how: Arc's own files on this Mac (StorableSidebar.json's live sidebar container, not its stale sync shadows; profile names from Local State; each profile's Chromium History, copied before reading) and the Markdown file Arc's Export Data writes (URLs only; a Favorites list that runs favourites, top-level pinned tabs and Today tabs together, and the shared-lead rule that splits it); the source-neutral snapshot both readers produce, source keys for re-imports, and what is skipped. Checked against Arc 1.172.1."
 tags: [import, arc, storage, history]
-status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-12T10:56:40Z }
+status: stable
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:03:00Z }
 stale_after: 2027-01-31T00:00:00Z
 sources:
   - id: snapshot
@@ -271,7 +271,8 @@ result; the window cannot be closed while history is being written.
 
 `ArcImportOffer` is due once, 1.5 s after launch, to anyone whose Mac has
 `StorableSidebar.json` (user, 2026-11-12: new and current users), never in
-the test host. It lives in the data directory's defaults suite
+the test host and never at the launch of an automation test run (TASK-228.3:
+a capture asks for it from a fixture folder instead). It lives in the data directory's defaults suite
 (`UserDefaultsScope.defaults`), so an isolated run never uses up the
 production offer.
 

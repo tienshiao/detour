@@ -5,6 +5,8 @@ description: Why Detour suppresses WebKit's runtime.onInstalled and emits its ow
 tags: [extensions, runtime, polyfill, security, webkit]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:04:02Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: rule

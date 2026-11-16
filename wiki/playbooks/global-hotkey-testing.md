@@ -4,7 +4,7 @@ title: Testing a global hotkey
 description: How to exercise a system-wide hotkey from another app at runtime without a person — posting real key presses at the HID event tap, a scratch app to be the app in front, safe clicks, a command-file harness, and the traps (F-keys need the Fn flag, unicode-string events are dropped by an inactive app's panel, a stuck Shift, isActive lying while a non-activating panel is key).
 tags: [playbook, harness, hotkey, input, runtime]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-26T05:10:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:05:20Z }
 stale_after: 2027-06-01T00:00:00Z
 sources:
   - id: harness
@@ -22,6 +22,13 @@ hotkey matching), so the input comes from small scratch tools run from the
 shell, and Detour's harness only answers commands and logs state. Every
 step below was used in the TASK-193.2 run; the tools' sources are in the
 [harness patch](../../docs/harness/task193-2-harness.patch).[^harness]
+
+The [automation endpoint](../features/automation-endpoint.md), the first
+route for other runtime checks, does not replace this: its input is handed
+to Detour's views and never reaches the window server, and the launcher
+panel (`QuickDetourPalettePanel`) is not one of its windows. The Quick
+Detour window the launcher opens is (`list_windows`, kind `quick_detour`),
+so the endpoint can observe and capture that window, not the panel.
 
 # When to use
 
@@ -90,7 +97,9 @@ comes forward on activation, focus returning to the previous app.
   scratch app's window only (it is glass; see
   [Quick Detour](../features/quick-detour.md)), and windows with
   `screencapture -l <windowNumber>`, so none of the user's windows are in
-  a capture.
+  a capture. In a run with the endpoint on, a Quick Detour window can be
+  captured with its `screenshot` tool instead (`source=screen` for the
+  glass).
 
 # Related
 

@@ -4,7 +4,7 @@ title: Keyboard focus in the window and sidebar
 description: Which view holds first responder in a browser window, when focus is handed back to the web page, why a space's tab list never takes the keyboard, and why the archive page takes it only while on screen.
 tags: [sidebar, window, focus, first-responder, appkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-11T08:08:38Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:13:24Z }
 sources:
   - id: window
     resource: ../../Detour/Browser/Window/BrowserWindowController.swift
@@ -322,11 +322,17 @@ Three rules for focus tests:
   which such a window would otherwise leave naming a deleted
   space.[^task-130]
 
-- A synthetic mouse-down handed to an `NSTableView` in the test host does
-  not select the row under it. The host is not the active application, and
-  neither `tableView.mouseDown(with:)` with the mouse-up queued nor posted
-  events pumped through `NSApp.sendEvent` changed the selection (the pumped
-  click did move first responder to a list that accepted it).[^task-174]
+- A synthetic mouse-down handed to a sidebar list in a window that is not
+  key does not select the row under it. Neither `tableView.mouseDown(with:)`
+  with the mouse-up queued nor posted events pumped through `NSApp.sendEvent`
+  changed the selection (the pumped click did move first responder to a list
+  that accepted it).[^task-174] The cause, found in TASK-228.9 (the comment
+  on `DraggableTableView.needsPanelToBecomeKey`): in a window that is not
+  key, `-[NSTableView mouseDown:]` gives up unless the press becomes a drag,
+  because the table needs its panel to become key. An automation press, for
+  which the list answers `needsPanelToBecomeKey == false`, does select the
+  row (`AutomationInputTests.testALeftClickOnASidebarRowSelectsItsTab`); a
+  person's press keeps AppKit's answer.
   `SidebarPageFocusTests` therefore hands the mouse-down to the list for
   what the list's own `mouseDown` does, and makes the selection with
   `selectRowIndexes` where a test needs it. The one thing a tab list holds

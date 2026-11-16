@@ -6,6 +6,8 @@ resource: ../../Detour/Extensions/Runtime/WebSocketRelay.swift
 tags: [extensions, service-worker, websocket, webkit, 1password]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:48:49Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:05:28Z }
 sources:
   - id: relay
     resource: ../../Detour/Extensions/Runtime/WebSocketRelay.swift

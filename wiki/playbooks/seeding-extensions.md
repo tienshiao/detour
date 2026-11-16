@@ -4,7 +4,7 @@ title: Seeding extensions
 description: How to put an extension into an isolated Detour profile by hand for a runtime check — the files, the database rows (including the permission rows a real install writes), a fake native host, and readable worker console output.
 tags: [playbook, extensions, runtime, verify, seeding]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-08T23:30:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:00:07Z }
 sources:
   - id: database
     resource: ../../Detour/Storage/Database.swift
@@ -110,6 +110,11 @@ VALUES ('$ID', 'storage', 0, 0, strftime('%s','now'));
 
 -- one row per "host_permissions" pattern: permissionType 1
 -- INSERT INTO extensionPermission VALUES ('$ID', '<all_urls>', 1, 0, strftime('%s','now'));
+
+-- on in every normal profile (the Private profile is the fixed id below)
+INSERT INTO profileExtension (profileID, extensionID, isEnabled, isPinned)
+SELECT id, '$ID', 1, 0 FROM profile
+WHERE UPPER(id) != '00000000-0000-0000-0000-000000000001';
 SQL
 ```
 
@@ -131,7 +136,8 @@ row means off in every profile, so a seeded extension loads nowhere until
 each profile it should run in has a row with `isEnabled` 1 (`isPinned` 0)
 ([extensions on per profile](../decisions/extensions-on-per-profile.md)).
 The same row for the built-in Private profile id
-(`TabStore.incognitoProfileID`) runs it in Private as well
+(`TabStore.incognitoProfileID`, `00000000-0000-0000-0000-000000000001`)
+runs it in Private as well
 ([private profile extensions](../extensions/private-profile-extensions.md)).
 
 ## 4. Launch with readable console output
@@ -184,10 +190,10 @@ Use a distinctive sleep argument per run so you count only your own.
 - **Pointing `basePath` at the repository.** The load rewrites files
   there.
 - **Expecting the Private profile to load it.** Off unless allowed.[^task-74]
-- **Expecting origin storage to survive a relaunch.** On `main` a context
-  gets a new base URL on each load, so IndexedDB and `localStorage` from
-  the last launch are not found.[^task-99] See
-  [storage](../extensions/storage.md).
+- **Expecting all origin storage to survive a relaunch.** A context gets a
+  new base URL on each load. WebKit moves the last origin's IndexedDB and
+  `localStorage` to the new one, but not its Cache Storage or service worker
+  registration.[^task-99] See [storage](../extensions/storage.md).
 - **Reading someone else's lines.** Filter the log by your pid; other
   Detour processes use the same subsystem.
 - **API Explorer's start-up noise.** Its worker probes

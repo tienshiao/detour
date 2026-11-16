@@ -199,7 +199,7 @@ All figures are medians of five runs on a synthetic fixture (50,000 visits,
   extension holding `history`, and TASK-138 removed the function. The API now
   follows rule 1 with the calling context's profile as its scope, and takes
   its counts and times from in-scope visits
-  ([polyfill layer](../extensions/polyfill-layer.md)).[^task-138]
+  ([chrome.history in the polyfill](../extensions/polyfill-history.md)).[^task-138]
 
 **Traps this design creates**
 

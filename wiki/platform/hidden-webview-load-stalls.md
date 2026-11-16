@@ -5,6 +5,8 @@ description: Why a tab opened in the background can sit part-loaded until it is 
 tags: [webkit, loading, tabs, sidebar, performance]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-10-12T23:47:17Z }
+verified:
+  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:26Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: task-124

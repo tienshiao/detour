@@ -5,7 +5,7 @@ description: "The command registry (TASK-320): every main-menu command defined o
 resource: ../../Detour/Commands/BrowserCommands.swift
 tags: [commands, menus, command-palette, automation, keyboard]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T09:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:01:12Z }
 sources:
   - id: task-320
     resource: backlog:TASK-320
@@ -171,7 +171,8 @@ Extensions menu.
 
 The first nine spaces are reached by nine parameterless commands,
 `space.jump-1` to `space.jump-9` ("Switch to Space 1" …, ⌃1–⌃9 by default,
-PROVISIONAL[^task-295]), not by the parameterised `space.switch`. Their
+Arc's keys, the user's decision of 2026-11-14 over ⌘1–⌘9[^task-295]), not
+by the parameterised `space.switch`. Their
 items are static: `setupMainMenu` adds them after Previous Space's
 separator, so their shortcuts work before the Spaces menu is first opened
 (a dynamic item would only exist after that). When the menu opens,
@@ -304,8 +305,10 @@ The sidebar's context menus (tab, folder, space, pinned and favourite
 menus in `TabSidebarViewController`, the favourites bar, the archive page),
 the page's context menu additions (`BrowserWebView.willOpenMenu`), the Quick
 Detour title bar's menus, the Dock menu, and keys handled outside menus
-(the Control+Tab switcher, Escape for Peek, the find bar, the Undo and Redo
-interception in `BrowserWebView`). Two commands have no menu item and are
+(the Control+Tab switcher, Escape for Peek, the find bar). ⌘Z and ⇧⌘Z are
+no longer among them: since TASK-345 `BrowserWebView` no longer takes them
+before the page, and those the page leaves reach Edit > Undo and Redo
+([a page's key equivalents and its undo](../platform/page-key-equivalents-and-undo.md)). Two commands have no menu item and are
 reached from the palette only (TASK-320 AC #3): `tab.move-to-space` (Move
 Tab to Space, the sidebar's Move to path for the selected tab) and
 `tab.split-with` (Split with Tab, the sidebar's create-split path); they sit

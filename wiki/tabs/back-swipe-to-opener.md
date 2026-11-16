@@ -4,7 +4,7 @@ title: Back swipe to the opener
 description: "On a tab opened from another tab, with no back history, the two-finger back swipe does what the Back button does — closes the tab and selects its opener — through Detour's own swipe (WebKit's needs a back item): when a pane's web view is in that mode, how a swipe starts from the scrolls the page did not use, the veneer that shows during it, the decisions per case (splits, Peek, pinned tabs, Quick Detour), and what is verified only by hand."
 tags: [tabs, navigation, gestures, webkit, split]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-15T08:05:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:44Z }
 sources:
   - id: rules
     resource: ../../Detour/Browser/Window/NavigationSwipe.swift
@@ -146,11 +146,13 @@ an unrelated tab.
   first swipe after a relaunch falls back.
 - **An opener that was asleep** is woken by the close; the veneer stays
   until its load commits (or 1 s).
-- **Forward** (PROVISIONAL): a plain card slides in from the right and stays
+- **Forward** (provisional: Claude's choice, not yet confirmed by the user[^task-325]): a plain card slides in from the right and stays
   until the forward page commits (or 1 s). WebKit's picture of the forward
   page is in its own store, which Detour cannot read; picturing the page as
   the user leaves it going back was the other option.
-- **A split pane**: a plain background, since the close re-tiles the window.
+- **A split pane** (provisional, as above): a plain background, since the
+  close re-tiles the window; the other option was the opener's picture laid
+  out as the post-close layout.
 
 # Decisions per case
 
@@ -159,7 +161,7 @@ an unrelated tab.
 | Child in a split | The pane that received the swipe closes; its opener is selected (the partner stays selected when it is the opener, and goes back to single hosting) | The Back button's result for that pane (the user's decision, corrected for pane focus) |
 | Peek | The Peek's web view keeps WebKit's gesture (its own history; Back acts on it too); the tab under an open Peek starts nothing | Back targets the Peek while one is open; the overlay also swallows scrolls |
 | Quick Detour | Unchanged: WebKit's gesture, history only | Its Back is history only and its tab has no opener |
-| Pinned tab or favourite with a `parentID` | WebKit's gesture; never swiped closed | `TabStore.closeTab` closes normal tabs only. The Back button on a pinned child still selects the opener without closing it (behaviour before TASK-325) |
+| Pinned tab or favourite with a `parentID` | WebKit's gesture; never swiped closed (provisional: Claude's choice, not yet confirmed by the user; the other option is to select the opener as Back does) | `TabStore.closeTab` closes normal tabs only. The Back button on a pinned child still selects the opener without closing it (behaviour before TASK-325) |
 | Reopened child | Closes to its opener again while that tab is still an opener `Space.openerTab` resolves (the record carries `parentID` since v26); with the opener closed, archived, moved or asleep meanwhile, no opener and WebKit's gesture | The record is the tab's only life after closing (TASK-332) |
 | Child brought back by Undo Close Tab (or Undo Close Both Splits) | The same rule: its captured opener only while `Space.openerTab` resolves it; an opener closed since (even if its own close was undone first: a new tab) leaves no opener | One rule for every way a closed tab comes back (the user's decision on TASK-332, 2026-11-14) |
 
@@ -198,7 +200,9 @@ through the endpoint's Debug-only `navigation_swipe` tool (state; begin at a
 progress with the veneer showing; finish or spring back), which runs a
 swipe's completion through the same code with a scripted tracker. Synthetic
 events cannot drive `trackSwipeEvent`, so the real trackpad gesture (follow,
-spring, momentum, the 15 pt start) is checked by hand only.[^checks]
+spring, momentum, the 15 pt start) is checked by hand only.[^checks] The
+user ran that hand check on a real trackpad on 2026-11-15 and reported it
+works.[^task-325]
 
 # Related
 
