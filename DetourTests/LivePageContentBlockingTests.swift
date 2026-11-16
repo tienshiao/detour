@@ -339,4 +339,111 @@ nonisolated final class LivePageContentBlockingTests: XCTestCase {
         XCTAssertEqual(pages.count, 4)
         for page in pages { XCTAssertTrue(page.webView === page.tab.webView) }
     }
+
+    // MARK: - Between Clear Cache & Redownload and the recompile (TASK-369)
+
+    /// A background tab and one newly opened in the space, with this test's
+    /// lists, in a window showing another tab.
+    @MainActor private func openBackgroundTab(on profile: Profile) async throws -> (url: URL, space: Space, tab: BrowserTab) {
+        let store = TabStore.shared
+        let url = try await serve()
+        let space = makeSpace(on: profile)
+        let controller = makeWindow(showing: space)
+        let background = store.addTab(in: space, url: url)
+        let selected = store.addTab(in: space, url: url)
+        controller.selectTab(id: selected.id)
+        try await settle(background, at: url, profile: profile)
+        try await settle(selected, at: url, profile: profile)
+        return (url, space, background)
+    }
+
+    /// Clear Cache & Redownload removes every compiled list; the lists
+    /// recompile one at a time, each posting a rules change. Until a list
+    /// has compiled again, open pages keep blocking with its old rules — the
+    /// first list's recompile does not strip the others — and its recompile
+    /// replaces them.
+    @MainActor func testOpenPagesKeepAClearedListUntilItCompilesAgain() async throws {
+        await compile("easylist", blocking: Self.firstPath)
+        await compile("easyprivacy", blocking: Self.secondPath)
+        let profile = makeProfile("Clear Cache Gap")
+        let (_, _, background) = try await openBackgroundTab(on: profile)
+
+        ruleStore.invalidateAll()
+        XCTAssertFalse(ruleStore.isCompiled(list: "easylist"), "cleared lists are not compiled")
+        XCTAssertNil(ruleStore.compiledRuleCount(forList: "easyprivacy"))
+        await compile("easylist", blocking: Self.firstPath)
+        ContentBlockerManager.shared.reapplyRuleLists()
+
+        var outcome = try await fetchBoth(in: background)
+        XCTAssertEqual(outcome.first, .blocked, "the recompiled list blocks")
+        XCTAssertEqual(outcome.second, .blocked, "the list not compiled again yet still blocks with its old rules")
+
+        await compile("easyprivacy", blocking: Self.firstPath)
+        ContentBlockerManager.shared.reapplyRuleLists()
+
+        outcome = try await fetchBoth(in: background)
+        XCTAssertEqual(outcome.first, .blocked)
+        XCTAssertEqual(outcome.second, .loaded, "once compiled again, the list's old rules are gone")
+    }
+
+    /// A page opened between the clear and the recompile gets the cleared
+    /// lists too: WebKit still applies a list whose compiled file was removed
+    /// from its store, in a new web view. A list switched off meanwhile is
+    /// not attached.
+    @MainActor func testAPageOpenedBeforeTheRecompileGetsTheClearedLists() async throws {
+        await compile("easylist", blocking: Self.firstPath)
+        await compile("easyprivacy", blocking: Self.secondPath)
+        let profile = makeProfile("Clear Cache New Page")
+        let (url, space, background) = try await openBackgroundTab(on: profile)
+
+        ruleStore.invalidateAll()
+        // A second clear in the gap keeps the first clear's lists.
+        ruleStore.invalidateAll()
+        let fresh = TabStore.shared.addTab(in: space, url: url)
+        try await settle(fresh, at: url, profile: profile)
+
+        var outcome = try await fetchBoth(in: fresh)
+        XCTAssertEqual(outcome.first, .blocked, "a new page gets the cleared lists")
+        XCTAssertEqual(outcome.second, .blocked)
+
+        profile.isEasyListEnabled = false
+        ContentBlockerManager.shared.reapplyRuleLists()
+
+        for (name, tab) in [("new page", fresh), ("background", background)] {
+            outcome = try await fetchBoth(in: tab)
+            XCTAssertEqual(outcome.first, .loaded, "\(name): a cleared list switched off is not attached")
+            XCTAssertEqual(outcome.second, .blocked, "\(name): the other cleared list still is")
+        }
+    }
+
+    /// The kept lists are only for attaching: what Settings shows stays
+    /// cleared, and nothing comes back in a store opened on the same folder
+    /// (the next launch, TASK-202).
+    @MainActor func testTheKeptListsAreNeitherCompiledNorStored() async throws {
+        await compile("easylist", blocking: Self.firstPath)
+        ruleStore.invalidateAll()
+
+        XCTAssertFalse(ruleStore.isCompiled(list: "easylist"))
+        XCTAssertNil(ruleStore.compiledRuleCount(forList: "easylist"))
+        XCTAssertEqual(ruleStore.attachableLists(forList: "easylist").count, 1, "kept for attaching")
+        XCTAssertTrue(ruleStore.attachableLists(forList: "easyprivacy").isEmpty, "never compiled, nothing kept")
+
+        // The removal runs on WebKit's queue; a store opened before it lands
+        // would still find the file.
+        let ruleListStore = try XCTUnwrap(WKContentRuleListStore(url: directory))
+        try await waitUntil("the cleared list is removed from WebKit's store") {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                ruleListStore.getAvailableContentRuleListIdentifiers { continuation.resume(returning: ($0 ?? []).isEmpty) }
+            }
+        }
+        let relaunched = ContentRuleStore(storage: ContentBlockerStorage(
+            ruleListStore: WKContentRuleListStore(url: directory),
+            filterListCacheDirectory: directory,
+            defaults: try XCTUnwrap(UserDefaults(suiteName: defaultsSuiteName))))
+        let found = await withCheckedContinuation { (continuation: CheckedContinuation<Int, Never>) in
+            relaunched.lookUpList(identifier: "easylist") { continuation.resume(returning: $0.count) }
+        }
+        XCTAssertEqual(found, 0, "the next launch finds nothing")
+        XCTAssertTrue(relaunched.attachableLists(forList: "easylist").isEmpty)
+    }
 }

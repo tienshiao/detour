@@ -242,7 +242,7 @@ class ContentBlockerManager {
         ]
 
         return enabledLists.flatMap { identifier, isEnabled in
-            isEnabled ? ruleStore.cachedLists(forList: identifier) : []
+            isEnabled ? ruleStore.attachableLists(forList: identifier) : []
         }
     }
 

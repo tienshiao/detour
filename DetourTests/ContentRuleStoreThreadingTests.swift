@@ -267,6 +267,49 @@ nonisolated final class ContentRuleStoreThreadingTests: XCTestCase {
         XCTAssertEqual(found.count, 0, "the next launch finds nothing")
     }
 
+    /// The usual Clear Cache & Redownload: the lists came from WebKit's store
+    /// at launch, not from a compile. The chunks the look-up found are kept
+    /// for the pages until the redownload compiles (TASK-369).
+    @MainActor func testAClearAfterALaunchLookUpKeepsTheListsItFound() async throws {
+        let storage = try makeStorage("store")
+        _ = await compile(ContentRuleStore(storage: storage, maxRulesPerList: 2), "easylist", ["a", "b", "c"].map(block))
+        let relaunched = ContentRuleStore(storage: storage, maxRulesPerList: 2)
+        let found = await lookUp(relaunched, "easylist")
+        XCTAssertEqual(found.count, 2, "both chunks found at launch")
+
+        relaunched.invalidateAll()
+
+        XCTAssertFalse(relaunched.isCompiled(list: "easylist"))
+        let kept = relaunched.attachableLists(forList: "easylist")
+        XCTAssertEqual(kept.count, 2)
+        XCTAssertTrue(zip(kept, found).allSatisfy { $0 === $1 }, "the chunks the look-up found")
+    }
+
+    /// Clear Cache & Redownload while a refresh is inside WebKit with two of
+    /// its three chunks back: the lists kept for the pages until the
+    /// redownload compiles (TASK-369) are the last completed compile's, not
+    /// the refresh's new chunks mixed with the old.
+    @MainActor func testAClearDuringARecompileKeepsTheLastCompletedLists() async throws {
+        let storage = try makeStorage("store")
+        let gate = ChunkGate()
+        let store = ContentRuleStore(storage: storage, maxRulesPerList: 2,
+                                     compileRuleList: gate.compiler(storage.ruleListStore, holding: "easylist-2"))
+        _ = await compile(store, "easylist", ["a", "b", "c"].map(block))
+        let completed = store.attachableLists(forList: "easylist")
+        XCTAssertEqual(completed.count, 2)
+
+        gate.isHolding = true
+        gate.whenOthersDone = 2
+        gate.onReady = { [weak store] in store?.invalidateAll() }
+        let outcome = await compileOutcome(store, "easylist", ["d", "e", "f", "g", "h"].map(block))
+
+        XCTAssertTrue(isSuperseded(outcome), "\(outcome)")
+        XCTAssertFalse(store.isCompiled(list: "easylist"))
+        let kept = store.attachableLists(forList: "easylist")
+        XCTAssertEqual(kept.count, 2, "the last completed compile's chunks")
+        XCTAssertTrue(zip(kept, completed).allSatisfy { $0 === $1 }, "not the refresh's chunks")
+    }
+
     /// A compile asked for after the clear waits for the superseded one, and
     /// the removal of what the superseded one wrote does not take its list.
     @MainActor func testACompileAskedForAfterClearingIsKept() async throws {
@@ -435,6 +478,40 @@ nonisolated final class ContentRuleStoreThreadingTests: XCTestCase {
 
 /// Hands each compile to WebKit and then, while WebKit compiles, runs
 /// `whileCompiling` with the identifier. Main queue only.
+/// A WebKit compile that holds back one chunk's completion until the
+/// compile's other chunks have completed (and been recorded), runs
+/// `onReady`, then lets it complete.
+private final class ChunkGate {
+    var isHolding = false
+    var whenOthersDone = 0
+    var onReady: (() -> Void)?
+    private var othersDone = 0
+    private var held: (() -> Void)?
+
+    func compiler(_ ruleListStore: WKContentRuleListStore, holding heldIdentifier: String) -> ContentRuleStore.RuleListCompiler {
+        { [self] identifier, json, completion in
+            ruleListStore.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: json) { list, error in
+                guard self.isHolding else { return completion(list, error) }
+                if identifier == heldIdentifier {
+                    self.held = { completion(list, error) }
+                } else {
+                    completion(list, error)
+                    self.othersDone += 1
+                }
+                self.releaseIfReady()
+            }
+        }
+    }
+
+    private func releaseIfReady() {
+        guard othersDone >= whenOthersDone, let held else { return }
+        isHolding = false
+        self.held = nil
+        onReady?()
+        held()
+    }
+}
+
 private final class CompileHook {
     var whileCompiling: ((String) -> Void)?
     /// Every identifier handed to WebKit, in order.

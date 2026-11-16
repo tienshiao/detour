@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: Content blocking Clear Cache & Redownload
-description: "What Settings > Content Blocking's Clear Cache & Redownload removes and refetches, and how a compile or look-up asked for before it is refused at every stage (compile tickets, ContentRuleStore's generation, CompileOutcome.superseded) so cleared lists cannot come back (TASK-202); refresh tokens for the Updating... state, what is still not handled, and the runtime runs online, offline and before the fix."
+description: "What Settings > Content Blocking's Clear Cache & Redownload removes and refetches, and how a compile or look-up asked for before it is refused at every stage (compile tickets, ContentRuleStore's generation, CompileOutcome.superseded) so cleared lists cannot come back (TASK-202); refresh tokens for the Updating... state, the old lists pages keep until each list compiles again (TASK-369), and the runtime runs."
 tags: [content-blocker, webkit, settings]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:39:06Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T17:25:00Z }
 sources:
   - id: manager
     resource: ../../Detour/Browser/ContentBlocker/ContentBlockerManager.swift
@@ -24,6 +24,12 @@ sources:
   - id: harness
     resource: ../../docs/harness/task202-harness.patch
     title: TASK-202 runtime harness (lists served by a URLProtocol)
+  - id: task-369
+    resource: backlog:TASK-369
+    title: "Content blocking: between Clear Cache & Redownload and the next compile, open pages keep the old lists"
+  - id: live-page-tests
+    resource: ../../DetourTests/LivePageContentBlockingTests.swift
+    title: LivePageContentBlockingTests.swift
 ---
 
 Clear Cache & Redownload (Settings > Content Blocking) throws away every
@@ -83,12 +89,53 @@ clear: they complete `.superseded` in turn, which keeps a list's compiles
 strictly ordered (the redownload's compile waits for the superseded one's
 removal).
 
-# Not handled
+# Pages between the clear and the recompile
 
-Web views keep the rule lists they already have after the
-clear until the next rules change (the redownload's compile posts it);
-offline, the selected tab keeps blocking with the cleared lists while new
-tabs get none. That predates TASK-202.
+Decided (TASK-369, Claude's choice, not yet confirmed by the user): until a
+cleared list compiles again, pages keep blocking with its old rules, open
+ones and ones opened meanwhile alike. Removing them would leave every page
+unblocked for as long as the redownload takes (indefinitely offline), which
+the user asked for no part of; they pressed Clear Cache & Redownload to get
+fresh lists, not none.
+
+`invalidateAll` keeps each list's chunks in memory (`clearedLists`): the
+set its last completed compile or launch look-up gave (`completedLists`),
+not what `compiledLists` holds at that moment, where a refresh still inside
+WebKit has already recorded some of its new chunks beside the old ones
+(found in review; a test holding back one of three chunks failed with the
+first version, which read `compiledLists`). And `ContentRuleStore.attachableLists(forList:)` (what
+`ContentBlockerManager.ruleLists(for:in:)` attaches) gives them for a list
+that has no compiled chunk. A list's next compile drops them, and the
+rules change it posts replaces them on every page
+([attaching lists](./content-blocking.md#attaching-lists-to-web-views)).
+They are only for attaching: `isCompiled`, the counts and Settings say the
+list is cleared ("No active rules. Updating 4 lists..."), they are never
+written anywhere, and a second clear before the recompile keeps the first
+clear's. WebKit keeps applying a `WKContentRuleList` whose file was removed
+from its store, in a new web view too. A list or the master switch turned
+off in the gap still takes them off, as for a compiled list. A redownload
+that fails (offline, or a list that no longer compiles) leaves them in use
+until the app quits; the next launch has nothing.
+
+Before, the clear posted no rules change, so open pages kept the old lists
+only until the next one: the first list to compile again (or a switch
+flipped in Settings) replaced every page's lists with the store's, which
+held only that list, so the other three stopped blocking until theirs
+compiled; a page opened in the gap got none. A test confirmed it: after a
+clear and one list's recompile, a background page no longer blocked with
+the other list.[^task-369]
+
+Seen at runtime (real lists, a loopback page asking for EasyPrivacy's
+`/1pixel.php` every 2 s in a background tab): Clear Cache & Redownload at
+09:13:21, a new tab with the same page at :22; easylist-cookie compiled at
+:24, easyprivacy :27, easylist :29, urlhaus-filter :45; neither tab ever
+asked for `/1pixel.php` (a build before the `completedLists` change).
+Again on the final build, after a relaunch so the lists came from the
+launch look-up: Clear Cache at 09:27:37, a new tab at :38; easylist
+recompiled at :43, easyprivacy :45; the new tab polled at :40, :42 and :44
+and never asked for `/1pixel.php` (the screen locked at about :44, which
+stopped the pages' timers, so the background tab's run is from the first
+build only).[^task-369]
 
 # Seen at runtime
 
@@ -113,6 +160,17 @@ though the superseded one finished later; compiles queued or encoding at
 the clear never reach WebKit; a look-up answered after it records nothing;
 tickets taken before it are refused; `FilterListRefreshes` tokens.
 
+`LivePageContentBlockingTests`, for the pages in between (TASK-369): after
+a clear and one list's recompile a background page still blocks with the
+other list's old rules, and with its new ones once it compiles; a page
+opened after the clear (cleared twice) blocks with the kept lists, and a
+list switched off then stops blocking on it and on the background page; the
+kept lists are not compiled and a store opened on the same folder finds
+nothing. The first two failed before the change.
+`ContentRuleStoreThreadingTests`: a clear after a launch look-up keeps the
+chunks the look-up found; a clear while a refresh has two of three chunks
+back keeps the previous compile's chunks.
+
 # Related
 
 - [Rule-list compilation](./content-blocking-rule-compilation.md) - the two other ordering rules and the queues each stage runs on.
@@ -120,3 +178,4 @@ tickets taken before it are refused; `FilterListRefreshes` tokens.
 - [Settings panes](./settings-panes.md#content-blocking) - the Content Blocking pane that has the button.
 
 [^task-202]: Clear Cache & Redownload can be undone by a compile that was already running
+[^task-369]: Content blocking: between Clear Cache & Redownload and the next compile, open pages keep the old lists

@@ -306,7 +306,7 @@ A page with content blockers disabled produces no callbacks at all.
 
 - Per-list display: parsed rule count ("In List"), compiled rule count ("Active", summed over the chunks of a split list with a repeated exception counted once), status, last fetch date
 - Update All Now: re-fetches every list (`forceRefreshAll`; the fetch is conditional, so an unchanged list is not recompiled). There is no per-list refresh
-- Clear Cache & Redownload: invalidates all compiled rules, deletes cached text and fetch metadata, re-fetches everything
+- Clear Cache & Redownload: invalidates all compiled rules, deletes cached text and fetch metadata, re-fetches everything. Until a cleared list compiles again, pages (open or opened meanwhile) keep blocking with its old rules, which the store keeps in memory for attaching only (TASK-369)
 
 `ProfilesSettingsViewController` provides per-profile toggles for each filter list and the master ad-blocking switch.
 

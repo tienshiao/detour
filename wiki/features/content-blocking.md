@@ -4,7 +4,7 @@ title: Content blocking
 description: "The built-in blocker: EasyList-family filter lists compiled to WKContentRuleLists, per-profile list toggles, how lists reach web views, the blocked-resource counter and where state lives; this hub links the pages on conversion, compilation, chunks, Clear Cache & Redownload and the per-site switch."
 tags: [content-blocker, webkit, profiles, spi, privacy]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T17:10:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T17:25:00Z }
 sources:
   - id: task-329
     resource: backlog:TASK-329
@@ -149,7 +149,8 @@ the Settings pane.
 `ContentBlockerManager.applyRuleLists(to:profile:)` (through
 `Space.makeUserContentController(for:)`), which adds the rule lists
 of `ruleLists(for:in:)`: every compiled chunk of each enabled list when the
-master switch is on, and nothing else. It adds no user script, so it is safe
+master switch is on (or, for a list cleared and not compiled again yet, the
+chunks the clear removed, TASK-369), and nothing else. It adds no user script, so it is safe
 to call again after `removeAllContentRuleLists()`.
 
 A rules change reaches a web view that already exists through
@@ -182,10 +183,13 @@ open Quick Detour or quarantine page kept the lists it was created with: a
 test showed a list switched off still blocking there, and a recompiled
 list's old rule still blocking while its new one did not.[^task-359]
 
-Clear Cache & Redownload itself posts no rules change (read from the code):
-the lists already on a web view stay attached, although WebKit's store no
-longer has them, until the re-download compiles and posts one. The same
-holds for both kinds of window.
+Clear Cache & Redownload itself posts no rules change. Until a cleared list
+compiles again, every page, open or opened meanwhile, keeps blocking with
+its old rules: the store keeps the removed chunks for attaching only
+(`ContentRuleStore.attachableLists(forList:)`), so the first list to
+compile again no longer strips the others from every page; see
+[the pages between the clear and the recompile](./content-blocking-clear-cache.md#pages-between-the-clear-and-the-recompile)
+(TASK-369).
 
 ## The per-site switch
 

@@ -236,6 +236,19 @@ class ContentRuleStore {
     /// Filled from the defaults on first use; read it through
     /// `chunkCount(forList:)`.
     private var chunkCounts: [String: Int] = [:]
+    /// The chunks `invalidateAll` removed, by list identifier, kept in
+    /// memory until the list's next compile records (TASK-369): Clear Cache
+    /// & Redownload leaves the pages blocking with the old rules, not with
+    /// none, until the redownload compiles, and a page opened meanwhile gets
+    /// them too (`attachableLists(forList:)`). WebKit keeps applying a rule
+    /// list whose file was removed from its store. Never written anywhere,
+    /// so nothing comes back at the next launch (TASK-202).
+    private var clearedLists: [String: [WKContentRuleList]] = [:]
+    /// Each list's chunks as its last compile or launch look-up completed
+    /// them: what `invalidateAll` keeps in `clearedLists`. Not read from
+    /// `compiledLists`, where a compile still running has already recorded
+    /// some of its new chunks beside the old ones.
+    private var completedLists: [String: [WKContentRuleList]] = [:]
     /// Injected so a test can split a handful of rules instead of compiling
     /// 150,000 real ones.
     private let maxRulesPerList: Int
@@ -339,11 +352,21 @@ class ContentRuleStore {
         ContentRuleListChunks.identifiers(forList: identifier, chunkCount: chunkCount(forList: identifier))
     }
 
-    /// Every compiled chunk of the list, in order: what a web view of a
-    /// profile that has the list switched on must be given. Empty when the
-    /// list is not compiled.
+    /// Every compiled chunk of the list, in order. Empty when the list is
+    /// not compiled. A web view is given `attachableLists(forList:)`, which
+    /// falls back to the chunks a clear removed (TASK-369).
     func cachedLists(forList identifier: String) -> [WKContentRuleList] {
         chunkIdentifiers(forList: identifier).compactMap { compiledLists[$0] }
+    }
+
+    /// What a web view of a profile that has the list switched on is given:
+    /// every compiled chunk of the list, or, between `invalidateAll` and the
+    /// list's next compile, the chunks the clear removed (TASK-369). Not a
+    /// compiled list: `isCompiled`, the counts and Settings' status say it
+    /// is cleared.
+    func attachableLists(forList identifier: String) -> [WKContentRuleList] {
+        let compiled = cachedLists(forList: identifier)
+        return compiled.isEmpty ? clearedLists[identifier] ?? [] : compiled
     }
 
     /// The rules compiled into the list, summed over its chunks, with an
@@ -391,7 +414,14 @@ class ContentRuleStore {
             }
         }
         group.notify(queue: .main) { [weak self] in
-            completion(self?.cachedLists(forList: identifier) ?? [])
+            guard let self else { return completion([]) }
+            let lists = self.cachedLists(forList: identifier)
+            // Found before any clear, and no compile of the list asked for
+            // since has completed its own set.
+            if !self.isSuperseded(generation), !lists.isEmpty, self.completedLists[identifier] == nil {
+                self.completedLists[identifier] = lists
+            }
+            completion(lists)
         }
     }
 
@@ -508,6 +538,8 @@ class ContentRuleStore {
             }
             guard compiledAny else { return completion(.failed) }
             self.recordChunkCount(chunkCount, forList: identifier)
+            self.clearedLists[identifier] = nil
+            self.completedLists[identifier] = self.cachedLists(forList: identifier)
             completion(.compiled(self.cachedLists(forList: identifier)))
         }
     }
@@ -743,9 +775,16 @@ class ContentRuleStore {
 
     /// Removes every compiled chunk of every list from WebKit's store and
     /// forgets the counts and chunk counts that described them. Supersedes
-    /// every compile and look-up asked for before (TASK-202).
+    /// every compile and look-up asked for before (TASK-202). The removed
+    /// chunks stay attachable until each list compiles again (TASK-369).
     func invalidateAll() {
         generation += 1
+        // A list cleared twice before it compiles again keeps its first
+        // clear's: it has no completed set the second time.
+        for (listIdentifier, lists) in completedLists where !lists.isEmpty {
+            clearedLists[listIdentifier] = lists
+        }
+        completedLists.removeAll()
         for chunkIdentifier in compiledLists.keys {
             ruleListStore.removeContentRuleList(forIdentifier: chunkIdentifier) { _ in }
         }
