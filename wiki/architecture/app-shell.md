@@ -1,11 +1,11 @@
 ---
 type: Component
 title: App shell
-description: "AppDelegate and main.swift — launch and termination, window creation, the menu bar built in code, the key-equivalent fast path, Sparkle, and every launch-time environment switch."
+description: "AppDelegate and main.swift — launch and termination, window creation, the menu bar built in code (with a pointer to the key-equivalent fast path), Sparkle, and every launch-time environment switch."
 resource: ../../Detour/App/AppDelegate.swift
 tags: [architecture, app, menus, sparkle, startup]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:11:18Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T10:05:16Z }
 sources:
   - id: task-320
     resource: backlog:TASK-320
@@ -49,9 +49,6 @@ sources:
   - id: task-295
     resource: backlog:TASK-295
     title: "Spaces: keyboard shortcuts that jump straight to a space by its position (first through ninth)"
-  - id: spike-295
-    resource: ../../docs/harness/task295/hidden-items.swift
-    title: "TASK-295 spike: hidden, disabled and delegate-answered menu items under real Control+digit events (macOS 26, 2026-11-14)"
   - id: task-41
     resource: backlog:TASK-41
     title: Stop the test host writing the production app's UserDefaults and starting Sparkle
@@ -109,7 +106,7 @@ entry.
 (unless that window is Private), `TabStore.lastActiveSpaceID`, the first
 non-incognito space. An extension's `windows.create` does not use it: its
 window opens on the caller's profile's own space
-([opening a window](../extensions/tab-and-window-bridge.md#opening-a-window)).
+([opening a window](../extensions/opening-tabs-and-windows.md#opening-a-window)).
 
 Links from other apps arrive through `handleGetURLEvent` (the Get URL Apple
 event, installed in `applicationWillFinishLaunching`, TASK-304) and
@@ -215,62 +212,11 @@ See [popup and options UI](../extensions/popup-and-options-ui.md).
 
 ## Key equivalents without rebuilding menus
 
-AppKit asks a menu's delegate about key equivalents on every Cmd+key press.
-A delegate that does not implement
-`menuHasKeyEquivalent(_:for:target:action:)` gets `menuNeedsUpdate` instead,
-so the Spaces and Extensions menus were rebuilt on every keystroke:
-re-enumerating spaces, re-querying each profile's enabled extensions and
-redrawing icons (TASK-56).
-
-`AppDelegate` implements the method with `MenuKeyEquivalentMatcher`, a pure
-function over the menu's existing items. What the two answers mean was
-checked against AppKit with standalone probes on macOS 26, not
-assumed:[^task-56]
-
-| Answer | AppKit then |
-|---|---|
-| `false` | Skips `menuNeedsUpdate` but still scans the menu's existing items itself, with its own keyboard-layout handling and validation. Not a veto. |
-| `true` | Performs the returned action on the returned target with **no validation of its own**. |
-
-A `true` also has AppKit send the action with the **menu**, not the item,
-as sender (measured with a delegate answering a hidden item), so an action
-reached this way must not read its sender's tag or represented
-object.[^spike-295]
-
-So the matcher is a fast path that errs towards `false`, and the `true` path
-re-implements AppKit's enable decision (`CommandDispatch.isEnabled`:
-when the menu autoenables, `validateMenuItem`, else
-`validateUserInterfaceItem`, else `true`; `item.isEnabled` only when it does
-not; the
-automation endpoint's `run_menu_item` and the command palette use the same
-helper).
-Without that, Next Space would fire with no browser window key.
-
-Whether macOS 14 and 15 also fall back after a `false` is not
-verified.[^task-56]
-
-Invariants the tests pin against the real main menu:
-
-- Only **Spaces** and **Extensions** have a delegate.
-- Every shortcut in a delegate-driven menu is on a static item the
-  registry built, whose action no other command shares. The built-in ones
-  are Next/Previous Space's arrow keys (`\u{F702}` / `\u{F703}`) and the
-  nine position items' ⌃1–⌃9 (TASK-295), digits the matcher answers on a
-  layout that types them unshifted (elsewhere it misses and AppKit's own
-  matching decides). Hidden position items keep their key equivalents
-  (`allowsKeyEquivalentWhenHidden`), and the matcher matches them as AppKit
-  does. A user's own shortcut (TASK-327) on a static item there
-  (Manage Spaces…, Add Extensions…) can be a letter; the matcher reads the
-  live items and answers it, and a press it does not model is a miss that
-  AppKit matches itself ([keyboard shortcuts](../features/keyboard-shortcuts.md)).
-- **Dynamic items carry no key equivalent.** One would exist only after the
-  menu was first opened, and a hit would be dispatched without an
-  `NSMenuItem` sender.
-
-The Develop menu has no delegate on purpose. Its dynamic items depend only on
-the extension list, so they are rebuilt from
-`ExtensionManager.extensionsDidChangeNotification`. That keeps its one letter
-shortcut (Cmd+Option+I) matched natively by AppKit on every keyboard layout.
+The Spaces and Extensions menus answer key equivalents through
+`AppDelegate.menuHasKeyEquivalent` and `MenuKeyEquivalentMatcher` instead of
+being rebuilt on every keystroke (TASK-56); how, and what AppKit does with
+the answers, is on
+[keyboard shortcuts](../features/keyboard-shortcuts.md#key-equivalents-without-rebuilding-menus).
 
 ## Sparkle
 
@@ -359,5 +305,4 @@ with them), `BrowserCommandRegistryTests`, `ExtensionMenuPopupDecisionTests`,
 - [Build and test](../playbooks/build-and-test.md) — how the environment switches reach a test run.
 
 [^task-56]: Implement menuHasKeyEquivalent so key presses stop rebuilding the Spaces and Extensions menus
-[^spike-295]: TASK-295 spike: hidden, disabled and delegate-answered menu items under real Control+digit events (macOS 26, 2026-11-14)
 [^task-334]: TASK-334

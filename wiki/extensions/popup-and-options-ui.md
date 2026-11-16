@@ -193,7 +193,7 @@ Two guards:
   manifest's `default_popup` is the fallback when no context is loaded.
 - `AppDelegate.menuHasKeyEquivalent` answers key-equivalent queries for the
   Spaces and Extensions menus without a rebuild
-  ([app shell](../architecture/app-shell.md)).[^task-56]
+  ([keyboard shortcuts](../features/keyboard-shortcuts.md#key-equivalents-without-rebuilding-menus)).[^task-56]
 
 `popupWebView` is read in exactly two places: `show` (a user click) and
 `presentActionPopup` (`action.openPopup()`).

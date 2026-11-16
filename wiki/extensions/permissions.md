@@ -4,9 +4,7 @@ title: Extension permissions
 description: How permission decisions are stored, prompted for and re-applied to every loaded context, the order that makes the restore deterministic, how nativeMessaging is enforced, and what WebKit does with overlapping grants and denials.
 tags: [extensions, permissions, security, webkit]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-10-04T01:49:13Z }
-verified:
-  - { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:04:02Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T10:06:25Z }
 sources:
   - id: task-339
     resource: backlog:TASK-339
@@ -53,24 +51,12 @@ sources:
   - id: task-259
     resource: backlog:TASK-259
     title: "Extensions: a required notifications, history or management permission switched off in Settings still works"
-  - id: task-260
-    resource: backlog:TASK-260
-    title: "Extensions: chrome.permissions.request, contains and remove do not work for history and management"
-  - id: task-261
-    resource: backlog:TASK-261
-    title: "Extensions: management.getSelf and getAll leave out permissions granted at runtime"
   - id: task-268
     resource: backlog:TASK-268
     title: "Extensions: clearing a grant the extension removed writes the full page URL to the system log as public"
-  - id: task-277
-    resource: backlog:TASK-277
-    title: "Tests: cover native host quit refusal and the SIGTERM path, keep the host sweep to the test's own hosts, and route the injected clock through the permission gates"
   - id: task-276
     resource: backlog:TASK-276
     title: "Docs: fix the permission-scope and notification-ordering descriptions the review found wrong"
-  - id: polyfill-handler
-    resource: ../../Detour/Extensions/Runtime/ExtensionPolyfillHandler.swift
-    title: ExtensionPolyfillHandler.swift (permissionIsActive)
   - id: restore-tests
     resource: ../../DetourTests/ExtensionPermissionRestoreTests.swift
     title: ExtensionPermissionRestoreTests
@@ -114,7 +100,7 @@ interact, which makes the order of the restore part of the contract.
 |---|---|---|
 | Install, reinstall, update | `recordDeclaredPermissions` — every manifest `permissions` and `host_permissions` entry as granted | Left alone (insert-or-ignore) |
 | A prompt answer, a Settings toggle | `savePermission(s)` | Overwritten |
-| The extension's own `permissions.remove` | `revokePermission`, from `contextDidLoseGrants` (or `removeOutsideWebKitPermissions` for `history` / `management`) | A granted row is deleted |
+| The extension's own `permissions.remove` | `revokePermission`, from `contextDidLoseGrants` (or `removeOutsideWebKitPermissions` for `history` / `management`; see [chrome.permissions for history and management](./polyfill-permissions.md)) | A granted row is deleted |
 
 The first row is why a denial made in Settings survives an update, while a
 permission an update newly declares is recorded as granted.[^task-63]
@@ -145,9 +131,13 @@ default is `false`, which silently blocks every `activeTab` grant.
    granted. Chrome lets such an extension use tab APIs on pages its content
    scripts run on; WebKit does not grant that implicitly. This comes *before*
    the saved decisions so a saved denial wins.
-3. Saved `.apiPermission` rows, for keys in `askablePermissions` (the
-   manifest's `permissions` ∪ `optional_permissions` as WebKit parsed them),
-   skipping `nativeMessaging`.
+3. Saved `.apiPermission` rows, for keys in `restorablePermissions`:
+   `askablePermissions` (the manifest's `permissions` ∪
+   `optional_permissions` as WebKit parsed them) plus
+   `polyfillGatedDeclaredPermissions`, the
+   [polyfill-gated](./polyfill-request-gates.md#why-the-grant-dictionary-is-read)
+   names either list declares, since WebKit drops `history` and `management`
+   from its lists; skipping `nativeMessaging`.[^task-250]
 4. `applySavedHostAccessDecisions`: saved `.matchPattern` rows, then saved
    `.url` rows — within each, **all grants first, then all denials**.
 
@@ -342,144 +332,15 @@ All measured against real contexts and pinned in
 ## Permissions the polyfill gates
 
 `notifications`, `history` and `management` are implemented by Detour's
-polyfill, which gates them itself (`WebExtension.polyfillGatedPermissions`).
-The handler's rule is `ExtensionPolyfillHandler.permissionIsActive`, in
-WebKit's own order for the APIs it implements
-(`WebExtensionContext::permissionState`: denied, then granted, then
-requested):
-
-- an unexpired entry in the asking profile's context's `deniedPermissions`
-  refuses, whichever list declares it. For a required permission that is the
-  Settings switch turned off, or its saved denial restored at
-  load.[^task-259]
-- listed in the manifest's `permissions`: otherwise active, even with no
-  decision. WebKit would leave an undecided required permission at
-  "requested" and prompt, but it never prompts for `history` or
-  `management`, and install saves every required permission as granted.
-- listed only in `optional_permissions`: active while the context holds an
-  unexpired entry in `grantedPermissions`. A Settings switch
-  (`setPermissionDecision`), a `permissions.request` prompt (WebKit's for
-  `notifications`, Detour's for the other two, below) and the restore at
-  load put it there; `permissions.remove` and a switch turned off take it
-  out, and the next call is refused.[^task-250]
-
-A refused call says which state it is in (`permissionRefusal`): "<name>
-permission not declared" (in neither list), "<name> permission denied by the
-user" (an unexpired denial: the switch off, a prompt answered Deny, or that
-saved denial restored), or "<name> permission is optional and has not been
-granted".[^task-260] "Unexpired" is measured against the handler's `now`
-clock (a test seam, `Date.init` in the app) at every gate: `permissionRefusal`,
-`permissions.contains`, the `permissions.request` plan and `management`'s
-`permissions` / `hostPermissions`. A test that moves that clock past a grant
-or denial still held by WebKit, which reads the wall clock, sees it
-expired.[^task-277] The notifications event wait in the polyfill matches all
-three to decide whether to re-arm after a later grant. When `notifications`
-stops being active in a profile, its notifications there go and the wait is
-answered with this refusal (`ExtensionManager.revokeNotificationsWhereNotPermitted`,
-after every saved-decision change and grant removal; see
-[Notification ownership](./polyfill-notification-scope.md#an-owners-notifications-go-with-its-scope)).
-
-The grant dictionary is read, not `hasPermission(_:)`. WebKit's
-`permissionState` answers `.unknown` for every name outside
-`WebExtension::supportedPermissions()`, and `history` and `management` are
-outside it (`notifications` is inside). `setPermissionStatus` still stores
-such a name in the grant dictionary and fires `permissions.onAdded` /
-`onRemoved` for it in the extension's contexts. WebKit also drops those names
-from `requestedPermissions` and `optionalPermissions`, so the restore adds
-`polyfillGatedDeclaredPermissions` (the gated names in either manifest list)
-to `askablePermissions`.[^task-250] [^task-259] The removal rule
-(`savedGrantsRevoked`) reads the same set but still skips every required
-key, so the row of a required permission is never deleted.
-
-In the web process, `permissions.request` / `contains` / `remove` reject any
-name outside that set ("'history' is not a valid permission") before Detour
-sees the call. `permissions.getAll` does no such check: it lists the grant
-dictionary, so a restored `history` or `management` grant appears in it
-(seen in the running app).[^task-250]
-
-### permissions.request, contains and remove for history and management
-
-The polyfill's `chrome.permissions` / `browser.permissions` wrappers (the
-same ones that strip origin ports, `permissionsOriginPortJS`) take `history`
-and `management` (`WebExtension.permissionsOutsideWebKit`) out of
-`details.permissions`; the handler answers for them and the rest of the call
-still goes to WebKit.[^task-260]
-
-- `contains` answers from `permissionIsActive`; an undeclared name answers
-  false, as in Chrome.
-- `request` follows Chrome's rule (`permissionRequestPlan`): a name in
-  neither manifest list is refused ("Only permissions specified in the
-  manifest may be requested."); a required one is held already; a denied
-  one, or a required one switched off, answers false without a prompt, as
-  WebKit answers for a permission it holds denied (only the Settings switch
-  turns it back on); the rest get Detour's prompt, the same alert and
-  wording as WebKit's (`promptUserForPermission`), answerable through
-  `permissionPromptAnswerOverride`. The answer is saved through
-  `setPermissionDecision`, so it reaches every loaded context, is restored at
-  load and posts `permissionDecisionsDidChangeNotification`. A second request
-  while the prompt is pending is refused ("A permissions request is already
-  pending."), like `uninstallSelf`'s confirmation. Unlike that
-  confirmation it needs no cooldown after a refusal: the saved denial already
-  stops the next request from asking.
-- `remove` refuses a required name ("You cannot remove required
-  permissions.") or an undeclared one, then deletes the saved grant and
-  re-applies, as for WebKit's own removals: the row is deleted, not saved as
-  denied, so the next request prompts again.
-
-**WebKit requires a user gesture for its own `permissions.request`**
-("Invalid call to permissions.request(). Must be called during a user
-gesture.", measured: refused from a service worker, and from a page once an
-await has passed; `callAsyncJavaScript` counts as a gesture). So a mixed
-request (`['history', 'notifications']`) calls WebKit first, synchronously
-inside the caller's gesture, and asks Detour only after WebKit grants. If
-Detour's prompt is then denied, the wrapper takes back with WebKit's
-`remove` exactly what the request added (each WebKit item is asked about
-with `contains` before the request), so the request is granted whole or not
-at all, as in Chrome. The extension does see `onAdded` then `onRemoved` for
-the taken-back items. Asking Detour first was rejected: WebKit's half then
-always failed for want of a gesture. From a worker a mixed request is
-refused by WebKit before anyone is asked.
-
-Detour does not require a gesture for `history` / `management`: the handler
-gets no gesture signal, a worker has none, and a check in the polyfill would
-be the extension's own code to skip. The prompt is the guard.
-
-The namespaces are built at injection, so the bundle installs them when the
-permission is listed in either manifest list (`__detourDeclaresPermission`),
-and the handler decides each call. Chrome does it differently: a grant
-re-runs the bindings of every running context, pages and workers
-(`Dispatcher::UpdatePermissions` → `UpdateBindingsForExtension`), so a granted
-namespace appears without a reload. A revoked one is not deleted (a TODO in
-`NativeExtensionBindingsSystem::UpdateBindingsForContext`) but its calls are
-refused. Detour matches the after-grant and after-revocation behaviour. Its
-one deviation is that an optional namespace is already present before the
-first grant. Installing it later, on `permissions.onAdded` or after an async
-`permissions.getAll`, was rejected: a restarted worker's top-level
-`chrome.history.onVisited.addListener` would throw before the answer
-arrived.[^task-250]
-
-### ExtensionInfo lists the active set
-
-`management.getSelf` / `getAll` build each `ExtensionInfo` from the asking
-profile's context for that extension, not from the manifest. Chromium's
-`CreateExtensionInfo` (`extensions/browser/api/management/management_api.cc`)
-lists `active_permissions().GetAPIsAsStrings()` and
-`active_permissions().explicit_hosts()`, so runtime grants appear and
-revocations go:
-
-- `permissions`: the manifest's `permissions` then `optional_permissions`,
-  each kept iff `permissionIsActive` (so a required one switched off goes
-  too). MV2 origin entries in those lists are left out; Chromium lists origins
-  only under `hostPermissions`.
-- `hostPermissions`: the context's unexpired granted match patterns that some
-  manifest host pattern covers (`askableMatchPatterns`), minus any an
-  unexpired denial covers (WebKit keeps a narrower grant under a denied
-  `<all_urls>`), sorted. The content-script patterns the restore grants for
-  `activeTab` are left out, both by the coverage check and, when a manifest
-  host pattern covers them, by name (`implicitContentScriptPatterns`), as
-  Chromium's `explicit_hosts()` leaves out scriptable hosts. With no context
-  in the profile, the required hosts as declared, which treats them as
-  `permissionIsActive` treats required API permissions.[^task-261]
+polyfill, which gates them itself (`WebExtension.polyfillGatedPermissions`)
+with the same saved decisions, restore and Settings switches as above. The
+handler's rule (`permissionIsActive`), its refusal texts and the WebKit
+behaviour behind it are in
+[polyfill request gates](./polyfill-request-gates.md#the-active-permission-rule);
+`permissions.request`, `contains` and `remove` of `history` and `management`
+are in [chrome.permissions for history and management](./polyfill-permissions.md);
+what `management.getSelf` / `getAll` list is in
+[chrome.management](./polyfill-management.md#extensioninfo-lists-the-active-set).
 
 ## Origin patterns with a port
 
@@ -502,16 +363,6 @@ A ported pattern in a manifest's `host_permissions` is dropped by WebKit from
 
 # Gaps
 
-- A request made past the wrapper, straight to WebKit's function (the
-  `_detourNative` the wrapper keeps), still gets WebKit's "'history' is not a
-  valid permission".
-- A mixed request whose Detour half is denied fires `permissions.onAdded`
-  and `onRemoved` for the WebKit items it took back.[^task-260]
-- A mixed request whose Detour half will be answered false without a
-  prompt (the name is denied, or required and switched off) still shows
-  WebKit's prompt first, and takes that grant back afterwards. Knowing the
-  Detour answer first takes a native round trip, which would spend the user
-  gesture WebKit requires.[^task-260]
 - A legacy full-URL row saved as `.matchPattern` before `.url` existed is
   applied as an exact-path pattern when the manifest covers it, which is
   narrower than the origin-wide grant a `.url` row gives. No migration was
@@ -543,8 +394,5 @@ A ported pattern in a manifest's `host_permissions` is dropped by WebKit from
 [^task-258]: Extensions: permissions.remove is not saved, so the revoked permission comes back at the next launch
 [^task-250]: Extensions: notifications, history and management ignore permissions granted at runtime through optional_permissions
 [^task-259]: Extensions: a required notifications, history or management permission switched off in Settings still works
-[^task-260]: Extensions: chrome.permissions.request, contains and remove do not work for history and management
-[^task-261]: Extensions: management.getSelf and getAll leave out permissions granted at runtime
-[^task-277]: Tests: cover native host quit refusal and the SIGTERM path, keep the host sweep to the test's own hosts, and route the injected clock through the permission gates
 [^task-276]: Docs: fix the permission-scope and notification-ordering descriptions the review found wrong
 [^task-339]: TASK-339

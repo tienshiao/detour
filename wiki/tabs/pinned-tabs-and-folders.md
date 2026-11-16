@@ -116,7 +116,7 @@ screen.** Display order comes from `folderID` plus `sortOrder`:
   folder has no row. Should the store ever hold one, or a parent cycle, the
   session save moves it to the root in the rows it writes, so the tree comes
   back valid at the next launch; the store itself is not changed. See
-  [persistence](../architecture/persistence.md).
+  [session save failures](../architecture/session-save-failures.md#repair).
 - `isCollapsed` is model state, saved with the folder.
 
 ## Flattening for the sidebar

@@ -107,10 +107,12 @@ Related pages: [closed tabs and archive](../tabs/closed-tabs-and-archive.md),
 - `pinnedFolder.parentFolderID` and `pinnedTab.folderID` refuse a row that
   names a folder with no row. A folder with a missing parent, a parent cycle
   or an entry in a missing folder is therefore moved to the root in the
-  snapshot before it is written (`repairingInvalidRows`, TASK-154).
+  snapshot before it is written (`repairingInvalidRows`, TASK-154; see
+  [session save failures](./session-save-failures.md#repair)).
 - Because `tab`, `pinnedTab` and `pinnedFolder` cascade from `space`, a space
   and those rows are one unit when a save has to isolate a refused row: they
-  are replaced together or left as last saved.
+  are replaced together or left as last saved
+  ([unit by unit](./session-save-failures.md#unit-by-unit)).
 
 Profile deletion does **not** rely on cascades. `deleteProfileRows` is the
 one function that deletes a profile row, and it deletes `profileExtension`,
@@ -208,7 +210,7 @@ Records are plain `Codable` structs. The live model (`Profile`, `Space`,
   `saveSessionSnapshotIsolatingFailures` throw, because a save that wrote
   nothing must not pass unnoticed (TASK-154). `TabStore.saveNow()` handles the
   error; `isConstraintFailure` tells a refused row from every other error. See
-  [persistence](./persistence.md).
+  [session save failures](./session-save-failures.md).
 - In DEBUG builds `performRead` counts reads per label
   (`AppDatabase.readCount(_:)`, `resetReadCounts()`). Tests use it to pin a
   query count, for example one enabled-state read per profile at startup

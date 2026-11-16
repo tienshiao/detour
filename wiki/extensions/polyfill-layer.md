@@ -232,6 +232,7 @@ Other consequences:
 | [chrome.history](./polyfill-history.md) | `history.search`, scoped to the calling profile, with Chrome's 24-hour default range |
 | [Favicons](./polyfill-favicons.md) | The `_favicon` URL rewrite and what each kind of context gets from it |
 | [chrome.management](./polyfill-management.md) | The permission-free `getSelf`, `uninstallSelf` and `getPermissionWarningsByManifest` |
+| [chrome.permissions for history and management](./polyfill-permissions.md) | `permissions.request`, `contains` and `remove` of the two names WebKit refuses as unknown |
 | [chrome.notifications](./polyfill-notifications.md) | Call ordering, the `create` signature, what `clear` and `update` answer, what a banner shows |
 | [Notification authorization](./polyfill-notification-authorization.md) | The prompt at the first `create`, and the bounded wait for its answer |
 | [Notification events](./polyfill-notification-events.md) | `onClicked` / `onClosed` through a parked request, synchronization with Notification Center |

@@ -251,7 +251,7 @@ derived natively from the tab that sent the message, never from the message.
 - [WKWebView delegate order](../platform/wkwebview-delegate-order.md) - the delegate and custom-scheme facts this design rests on.
 - [BrowserTab](../architecture/browser-tab.md) - web view creation, wake, and the tab's own navigation delegate.
 - [Command palette](./command-palette.md) - the typed-URL route into `loadInternalPage`.
-- [Tab and window bridge](../extensions/tab-and-window-bridge.md) - the extension tab API that refuses `detour://`.
+- [Opening tabs and windows](../extensions/opening-tabs-and-windows.md) - the extension tab and window API that refuses `detour://`.
 
 [^delegate-spike]: WKWebView delegate and custom-scheme spike
 [^task-231-5]: TASK-231.5

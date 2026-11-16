@@ -1,10 +1,10 @@
 ---
 type: Concept
 title: Persistence
-description: What Detour saves, where and when — the two databases, the debounced one-transaction session save, its write order and what it does when it cannot be written, session restore, interaction state, and the DETOUR_DATA_DIR switch.
+description: What Detour saves, where and when — the two databases, the debounced one-transaction session save, its write order (with a pointer to what happens when it cannot be written), session restore, interaction state, and the DETOUR_DATA_DIR switch.
 tags: [architecture, storage, session, restore]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:16:42Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T10:05:16Z }
 sources:
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
@@ -48,15 +48,9 @@ sources:
   - id: task-154
     resource: backlog:TASK-154
     title: A session save that fails is handled, not only logged
-  - id: snapshot-repair
-    resource: ../../Detour/Storage/SessionSnapshotRepair.swift
-    title: SessionSnapshotRepair.swift (repairingInvalidRows)
-  - id: failure-tests
-    resource: ../../DetourTests/SessionSaveFailureTests.swift
-    title: SessionSaveFailureTests.swift
-  - id: repair-tests
-    resource: ../../DetourTests/SessionSnapshotRepairTests.swift
-    title: SessionSnapshotRepairTests.swift
+  - id: session-save-failures
+    resource: ./session-save-failures.md
+    title: Session save failures
   - id: task-227
     resource: backlog:TASK-227
     title: YouTube tabs come back from a relaunch titled with their URL
@@ -186,107 +180,18 @@ Things to know about this design:
 
 ## When a save cannot be written
 
-Since the save is one transaction, one row the database refuses would fail
-every debounced save and the save at quit for as long as the store holds that
-row, and the user would lose every session change since the last good save.
-`saveNow()` therefore handles a failure instead of only logging it
-(TASK-154).[^task-154] It returns a `TabStore.SessionSaveOutcome` and keeps it
-in `lastSaveOutcome`.
-
-| Layer | Applies to | What is written | Outcome |
-|---|---|---|---|
-| 1. Repair | Pinned rows that could never be valid | Everything, with those rows moved to the root | `.saved` |
-| 2. Unit by unit | A row the database refuses (`SQLITE_CONSTRAINT`: foreign key, uniqueness, NOT NULL, a raising trigger) | Every unit except the one holding the row | `.savedExcept([failures])` |
-| 3. Nothing | Any other error (full disk, I/O error, locked or damaged file) | Nothing; the last good save stays | `.failed(reason:)` |
-
-**Repair.** `SessionSnapshot.repairingInvalidRows()` is a pure function of
-the snapshot. `pinnedFolder.parentFolderID` and `pinnedTab.folderID` are
-foreign keys onto `pinnedFolder`, so these rows are refused by the insert, and
-each is moved to the root of its space, after what is already there:
-
-- a folder whose parent is not among its space's folders (a parent in another
-  space counts as missing);
-- of each parent cycle, the folder that comes first in the store's order,
-  which opens the cycle; the others keep their parent. A folder that only
-  hangs below a cycle is not touched;
-- an entry whose folder is not among its space's folders.
-
-Only the saved rows change: the store keeps what it holds and loads the
-repaired tree at the next launch. Each repair is an error-level log line,
-written when the set of repairs changes rather than once a save. No store
-mutation is known to produce these rows (`movePinnedFolder` refuses a cycle);
-the repair is a defence, like `sanitizePinnedSplitGroups` at load.
-
-**Unit by unit.** `AppDatabase.saveSessionSnapshotIsolatingFailures` writes
-the same snapshot again, still in **one transaction**, with each unit in its
-own savepoint:
-
-| Unit | Rows |
-|---|---|
-| Each space | The `space` row, its `tab` rows, its `pinnedFolder` and `pinnedTab` rows. One unit because deleting the space row to rewrite it cascades to the other three. |
-| Profiles | The `profile` rows and the sweep of profiles the store no longer has. |
-| Each profile's favourites | Its `favorite` rows. |
-
-A unit that fails with a constraint failure is rolled back to its savepoint,
-so it holds **what the last good save wrote for it**; a space that was
-never saved is absent. One exception: a favourites unit that fails after the
-space hosting its live favourites was written keeps its rows, but with
-`tabID` NULL — rewriting the space deleted the backing tab rows and the
-cascade cleared the reference — so those favourites are dormant until a later
-save writes the unit. Every other unit is written. Spaces the store no longer
-has are deleted first, as in the one-step save. Each failed unit is an
-error-level log line (category `storage`) naming the unit and the database's
-error.
-
-Two rules keep the units independent:
-
-- A row that changed unit (a tab moved to another space) may still be held,
-  under the same primary key, by a unit this pass has not written. Before a
-  unit inserts its rows, those stale copies are deleted from every unit not
-  written in this pass. A copy in a unit that *was* written is a real
-  duplicate and fails the insert.
-- A live favourite's backing tab row belongs to the space that hosts it. When
-  that space was not written and the row is not among the ones it kept, the
-  favourite is saved dormant instead of failing its profile's favourites on
-  `favorite.tabID`.
-
-**What the next launch loads after a partial save.** Every statement ran with
-foreign keys enforced, so the database is valid by the schema:
-`restoreSession()` loads the failed space as last saved and the rest as new.
-`space.selectedTabID` and `lastActiveSpaceID` are not foreign keys and may
-name a tab or space that is not there (the selected tab moved out of a space
-that failed; the active space is new and could not be saved); the launch code
-already tolerates both, as for any stale selection.
-
-**Not handled.** Layer 3 writes nothing and tells nobody: it is an error-level
-log line and `lastSaveOutcome`. There is no user-facing message for a failed
-save.
-
-**Cost.** While a row keeps being refused, each save runs the one-step save
-up to that row and then the unit-by-unit save: roughly twice the work of a
-save. Not measured.
-
-Rejected, with the reason:
-
-- *Each step in its own transaction* (the shape before TASK-149). The session
-  step deletes every space row and the cascade takes the pinned rows with it;
-  committed alone and followed by a failing pinned step, it drops rows the
-  last good save held, and it reopens the crash window. Spaces and tabs are
-  also one step there, so one refused tab row would lose every space's tab
-  changes.
-- *Skipping only the refused row.* It commits a degraded copy over a good one
-  (a refused space row would delete that space and everything in it), and a
-  failure that hits many rows would commit a near-empty session.
-- *Isolating every kind of error.* With a full disk every unit fails; only a
-  constraint failure is a property of a row.
-
-`SessionSaveFailureTests` refuses one row with a SQLite trigger (`RAISE`
-with a `WHEN` on the row's id) and checks the other units, the failed unit's
-previous rows and what a relaunched store holds; `SessionSnapshotRepairTests`
-covers the repair as a pure function. `SessionSaveAtomicityTests` now injects
-a failure that is *not* a constraint failure (a trigger calling a SQL function
-that fails with `SQLITE_FULL`), the case that must leave the previous save
-whole.
+Because the save is one transaction, one refused row would fail every save
+until the app quits. `saveNow()` handles a failure in three layers
+(TASK-154) and returns a `SessionSaveOutcome`, also kept in
+`lastSaveOutcome`: pinned rows that could never be valid are repaired in the
+snapshot before the write (`repairingInvalidRows`, `.saved`); a row the
+database refuses (`SQLITE_CONSTRAINT`) makes it write the snapshot again unit
+by unit, each space, the profiles and each profile's favourites in a
+savepoint, so only the unit holding the row keeps its last good rows
+(`.savedExcept`); any other error writes nothing and the last good save
+stays (`.failed`). The layers, what a relaunch loads after a partial save,
+who hears about a failure and the rejected alternatives are on
+[session save failures](./session-save-failures.md).
 
 ## Session restore
 
@@ -399,15 +304,16 @@ it. See [history database](./history-database.md).
 
 | What | Where |
 |---|---|
-| `scheduleSave`, `saveNow`, `SessionSaveOutcome`, `makeSessionSnapshot`, `restoreSession` | [TabStore.swift](../../Detour/Browser/TabStore.swift) |
-| `SessionSnapshot`, `saveSessionSnapshot`, `saveSessionSnapshotIsolatingFailures`, the single-step saves, `loadSession` | [Database.swift](../../Detour/Storage/Database.swift) |
-| `repairingInvalidRows`, `SessionSnapshotRepair` | [SessionSnapshotRepair.swift](../../Detour/Storage/SessionSnapshotRepair.swift) |
+| `scheduleSave`, `saveNow`, `makeSessionSnapshot`, `restoreSession` | [TabStore.swift](../../Detour/Browser/TabStore.swift) |
+| `SessionSnapshot`, `saveSessionSnapshot`, the single-step saves, `loadSession` | [Database.swift](../../Detour/Storage/Database.swift) |
+| What a failed save does, and its code | [Session save failures](./session-save-failures.md) |
 | The tab row factory | [TabRecord+BrowserTab.swift](../../Detour/Browser/TabRecord+BrowserTab.swift) |
-| Tests | `SessionSaveAtomicityTests`, `SessionSaveFailureTests`, `SessionSnapshotRepairTests`, `AppDatabaseTests`, `TabStoreTests`, `TabRecordFactoryTests`, `ExtensionPagePersistenceTests`, `FavoritePeekPersistenceTests`, `ProfileDataRemovalTests`; `SessionSaveBenchmarkTests` (env-gated) |
+| Tests | `SessionSaveAtomicityTests`, `AppDatabaseTests`, `TabStoreTests`, `TabRecordFactoryTests`, `ExtensionPagePersistenceTests`, `FavoritePeekPersistenceTests`, `ProfileDataRemovalTests`; `SessionSaveBenchmarkTests` (env-gated) |
 
 # Related
 
 - [Session database](./session-database.md) — the tables.
+- [Session save failures](./session-save-failures.md) — what `saveNow()` does when the save cannot be written.
 - [History database](./history-database.md) — the other file.
 - [TabStore](./tabstore.md) — what calls `scheduleSave`.
 - [Tab lifecycle](../tabs/tab-lifecycle.md) — the events that change the session.
@@ -416,5 +322,4 @@ it. See [history database](./history-database.md).
 
 [^task-36]: Stop the test host writing WebKit data into the production app's WebKit directory
 [^task-149]: One session save is one transaction
-[^task-154]: A session save that fails is handled, not only logged
 [^task-227]: YouTube tabs come back from a relaunch titled with their URL

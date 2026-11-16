@@ -393,10 +393,10 @@ command takes a profile; `CommandChoices.profiles` is ready for one.
 
 # Related
 
-- [App shell](../architecture/app-shell.md) - the menu bar, the key-equivalent fast path.
+- [App shell](../architecture/app-shell.md) - the menu bar.
 - [Command palette](./command-palette.md) - the palette.
 - [Automation endpoint (MCP)](./automation-endpoint.md) - `run_menu_item`.
 - [Quick Detour](./quick-detour.md) - its window's commands, and the hotkey that sets the item's key equivalent.
-- [Keyboard shortcuts](./keyboard-shortcuts.md) - the user's shortcuts over the registry's defaults, Settings > Shortcuts.
+- [Keyboard shortcuts](./keyboard-shortcuts.md) - the user's shortcuts over the registry's defaults, Settings > Shortcuts, the key-equivalent fast path.
 
 [^task-295]: TASK-295

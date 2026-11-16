@@ -153,7 +153,7 @@ shared store; unloading the extension from one profile.
 - [chrome.notifications](./polyfill-notifications.md) — the calls the owner scopes.
 - [Notification events](./polyfill-notification-events.md) — what a revocation or a Private session boundary does to the parked wait.
 - [Private profile extensions](./private-profile-extensions.md) — the Private copy of an extension, and when a session starts and ends.
-- [Permissions](./permissions.md#permissions-the-polyfill-gates) — `permissionIsActive`, which decides the revocation row.
+- [Polyfill request gates](./polyfill-request-gates.md#the-active-permission-rule) — `permissionIsActive`, which decides the revocation row.
 
 [^task-238]: Extensions: one profile's notifications are visible to and clearable by the same extension in another profile
 [^task-248]: Extensions: notifications left from an earlier launch stay in Notification Center and can no longer be cleared

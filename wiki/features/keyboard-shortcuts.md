@@ -1,13 +1,28 @@
 ---
 type: Feature
 title: Keyboard shortcuts
-description: "Where Detour's shortcuts are defined (the command registry's defaults), how a user's own shortcuts from Settings > Shortcuts are stored (overrides only, per data directory) and applied (the live menu items, so every window, the palette column and the TASK-56 fast path follow), which keys are refused and how the holder is named, how macOS App Shortcuts (NSUserKeyEquivalents) win and what AppKit was measured to do with them, which keys are not bindable, and the known layout limits."
+description: "Where Detour's shortcuts are defined (the command registry's defaults), how a user's own shortcuts from Settings > Shortcuts are stored (overrides only, per data directory) and applied (the live menu items, so every window, the palette column and the TASK-56 fast path follow), how that fast path (menuHasKeyEquivalent with MenuKeyEquivalentMatcher) answers the Spaces and Extensions menus without rebuilding them and what AppKit does with its answers, which keys are refused and how the holder is named, how macOS App Shortcuts (NSUserKeyEquivalents) win and what AppKit was measured to do with them, which keys are not bindable, and the known layout limits."
 resource: ../../Detour/Commands/ShortcutBindings.swift
 tags: [keyboard, menus, settings, commands]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T09:55:23Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T10:05:16Z }
 stale_after: 2027-06-01T00:00:00Z
 sources:
+  - id: task-56
+    resource: backlog:TASK-56
+    title: Implement menuHasKeyEquivalent so key presses stop rebuilding the Spaces and Extensions menus
+  - id: spike-295
+    resource: ../../docs/harness/task295/hidden-items.swift
+    title: "TASK-295 spike: hidden, disabled and delegate-answered menu items under real Control+digit events (macOS 26, 2026-11-14)"
+  - id: matcher
+    resource: ../../Detour/App/MenuKeyEquivalentMatcher.swift
+    title: MenuKeyEquivalentMatcher.swift
+  - id: app-delegate
+    resource: ../../Detour/App/AppDelegate.swift
+    title: AppDelegate.swift (menuHasKeyEquivalent, the menus with a delegate)
+  - id: dispatch
+    resource: ../../Detour/Commands/CommandDispatch.swift
+    title: CommandDispatch.swift (isEnabled)
   - id: task-345
     resource: backlog:TASK-345
     title: "Undo and redo: a page gets ⌘Z and ⇧⌘Z first, and Edit › Undo/Redo reach the page's own undo while editing"
@@ -122,9 +137,8 @@ live items follows with no code of its own:
 - the command palette's shortcut column (`CommandDispatch.keyEquivalentLabel`);
 - the TASK-56 fast path, `AppDelegate.menuHasKeyEquivalent` with
   `MenuKeyEquivalentMatcher`, for the delegate-driven Spaces and Extensions
-  menus: a user can put a letter on Manage Spaces… or Add Extensions…,
-  which the matcher answers (a press it does not model is a miss, and
-  AppKit then matches the item itself);
+  menus ([below](#key-equivalents-without-rebuilding-menus)): a user can put
+  a letter on Manage Spaces… or Add Extensions…, which the matcher answers;
 - `run_menu_item key=` on the automation endpoint;
 - the Quick Detour hotkey's own recorder, which searches the live menu, so
   it refuses a key a user binding holds.
@@ -134,6 +148,65 @@ Hints outside the main menu read the live item too
 tab menu's Copy URL, Quick Detour's Open in dropdown and the ⌘O in its title
 bar's Open in capsule (that capsule is redrawn when its destination changes,
 not on a binding change).
+
+## Key equivalents without rebuilding menus
+
+AppKit asks a menu's delegate about key equivalents on every Cmd+key press.
+A delegate that does not implement
+`menuHasKeyEquivalent(_:for:target:action:)` gets `menuNeedsUpdate` instead,
+so the Spaces and Extensions menus were rebuilt on every keystroke:
+re-enumerating spaces, re-querying each profile's enabled extensions and
+redrawing icons (TASK-56).
+
+`AppDelegate` implements the method with `MenuKeyEquivalentMatcher`, a pure
+function over the menu's existing items. What the two answers mean was
+checked against AppKit with standalone probes on macOS 26, not
+assumed:[^task-56]
+
+| Answer | AppKit then |
+|---|---|
+| `false` | Skips `menuNeedsUpdate` but still scans the menu's existing items itself, with its own keyboard-layout handling and validation. Not a veto. |
+| `true` | Performs the returned action on the returned target with **no validation of its own**. |
+
+A `true` also has AppKit send the action with the **menu**, not the item,
+as sender (measured with a delegate answering a hidden item), so an action
+reached this way must not read its sender's tag or represented
+object.[^spike-295]
+
+So the matcher is a fast path that errs towards `false`, and the `true` path
+re-implements AppKit's enable decision (`CommandDispatch.isEnabled`:
+when the menu autoenables, `validateMenuItem`, else
+`validateUserInterfaceItem`, else `true`; `item.isEnabled` only when it does
+not; the
+automation endpoint's `run_menu_item` and the command palette use the same
+helper).
+Without that, Next Space would fire with no browser window key.
+
+Whether macOS 14 and 15 also fall back after a `false` is not
+verified.[^task-56]
+
+Invariants `MenuKeyEquivalentMatcherTests` pins against the real main menu:
+
+- Only **Spaces** and **Extensions** have a delegate.
+- Every shortcut in a delegate-driven menu is on a static item the
+  registry built, whose action no other command shares. The built-in ones
+  are Next/Previous Space's arrow keys (`\u{F702}` / `\u{F703}`) and the
+  nine position items' ⌃1–⌃9 (TASK-295), digits the matcher answers on a
+  layout that types them unshifted (elsewhere it misses and AppKit's own
+  matching decides). Hidden position items keep their key equivalents
+  (`allowsKeyEquivalentWhenHidden`), and the matcher matches them as AppKit
+  does. A user's own shortcut (TASK-327) on a static item there
+  (Manage Spaces…, Add Extensions…) can be a letter; the matcher reads the
+  live items and answers it, and a press it does not model is a miss that
+  AppKit matches itself.
+- **Dynamic items carry no key equivalent.** One would exist only after the
+  menu was first opened, and a hit would be dispatched without an
+  `NSMenuItem` sender.
+
+The Develop menu has no delegate on purpose. Its dynamic items depend only on
+the extension list, so they are rebuilt from
+`ExtensionManager.extensionsDidChangeNotification`. That keeps its one letter
+shortcut (Cmd+Option+I) matched natively by AppKit on every keyboard layout.
 
 ## What can be bound
 
@@ -434,8 +507,8 @@ for the app. To try one at runtime, pass it as a launch argument; never
   plus Shift (⇧⌘= for the key labelled "+" on a US layout). AppKit fires
   such an item on the real press: a CGEvent ⇧⌘1, whose
   `charactersIgnoringModifiers` is "!", fired an item "1" + ⇧⌘, and ⇧⌘=
-  ("+") fired "=" + ⇧⌘ (spike, 2026-11-14).[^spike] The TASK-56 matcher
-  compares "!" with "1" and misses, which is its fallback path. The same
+  ("+") fired "=" + ⇧⌘ (spike, 2026-11-14).[^spike] The
+  [TASK-56 matcher](#key-equivalents-without-rebuilding-menus) compares "!" with "1" and misses, which is its fallback path. The same
   press also fires an item spelled with the shifted character; since
   TASK-335 the recorders see that (next section).
 - **Function keys and ⌥.** In the same spike AppKit's menu matching fired
@@ -532,6 +605,8 @@ for the app. To try one at runtime, pass it as a launch argument; never
   item untouched, the palette column, a context menu hint, the fast path
   answering a binding in the Extensions and Spaces menus, the registry's
   menus equal to the bar's.
+- `MenuKeyEquivalentMatcherTests` (TASK-56): the matcher, and the
+  fast-path invariants against the real `NSApp.mainMenu`.
 - `SpaceJumpTests` (TASK-295): a rebinding of a position command reaches
   its item and the Spaces menu's matching, and reset gives ⌃N back.
 - `ShortcutsSettingsPaneTests`: grouping, parameterised commands left out,
@@ -547,7 +622,7 @@ for the app. To try one at runtime, pass it as a launch argument; never
 - [Browser commands](./browser-commands.md) - the registry the defaults and IDs come from.
 - [Settings window](./settings.md) - the window and its panes.
 - [Quick Detour](./quick-detour.md) - the global hotkey, its recorder and validation.
-- [App shell](../architecture/app-shell.md) - the menu bar and the key-equivalent fast path.
+- [App shell](../architecture/app-shell.md) - the menu bar built in code, whose delegate-driven menus the fast path serves.
 - [Command palette](./command-palette.md) - the shortcut column.
 
 [^task-327]: TASK-327
@@ -558,3 +633,5 @@ for the app. To try one at runtime, pass it as a launch argument; never
 [^spike-350]: TASK-350 spike
 [^task-343]: TASK-343
 [^spike]: NSUserKeyEquivalents spikes
+[^task-56]: Implement menuHasKeyEquivalent so key presses stop rebuilding the Spaces and Extensions menus
+[^spike-295]: TASK-295 spike: hidden, disabled and delegate-answered menu items under real Control+digit events (macOS 26, 2026-11-14)

@@ -1,10 +1,10 @@
 ---
 type: Feature
 title: chrome.management in the polyfill
-description: The permission-free management methods Detour implements — getSelf, uninstallSelf (with its confirmation dialog and the cooldown after a Cancel) and getPermissionWarningsByManifest — and where they differ from Chrome.
+description: The permission-free management methods Detour implements — getSelf, uninstallSelf (with its confirmation dialog and the cooldown after a Cancel) and getPermissionWarningsByManifest — the active permissions getSelf and getAll list, and where they differ from Chrome.
 tags: [extensions, polyfill, management]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:58:04Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T10:06:25Z }
 sources:
   - id: handler
     resource: ../../Detour/Extensions/Runtime/ExtensionPolyfillHandler.swift
@@ -30,6 +30,9 @@ sources:
   - id: chromium-api-features
     resource: https://github.com/chromium/chromium/blob/main/extensions/common/api/_api_features.json
     title: "Chromium, extensions/common/api/_api_features.json (management.getSelf etc. have no dependency)"
+  - id: task-261
+    resource: backlog:TASK-261
+    title: "Extensions: management.getSelf and getAll leave out permissions granted at runtime"
   - id: management-self-tests
     resource: ../../DetourTests/ExtensionManagementSelfTests.swift
     title: ExtensionManagementSelfTests
@@ -41,6 +44,32 @@ Chrome;[^task-257] Chromium's `_api_features.json` gives those three empty
 dependencies.[^chromium-api-features] `getAll` and `setEnabled` (a no-op) need
 the permission, and the handler refuses them without it; when the namespace
 is installed is on [request gates](./polyfill-request-gates.md#namespaces-the-bundle-leaves-out).[^task-251]
+
+# ExtensionInfo lists the active set
+
+`management.getSelf` / `getAll` build each `ExtensionInfo` from the asking
+profile's context for that extension, not from the manifest. Chromium's
+`CreateExtensionInfo` (`extensions/browser/api/management/management_api.cc`)
+lists `active_permissions().GetAPIsAsStrings()` and
+`active_permissions().explicit_hosts()`, so runtime grants appear and
+revocations go:
+
+- `permissions`: the manifest's `permissions` then `optional_permissions`,
+  each kept iff `permissionIsActive`
+  ([the active-permission rule](./polyfill-request-gates.md#the-active-permission-rule);
+  so a required one switched off goes
+  too). MV2 origin entries in those lists are left out; Chromium lists origins
+  only under `hostPermissions`.
+- `hostPermissions`: the context's unexpired granted match patterns that some
+  manifest host pattern covers (`askableMatchPatterns`, the
+  [manifest gate](./permissions.md#the-manifest-gate)), minus any an
+  unexpired denial covers (WebKit keeps a narrower grant under a denied
+  `<all_urls>`), sorted. The content-script patterns the restore grants for
+  `activeTab` are left out, both by the coverage check and, when a manifest
+  host pattern covers them, by name (`implicitContentScriptPatterns`), as
+  Chromium's `explicit_hosts()` leaves out scriptable hosts. With no context
+  in the profile, the required hosts as declared, which treats them as
+  `permissionIsActive` treats required API permissions.[^task-261]
 
 # uninstallSelf
 
@@ -99,7 +128,7 @@ callback form, in
 
 - [Polyfill layer](./polyfill-layer.md) — the request path.
 - [Request gates](./polyfill-request-gates.md) — when `chrome.management` is installed whole.
-- [Permissions](./permissions.md) — the install prompt whose lines `getPermissionWarningsByManifest` returns.
+- [Permissions](./permissions.md) — the install prompt whose lines `getPermissionWarningsByManifest` returns, and the grants and denials `ExtensionInfo` reads.
 - [Updates](./updates.md) — the other path that removes or replaces an installed extension.
 
 [^task-257]: Extensions: management.uninstallSelf and management.getPermissionWarningsByManifest are missing
@@ -107,3 +136,4 @@ callback form, in
 [^task-251]: Extensions: the history and management namespaces exist for extensions without the permission
 [^task-267]: Extensions: management.uninstallSelf with showConfirmDialog can show its app-modal alert again and again with no user action
 [^chromium-management-api]: Chromium: management_api.cc (Uninstall, GetPermissionWarningsByManifest) and management_api_constants.h
+[^task-261]: Extensions: management.getSelf and getAll leave out permissions granted at runtime

@@ -214,7 +214,7 @@ Both classes are in
 - [Notification ownership](./polyfill-notification-scope.md) — owners and the identifiers `handleResponse` resolves.
 - [Updates](./updates.md) — `onUpdateAvailable`, the other event delivered through a parked request.
 - [Service worker unload rules](../platform/service-worker-unload-rules.md) — why a pending native message keeps nothing alive.
-- [Permissions](./permissions.md#permissions-the-polyfill-gates) — the refusal a park is answered with when the permission goes.
+- [Polyfill request gates](./polyfill-request-gates.md#the-active-permission-rule) — the refusal a park is answered with when the permission goes.
 
 [^task-247]: Extensions: notifications.onClicked and onClosed are never delivered to the extension
 [^chromium-notifications-clear]: Chromium: notifications_api.cc (clear), extension_notification_handler.cc (OnClose), notification_ui_manager_impl.cc (CancelById)
