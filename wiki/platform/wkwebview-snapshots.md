@@ -4,7 +4,7 @@ title: WKWebView snapshots on macOS
 description: What WKWebView.takeSnapshot really captures on macOS — a software paint at the device scale, clipped to the visible viewport whatever rect is asked for — how a whole-document capture is made instead (the private _usesContentsRect, or createPDF rasterised), what each does with fixed, sticky, filtered and GPU content, and the NSImage size quirks that decide how to get device pixels out.
 tags: [webkit, snapshot, retina, dev-mode, private-api]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:59:26Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T18:40:00Z }
 stale_after: 2027-04-01T00:00:00Z
 sources:
   - id: wkwebview
@@ -43,6 +43,9 @@ sources:
   - id: task-355
     resource: backlog:TASK-355
     title: "Back swipe: swiping forward shows a picture of the page being returned to, not a blank card"
+  - id: task-376
+    resource: backlog:TASK-376
+    title: "Back swipe: forward-picture races and gaps (capture token, gesture-begin capture, cross-window, entry points)"
 ---
 
 The dev toolbar's capture buttons ([dev toolbar captures](../features/dev-toolbar-captures.md))
@@ -140,6 +143,19 @@ the web process ahead of the navigation. Checked by colour for a back within
 one process (loopback pages, a test and the running app); a back that swaps
 processes was not measured.[^task-355]
 
+The same holds for a snapshot requested inside the navigation delegate's
+`webView(_:shouldGoTo:willUseInstantBack:completionHandler:)` (macOS 26)
+before answering it: for a cross-document move the web process asks
+asynchronously and waits for the answer (`HistoryController::goToItemShared`),
+so the snapshot is painted first, whatever started the move (`goBack()`, the
+page's `history.back()`, WebKit's swipe). A **same-document** move (an entry
+made by `pushState`) is asked synchronously: messages that are not sync wait
+until the answer, and the web process runs the move before it gets to the
+snapshot. Measured: such a snapshot came back with the UI's `currentItem`
+already the item moved to, so it may show the page after the move. A
+snapshot that comes back with `currentItem` still the page it was taken of
+was painted before the move.[^task-376]
+
 ## Testing at 2x on a 1x display
 
 `-[WKWebView _setOverrideDeviceScaleFactor:]` makes WebKit render and
@@ -170,3 +186,4 @@ screen; move the window onto it.
 [^geometry]: PageCaptureGeometry.swift (CaptureGeometry, CaptureFileName)
 [^task-325-spike]: docs/harness/task325-underlay-snapshot-spike.swift, run 2026-11-14 on macOS 26.7 (2x via `_setOverrideDeviceScaleFactor:`).
 [^task-355]: Back swipe: swiping forward shows a picture of the page being returned to, not a blank card
+[^task-376]: Back swipe: forward-picture races and gaps (capture token, gesture-begin capture, cross-window, entry points)

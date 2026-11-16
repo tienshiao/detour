@@ -13,10 +13,23 @@ nonisolated final class NavigationSwipeTests: XCTestCase {
 
     private var controller: BrowserWindowController?
     private var server: LoopbackHTTPServer?
+    /// Regular windows on a fresh space of the shared store, for the
+    /// cross-window case; the store's last active space is put back after.
+    private var extraControllers: [BrowserWindowController] = []
+    private var createdSpaceIDs: [UUID] = []
+    private var previousLastActiveSpaceIDs: (UUID?, UUID?)?
 
     @MainActor override func tearDown() async throws {
         controller?.window?.close()
         controller = nil
+        for wc in extraControllers { wc.window?.close() }
+        extraControllers.removeAll()
+        for id in createdSpaceIDs { TabStore.shared.deleteSpace(id: id) }
+        createdSpaceIDs.removeAll()
+        if let (store, extensions) = previousLastActiveSpaceIDs {
+            TabStore.shared.lastActiveSpaceID = store
+            ExtensionManager.shared.lastActiveSpaceID = extensions
+        }
         server?.stop()
         server = nil
         try await super.tearDown()
@@ -310,6 +323,31 @@ nonisolated final class NavigationSwipeTests: XCTestCase {
         XCTAssertFalse(jumped.stillApplies(currentItem: page1, forwardItem: page3),
                        "a history jump left a different forward item")
         XCTAssertFalse(jumped.shows(forwardItem: page3, webViewSize: jumped.size))
+    }
+
+    /// TASK-376: a picture in flight follows the history as a kept one does,
+    /// and makes a picture only if it comes back while its page is still the
+    /// current one and was never left meanwhile.
+    @MainActor func testAPictureInFlightCountsOnlyIfItsPageIsStillCurrent() {
+        let page1 = Item(), page2 = Item()
+        let image = NSImage(size: NSSize(width: 8, height: 6))
+        let size = CGSize(width: 800, height: 600)
+
+        let request = ForwardPictureRequest(token: 1, item: page2)
+        let picture = request.picture(image: image, size: size, currentItem: page2)
+        XCTAssertTrue(picture?.item === page2, "back before the back goes ahead: the page being left")
+        XCTAssertEqual(picture?.hasBeenLeft, false)
+        XCTAssertNil(request.picture(image: image, size: size, currentItem: page1),
+                     "back after the page was left: it may show the page after it")
+
+        var returned = ForwardPictureRequest(token: 2, item: page2)
+        XCTAssertTrue(returned.stillApplies(currentItem: page1, forwardItem: page2), "the back committed")
+        XCTAssertFalse(returned.stillApplies(currentItem: page2, forwardItem: nil), "and forward again: spent")
+        XCTAssertNil(returned.picture(image: image, size: size, currentItem: page2),
+                     "a page left and returned to before its picture came back")
+
+        var replaced = ForwardPictureRequest(token: 3, item: page2)
+        XCTAssertFalse(replaced.stillApplies(currentItem: Item(), forwardItem: nil), "a new forward list")
     }
 
     @MainActor func testAResizedPaneGetsThePlainCard() {
@@ -673,50 +711,154 @@ nonisolated final class NavigationSwipeTests: XCTestCase {
         try await waitUntil("the picture is spent") { wc.navigationSwipe.forwardPictures.value(for: child.id) == nil }
     }
 
-    /// WebKit's own swipe back from page 2: its begin callback pictures the
-    /// page before WebKit navigates (the callback is called here; a real
-    /// gesture cannot be synthesized).
-    @MainActor func testWebKitsOwnSwipeBackPicturesThePageItLeaves() async throws {
+    /// The page's own `history.back()` asks the navigation delegate too, so
+    /// it pictures page 2 as a back the window starts does (TASK-376; before
+    /// it, the plain card). WebKit's swipe and a `go(to:)` take the same path.
+    @MainActor func testABackThePageStartsPicturesThePageItLeavesToo() async throws {
         let (wc, _, child, webView, one, _, _) = try await childOnPage2()
 
-        wc.webViewDidBeginNavigationGesture(webView)
-        webView.goBack()
-        try await waitUntil("back on the first page") { webView.url == one && !webView.isLoading && child.canGoForward }
-        wc.webViewDidRemoveNavigationGestureSnapshot(webView)
-        try await waitUntil("page 2 pictured, the own swipe with forward") {
-            webView.navigationSwipe.mode == .ownSwipe(canGoForward: true)
+        _ = try await webView.evaluateJavaScript("history.back()")
+        try await waitUntil("back on the first page, page 2 pictured, the own swipe with forward") {
+            webView.url == one && !webView.isLoading
+                && webView.navigationSwipe.mode == .ownSwipe(canGoForward: true)
                 && (wc.navigationSwipePaneStates().first { $0.tabID == child.id }?.hasForwardPicture ?? false)
         }
         let picture = try XCTUnwrap(wc.navigationSwipe.forwardPictures.value(for: child.id))
         XCTAssertGreaterThan(try middleColour(of: picture.image).greenComponent, 0.8, "page 2, not page 1")
     }
 
-    /// WebKit's swipe begun on page 2 and cancelled: its picture goes with the
-    /// gesture's snapshot, so a later `history.back()` does not bring it back.
-    @MainActor func testACancelledWebKitSwipeLeavesNoPicture() async throws {
-        let (wc, _, child, webView, one, _, _) = try await childOnPage2()
+    /// WebKit's own swipe pictures nothing at its begin: only a swipe that
+    /// completes goes back, and WebKit asks the delegate then (TASK-376). A
+    /// swipe begun and cancelled leaves nothing in the cache.
+    @MainActor func testAWebKitSwipeThatDoesNotGoBackPicturesNothing() async throws {
+        let (wc, _, child, webView, _, _, _) = try await childOnPage2()
+        var asked = 0
+        wc.navigationSwipe.takeForwardPictureSnapshot = { _, _, _ in asked += 1 }
 
         wc.webViewDidBeginNavigationGesture(webView)
-        try await waitUntil("page 2 pictured") { wc.navigationSwipe.forwardPictures.value(for: child.id) != nil }
-        wc.webViewDidRemoveNavigationGestureSnapshot(webView)
-        XCTAssertNil(wc.navigationSwipe.forwardPictures.value(for: child.id), "the swipe did not leave page 2")
-
-        webView.goBack()
-        try await waitUntil("back on the first page") { webView.url == one && !webView.isLoading && child.canGoForward }
         spinRunLoop()
-        XCTAssertEqual(try pane(child, in: wc).hasForwardPicture, false)
+        wc.webViewDidRemoveNavigationGestureSnapshot(webView)
+        XCTAssertEqual(asked, 0)
+        XCTAssertNil(wc.navigationSwipe.forwardPictures.value(for: child.id))
+        XCTAssertNil(wc.navigationSwipe.forwardPictureRequests[child.id])
     }
 
-    /// A back the window did not start (the page's own `history.back()`)
-    /// pictures nothing: the forward card is the plain one.
-    @MainActor func testWithoutAPictureTheForwardCardIsPlain() async throws {
-        let (wc, _, child, webView, one, _, _) = try await childOnPage2()
+    /// Only a back to the first page asks: a forward move from page 2 or a
+    /// back that does not land on the first page takes nothing.
+    @MainActor func testOnlyABackToTheFirstPageIsPictured() async throws {
+        let (wc, _, child, webView, _, _, three) = try await childOnPage2()
+        try await load(three, in: child)
+        try await waitUntil("on page 3, two back") { webView.backForwardList.backList.count == 2 }
+        var asked = 0
+        wc.navigationSwipe.takeForwardPictureSnapshot = { _, _, _ in asked += 1 }
+
+        wc.goBack(nil)
+        try await waitUntil("back on page 2") { webView.backForwardList.backList.count == 1 && !webView.isLoading }
+        XCTAssertEqual(asked, 0, "the back landed on page 2, where WebKit's swipe shows its own picture")
+        wc.goForward(nil)
+        try await waitUntil("forward on page 3") { webView.url == three && !webView.isLoading }
+        XCTAssertEqual(asked, 0, "forward")
+        XCTAssertNil(wc.navigationSwipe.forwardPictures.value(for: child.id))
+    }
+
+    /// The race TASK-355's review left: the picture asked for on leaving page
+    /// 2 comes back only after the user went back and forward again. It is of
+    /// a page now current again, spent: kept, a later back the window could
+    /// not picture (here held) would have shown it.
+    @MainActor func testAPictureThatComesBackAfterThePageWasReturnedToIsDropped() async throws {
+        let (wc, _, child, webView, one, two, _) = try await childOnPage2()
+        var held: [@MainActor (NSImage?) -> Void] = []
+        wc.navigationSwipe.takeForwardPictureSnapshot = { _, _, completion in held.append(completion) }
+
+        wc.goBack(nil)
+        try await waitUntil("back on the first page") { webView.url == one && !webView.isLoading && child.canGoForward }
+        spinRunLoop()
+        wc.goForward(nil)
+        try await waitUntil("forward on page 2") { webView.url == two && !webView.isLoading && child.canGoBack }
+        spinRunLoop()
+        XCTAssertEqual(held.count, 1)
+        held[0](NSImage(size: NSSize(width: 8, height: 6)))
+        XCTAssertNil(wc.navigationSwipe.forwardPictures.value(for: child.id), "spent before it came back")
+        XCTAssertNil(wc.navigationSwipe.forwardPictureRequests[child.id])
 
         webView.goBack()
-        try await waitUntil("back on the first page") { webView.url == one && !webView.isLoading && child.canGoForward }
-        try await waitUntil("the own swipe with forward") {
-            webView.navigationSwipe.mode == .ownSwipe(canGoForward: true)
+        try await waitUntil("back on the first page again") {
+            webView.url == one && !webView.isLoading && webView.navigationSwipe.mode == .ownSwipe(canGoForward: true)
         }
+        XCTAssertEqual(try pane(child, in: wc).hasForwardPicture, false, "the old picture does not come back")
+    }
+
+    /// Only a tab's latest request counts: an older picture coming back after
+    /// a newer one does not replace it (TASK-376's request token).
+    @MainActor func testAnOlderPictureComingBackLateDoesNotReplaceANewerOne() async throws {
+        let (wc, _, child, webView, _, _, _) = try await childOnPage2()
+        var held: [@MainActor (NSImage?) -> Void] = []
+        wc.navigationSwipe.takeForwardPictureSnapshot = { _, _, completion in held.append(completion) }
+        let backItem = try XCTUnwrap(webView.backForwardList.backItem)
+
+        // WebKit asking twice from page 2 (a back refused, then another).
+        wc.pictureLeavingPageIfNeeded(in: webView, goingTo: backItem)
+        wc.pictureLeavingPageIfNeeded(in: webView, goingTo: backItem)
+        XCTAssertEqual(held.count, 2)
+        let newer = NSImage(size: NSSize(width: 8, height: 6))
+        held[1](newer)
+        held[0](NSImage(size: NSSize(width: 4, height: 3)))
+        XCTAssertTrue(wc.navigationSwipe.forwardPictures.value(for: child.id)?.image === newer)
+    }
+
+    /// A same-document back (a page 2 made by `pushState`): the web process
+    /// runs it before it gets to the snapshot, so a picture coming back with
+    /// the page already left could be of the first page. It is dropped: the
+    /// forward card is never a picture of the wrong page.
+    @MainActor func testASameDocumentBackNeverPicturesTheWrongPage() async throws {
+        let (wc, space) = try makeWindow()
+        let opener = wc.store.addTab(in: space)
+        let child = wc.store.addTab(in: space, parentID: opener.id)
+        wc.selectTab(id: child.id)
+        let webView = try XCTUnwrap(child.webView as? BrowserWebView)
+        let (one, _, _) = try await servePages()
+        try await load(one, in: child)
+        _ = try await webView.evaluateJavaScript("""
+            addEventListener('popstate', () => { document.body.style.background = '#ff0000' });
+            history.pushState({}, '', 'one-pushed'); document.body.style.background = '#00ff00'; 1
+            """)
+        try await waitUntil("the pushed page 2") { child.canGoBack && webView.backForwardList.backList.count == 1 }
+
+        var asked = 0
+        let take = wc.navigationSwipe.takeForwardPictureSnapshot
+        wc.navigationSwipe.takeForwardPictureSnapshot = { webView, configuration, completion in
+            asked += 1
+            take(webView, configuration, completion)
+        }
+        wc.goBack(nil)
+        try await waitUntil("back on the first page, the snapshot back") {
+            webView.url == one && child.canGoForward && asked == 1
+                && wc.navigationSwipe.forwardPictureRequests[child.id] == nil
+        }
+        // Measured on macOS 26.7: the snapshot comes back with the first page
+        // already current, so there is no picture (the plain card).
+        if let picture = wc.navigationSwipe.forwardPictures.value(for: child.id) {
+            let colour = try middleColour(of: picture.image)
+            XCTAssertGreaterThan(colour.greenComponent, 0.8, "page 2 as it was left, never page 1: \(colour)")
+            XCTAssertLessThan(colour.redComponent, 0.2, "\(colour)")
+        }
+    }
+
+    /// A pane resized since the picture was taken gets the plain card: the
+    /// window fallback, now that every back is pictured.
+    @MainActor func testAfterAResizeTheForwardCardIsPlain() async throws {
+        let (wc, _, child, webView, one, _, _) = try await childOnPage2()
+
+        wc.goBack(nil)
+        try await waitUntil("back on the first page, page 2 pictured") {
+            webView.url == one && !webView.isLoading && webView.navigationSwipe.mode == .ownSwipe(canGoForward: true)
+                && wc.navigationSwipe.forwardPictures.value(for: child.id) != nil
+        }
+        let window = try XCTUnwrap(wc.window)
+        var frame = window.frame
+        frame.size.width -= 120
+        window.setFrame(frame, display: true)
+        window.contentView?.layoutSubtreeIfNeeded()
         XCTAssertEqual(try pane(child, in: wc).hasForwardPicture, false)
 
         let tracker = ScriptedNavigationSwipeTracker()
@@ -725,6 +867,51 @@ nonisolated final class NavigationSwipeTests: XCTestCase {
         XCTAssertNotNil(wc.navigationSwipe.session)
         XCTAssertNil(wc.navigationSwipe.session?.overlay.forwardPage, "the blank card")
         tracker.cancel()
+    }
+
+    /// Another window taking the tab's web view over (the user switched to
+    /// it) takes the tab's forward picture with it: a forward swipe there
+    /// shows it, and none stays behind in the first window's cache (TASK-376).
+    @MainActor func testAPictureGoesWithTheWebViewToAnotherWindow() async throws {
+        let store = TabStore.shared
+        previousLastActiveSpaceIDs = (store.lastActiveSpaceID, ExtensionManager.shared.lastActiveSpaceID)
+        let profile = try XCTUnwrap(store.profiles.first { !$0.isIncognito })
+        let space = store.addSpace(name: "Swipe handoff", emoji: "S", colorHex: "007AFF", profileID: profile.id)
+        createdSpaceIDs.append(space.id)
+        let opener = store.addTab(in: space)
+        let child = store.addTab(in: space, parentID: opener.id)
+        func window(selecting tab: BrowserTab) -> BrowserWindowController {
+            let wc = BrowserWindowController(incognito: false)
+            extraControllers.append(wc)
+            wc.sidebarSplitView.autosaveName = nil
+            wc.setActiveSpace(id: space.id)
+            wc.selectTab(id: tab.id)
+            wc.showWindow(nil)
+            return wc
+        }
+        func becomeKey(_ wc: BrowserWindowController) {
+            wc.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: wc.window))
+        }
+        let first = window(selecting: child)
+        becomeKey(first)
+        let second = window(selecting: child)
+        becomeKey(first)
+        let webView = try XCTUnwrap(child.webView as? BrowserWebView)
+        XCTAssertTrue(webView.window === first.window)
+        let (one, two, _) = try await servePages()
+        try await load(one, in: child)
+        try await load(two, in: child)
+        try await waitUntil("the child can go back") { child.canGoBack }
+        first.goBack(nil)
+        try await waitUntil("back on the first page, pictured in the first window") {
+            webView.url == one && !webView.isLoading && first.navigationSwipe.forwardPictures.value(for: child.id) != nil
+        }
+
+        becomeKey(second)
+        XCTAssertTrue(webView.window === second.window, "the second window took the web view over")
+        XCTAssertNil(first.navigationSwipe.forwardPictures.value(for: child.id), "none left behind")
+        let picture = try XCTUnwrap(second.navigationSwipe.forwardPictures.value(for: child.id), "it went along")
+        XCTAssertTrue(picture.item === webView.backForwardList.forwardItem)
     }
 
     /// Following a link from the first page replaces the forward list: the

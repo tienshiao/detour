@@ -52,6 +52,16 @@ final class NavigationSwipeWindowState {
     /// Pictures of pages taken as a back navigation left them, per tab, for
     /// the forward swipe that returns to them (TASK-355).
     var forwardPictures = SwipePictureCache<ForwardPagePicture<WKBackForwardListItem>>()
+    /// The forward pictures asked for and not back yet, per tab; only the
+    /// latest request of a tab is kept (TASK-376).
+    var forwardPictureRequests: [UUID: ForwardPictureRequest<WKBackForwardListItem>] = [:]
+    var lastForwardPictureToken = 0
+    /// Takes a forward picture's snapshot. Tests hold the completion to make
+    /// it come back late (TASK-376).
+    var takeForwardPictureSnapshot: (WKWebView, WKSnapshotConfiguration, @escaping @MainActor (NSImage?) -> Void) -> Void
+        = { webView, configuration, completion in
+            webView.takeSnapshot(with: configuration) { image, _ in completion(image) }
+        }
     /// canGoBack, canGoForward and isLoading of every hosted pane.
     var paneSubscriptions = Set<AnyCancellable>()
     /// The Debug automation tool's tracker, for a swipe it began.
@@ -269,8 +279,10 @@ extension BrowserWindowController {
             Self.hasOpenChild(id, in: store)
         }
         // A closed (or pinned) tab's forward swipe never runs again.
-        navigationSwipe.forwardPictures.prune { [store] id in
-            store.spaces.contains { space in space.tabs.contains { $0.id == id } }
+        let normalTabIDs = Set(store.spaces.flatMap { $0.tabs.map(\.id) })
+        navigationSwipe.forwardPictures.prune { normalTabIDs.contains($0) }
+        navigationSwipe.forwardPictureRequests = navigationSwipe.forwardPictureRequests.filter { id, _ in
+            normalTabIDs.contains(id)
         }
         refreshNavigationSwipeModes()
     }
@@ -283,10 +295,6 @@ extension BrowserWindowController {
     @objc(_webViewDidBeginNavigationGesture:)
     func webViewDidBeginNavigationGesture(_ webView: WKWebView) {
         guard let webView = webView as? BrowserWebView else { return }
-        // Its direction is not known yet; the page it may leave is still the
-        // current one. A picture of a page the swipe did not leave (cancelled,
-        // or forward) is dropped as the gesture's snapshot goes.
-        if let tab = hostedPane(showing: webView) { pictureLeavingPageIfNeeded(tab) }
         webView.navigationSwipe.isWebKitGestureActive = true
         webView.navigationSwipe.webKitGestureGeneration += 1
         let generation = webView.navigationSwipe.webKitGestureGeneration
@@ -303,7 +311,6 @@ extension BrowserWindowController {
     func webViewDidRemoveNavigationGestureSnapshot(_ webView: WKWebView) {
         guard let webView = webView as? BrowserWebView, webView.navigationSwipe.isWebKitGestureActive else { return }
         webView.navigationSwipe.isWebKitGestureActive = false
-        dropForwardPictureNotLeft(by: webView)
         refreshNavigationSwipeModes()
     }
 
@@ -505,16 +512,7 @@ extension BrowserWindowController {
     /// reads it: a positive deltaX is back) on a web view in the own mode.
     /// True when it acted.
     func handleDiscreteNavigationSwipe(_ event: NSEvent, on webView: BrowserWebView) -> Bool {
-        guard webView.navigationSwipe.mode.isOwnSwipe else {
-            // WebKit's gesture: its `swipeWithEvent:` goes back at once, so the
-            // page it leaves is pictured first.
-            if event.deltaX > 0, webView.allowsBackForwardNavigationGestures, webView.canGoBack,
-               let tab = hostedPane(showing: webView) {
-                pictureLeavingPageIfNeeded(tab)
-            }
-            return false
-        }
-        guard navigationSwipe.session == nil, event.deltaX != 0,
+        guard webView.navigationSwipe.mode.isOwnSwipe, navigationSwipe.session == nil, event.deltaX != 0,
               let tab = hostedPane(showing: webView) else { return false }
         let direction: NavigationSwipeDirection = event.deltaX > 0 ? .back : .forward
         let outcome = NavigationSwipeRules.outcome(of: direction, for: navigationSwipeFacts(for: tab),
@@ -598,32 +596,65 @@ extension BrowserWindowController {
         return []
     }
 
-    // MARK: Pictures of pages left going back (TASK-355)
+    // MARK: Pictures of pages left going back (TASK-355, TASK-376)
 
-    /// Pictures `tab`'s page as a back navigation is about to leave it, when
-    /// the back lands on its first page and Detour's own swipe will then run
-    /// forward to it (`NavigationSwipeRules.picturesPageLeftGoingBack`):
+    // WebKit asks the navigation delegate before every move in a web view's
+    // history, wherever it comes from: the Back button, Cmd+[ and the mouse's
+    // back button, a `go(to:)`, WebKit's own swipe once it completes (not one
+    // that is cancelled or goes forward), a three-finger swipe, the page's own
+    // `history.back()`. The web process waits for the answer before it goes
+    // ahead, so this one place pictures the page being left (TASK-376).
+
+    // `WKNavigationDelegate`'s `webView(_:shouldGoTo:willUseInstantBack:completionHandler:)`
+    // (macOS 26) is in BrowserWindowController+Navigation.swift: a witness
+    // must sit in the extension that declares the conformance.
+
+    /// `WKNavigationDelegatePrivate`, for macOS 15: WebKit calls it only when
+    /// the delegate answers neither `shouldGoToBackForwardListItem` variant,
+    /// so never on macOS 26, where the public method is answered.
+    @objc(_webView:willGoToBackForwardListItem:inPageCache:)
+    func webView(_ webView: WKWebView, willGoTo backForwardListItem: WKBackForwardListItem, inPageCache: Bool) {
+        pictureLeavingPageIfNeeded(in: webView, goingTo: backForwardListItem)
+    }
+
+    /// Pictures the page `webView` is about to leave for `target`, when that
+    /// is a back to the first page of a hosted child and Detour's own swipe
+    /// will then run forward to it (`NavigationSwipeRules.picturesPageLeftGoingBack`):
     /// WebKit's own picture of that page is in a store Detour cannot read.
-    /// Call it before the navigation starts: the snapshot request reaches the
-    /// page's process ahead of the navigation, so the page being left is what
-    /// gets painted. At one pixel per point, as the opener pictures.
-    func pictureLeavingPageIfNeeded(_ tab: BrowserTab) {
-        guard let webView = tab.webView, webView.isDescendant(of: contentContainerView),
+    /// The snapshot request reaches the page's process ahead of the go-ahead,
+    /// so the page being left is what gets painted. At one pixel per point, as
+    /// the opener pictures.
+    func pictureLeavingPageIfNeeded(in webView: WKWebView, goingTo target: WKBackForwardListItem) {
+        let list = webView.backForwardList
+        guard let tab = hostedPane(showing: webView), target === list.backItem,
               webView.bounds.width > 0, webView.bounds.height > 0,
-              let item = webView.backForwardList.currentItem,
-              NavigationSwipeRules.picturesPageLeftGoingBack(
-                navigationSwipeFacts(for: tab), backListCount: webView.backForwardList.backList.count) else { return }
+              let item = list.currentItem,
+              NavigationSwipeRules.picturesPageLeftGoingBack(navigationSwipeFacts(for: tab),
+                                                             backListCount: list.backList.count) else { return }
+        // A new back from the page: a picture of it taken before is outdated.
+        navigationSwipe.forwardPictures.remove([tab.id])
+        navigationSwipe.lastForwardPictureToken += 1
+        let token = navigationSwipe.lastForwardPictureToken
+        navigationSwipe.forwardPictureRequests[tab.id] = ForwardPictureRequest(token: token, item: item)
+        let tabID = tab.id
         let size = webView.bounds.size
         let scale = window?.backingScaleFactor ?? 2
         let config = WKSnapshotConfiguration()
         // Points; the image comes back at the backing scale.
         config.snapshotWidth = NSNumber(value: Double(size.width / scale))
-        webView.takeSnapshot(with: config) { [weak self, weak tab, weak webView] image, _ in
-            guard let self, let tab, let webView, tab.webView === webView, let image else { return }
-            var picture = ForwardPagePicture(item: item, image: image, size: size)
-            // Already gone elsewhere (a fast navigation): nothing to keep.
-            guard picture.stillApplies(currentItem: webView.backForwardList.currentItem,
-                                       forwardItem: webView.backForwardList.forwardItem) else { return }
+        navigationSwipe.takeForwardPictureSnapshot(webView, config) { [weak self, weak tab, weak webView] image in
+            // A later request for the tab, the history having moved on
+            // meanwhile (`reviseForwardPicture`) or another window taking the
+            // web view over took this one's place.
+            guard let self, let request = self.navigationSwipe.forwardPictureRequests[tabID],
+                  request.token == token else { return }
+            self.navigationSwipe.forwardPictureRequests[tabID] = nil
+            guard let tab, let webView, tab.webView === webView, let image else { return }
+            guard let picture = request.picture(image: image, size: size,
+                                                currentItem: webView.backForwardList.currentItem) else {
+                log.info("A picture of the page left going back came back too late")
+                return
+            }
             self.navigationSwipe.forwardPictures.store(picture, for: tab.id)
             log.info("Pictured the page left going back")
         }
@@ -636,6 +667,24 @@ extension BrowserWindowController {
         navigationSwipe.forwardPictures.revise(tab.id) { picture in
             picture.stillApplies(currentItem: list?.currentItem, forwardItem: list?.forwardItem)
         }
+        if var request = navigationSwipe.forwardPictureRequests[tab.id] {
+            let applies = request.stillApplies(currentItem: list?.currentItem, forwardItem: list?.forwardItem)
+            navigationSwipe.forwardPictureRequests[tab.id] = applies ? request : nil
+        }
+    }
+
+    /// Another window claimed `tabIDs`' web views: this window's pictures of
+    /// their pages left going back go with them, so a forward swipe there
+    /// shows them and none is left behind here (TASK-376). A picture still in
+    /// flight is let go.
+    func handOverForwardPictures(of tabIDs: [UUID], to claimant: BrowserWindowController) {
+        for id in tabIDs {
+            if let picture = navigationSwipe.forwardPictures.value(for: id) {
+                claimant.navigationSwipe.forwardPictures.store(picture, for: id)
+            }
+            navigationSwipe.forwardPictureRequests[id] = nil
+        }
+        navigationSwipe.forwardPictures.remove(tabIDs)
     }
 
     /// The picture a forward swipe on `tab` slides in, at its web view's frame
@@ -655,18 +704,6 @@ extension BrowserWindowController {
               picture.shows(forwardItem: webView.backForwardList.forwardItem, webViewSize: webView.bounds.size)
         else { return nil }
         return picture
-    }
-
-    /// WebKit's gesture is over: a picture it took at its begin of a page it
-    /// did not leave (cancelled, or a forward swipe that has not committed)
-    /// goes now, so a later back the window does not see (`history.back()`)
-    /// cannot bring back a picture taken long before.
-    private func dropForwardPictureNotLeft(by webView: WKWebView) {
-        guard let tab = hostedPane(showing: webView) else { return }
-        let current = webView.backForwardList.currentItem
-        navigationSwipe.forwardPictures.revise(tab.id) { picture in
-            picture.hasBeenLeft || picture.item !== current
-        }
     }
 
     // MARK: State, for tests and the Debug tool

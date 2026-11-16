@@ -4,7 +4,7 @@ title: Back swipe to the opener
 description: "On a tab opened from another tab, with no back history, the two-finger back swipe does what the Back button does — closes the tab and selects its opener — through Detour's own swipe (WebKit's needs a back item): when a pane's web view is in that mode, how a swipe starts from the scrolls the page did not use, the veneer that shows during it (the opener's picture going back, a picture of the page left going back on the forward swipe), the decisions per case (splits, Peek, pinned tabs, Quick Detour), and what is verified only by hand."
 tags: [tabs, navigation, gestures, webkit, split]
 status: draft
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T09:55:23Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T18:40:00Z }
 sources:
   - id: rules
     resource: ../../Detour/Browser/Window/NavigationSwipe.swift
@@ -36,6 +36,9 @@ sources:
   - id: task-355
     resource: backlog:TASK-355
     title: "Back swipe: swiping forward shows a picture of the page being returned to, not a blank card"
+  - id: task-376
+    resource: backlog:TASK-376
+    title: "Back swipe: forward-picture races and gaps (capture token, gesture-begin capture, cross-window, entry points)"
   - id: task-358
     resource: backlog:TASK-358
     title: "Tab opener: a pinned or favourite tab's opener is lost at relaunch, and the readers disagree on which openers count"
@@ -174,43 +177,59 @@ it lands on that first page (`NavigationSwipeRules.picturesPageLeftGoingBack`:
 a normal tab with an opener whose back list has exactly one item). Everywhere
 else WebKit's own swipe shows WebKit's own picture.[^task-355]
 
-- **When it is taken**: just before the navigation starts, while the page is
-  on screen: in the Back button's core before `goBack()` (the sidebar button,
-  Navigate › Back / Cmd+[, a mouse's back button), at
-  `_webViewDidBeginNavigationGesture:` (WebKit's own swipe back from page 2;
-  its direction is not known yet: a forward swipe's picture goes at the next
-  history change, a cancelled one's when WebKit removes its swipe snapshot
-  with the page still current), and on a three-finger back swipe that
-  WebKit handles (its `swipeWithEvent:` goes back at once). `takeSnapshot`
-  at one pixel per point, as the opener's: the request reaches the page's
-  process ahead of the navigation, so the page being left is what is painted
-  (checked by colour in a test, file pages in one process). A back the
-  window does not start (the page's `history.back()`, a history jump) takes
-  none.
+- **When it is taken**: in one place, the navigation delegate's
+  `webView(_:shouldGoTo:willUseInstantBack:completionHandler:)` (macOS 26;
+  on macOS 15 the private `_webView:willGoToBackForwardListItem:inPageCache:`,
+  which WebKit calls only when neither "should go" variant is answered).
+  WebKit asks it before every move in the history, wherever the move comes
+  from: the Back button, Navigate › Back / Cmd+[, a mouse's back button, a
+  `go(to:)` (a future back-history menu), WebKit's own swipe once it
+  completes (a cancelled or forward swipe never asks), a three-finger swipe,
+  and the page's own `history.back()`. The web process waits for the answer
+  before it goes ahead, so a `takeSnapshot` issued there, before answering,
+  paints the page being left (checked by colour for the Back button and for
+  `history.back()`, in tests and in the running app). Only a move to the
+  back item of a first-page-bound back is pictured. `takeSnapshot` at one
+  pixel per point, as the opener's.[^task-376]
+- **A request in flight** (`ForwardPictureRequest`, TASK-376): each capture
+  gets a token, and only a tab's latest counts; requests are kept apart from
+  the pictures, so one in flight pushes nothing out of the cache. Issuing one
+  drops the tab's older picture. While it is in flight it follows the
+  history as a kept picture does. It makes a picture only if it comes back
+  with its page still current and never left meanwhile: one that comes back
+  after the user went back and forward again is of a page already returned
+  to (before TASK-376 it was kept unspent, so a later back could show it),
+  and one that comes back after its page was left may show the next page.
+  That is what a same-document back does (a page 2 made by `pushState`):
+  WebKit asks synchronously, and the web process runs the back before it
+  gets to the snapshot (measured: it came back with the first page current).
+  Such a back gets the plain card, as before TASK-355 (accepted: it is the
+  safe side of the same rule; the Back button's own early capture, which did
+  picture it, was one of the per-entry hooks this replaced).
 - **What it is kept with**: the `WKBackForwardListItem` it is of (WebKit
   keeps one wrapper per item, so `===` holds) and the web view's size, in a
   per-window `SwipePictureCache` of 4 keyed by tab id (the opener pictures'
   LRU, generalised). In memory only.
 - **When it goes** (`ForwardPagePicture.stillApplies`, on every hosted
   pane's history or loading change and at a forward swipe's start): it stays
-  while its item is still current (the back has not committed; a
-  provisional load leaves `currentItem` alone) and then while it is the
-  forward item. A link followed from the first page (a new forward list), a
-  jump elsewhere, or returning to the pictured page (it is spent) drops it,
-  as does closing or pinning the tab (store changes). Should WebKit remove
-  its swipe snapshot before a slow back commits, the picture goes too (the
-  plain card then). Known gaps: the capture has no request token, so one
-  that comes back after the user already returned to the page is kept
-  unspent; and a tab moved to another window leaves its picture in the old
-  window's cache until it is evicted or the tab closes.
+  while its item is still current (the back has not gone ahead yet) and then
+  while it is the forward item. A link followed from the first page (a new
+  forward list), a jump elsewhere, or returning to the pictured page (it is
+  spent) drops it, as does closing or pinning the tab (store changes).
+- **Another window**: when another window takes the tab's web view over
+  (`webViewOwnershipChanged`), the tab's picture moves to that window's cache
+  and a request in flight is let go, so none is left behind and a forward
+  swipe there shows it (Chosen by Claude, not yet confirmed by the user:
+  handed over; the other option was to drop it).[^task-376]
 - **When it shows**: only when its item is the web view's forward item and
   the web view's size still matches within a point; a pane resized since
   would stretch it, so the plain card then (the user's decision,
   2026-11-16; the other option was to draw it scaled). It sits at the web view's frame in the pane, so a
   dev toolbar beside the page stays plain.
-- **Fallback, the plain card**: after a relaunch, after a back the window
-  did not start, after a navigation changed the forward list, in another
-  window than the one the back happened in, or with a resized pane.
+- **Fallback, the plain card**: after a relaunch, after a same-document
+  back, after a navigation changed the forward list, or with a resized pane.
+  Before TASK-376 also after the page's own `history.back()` and in another
+  window than the one the back happened in.
 
 # Decisions per case
 
@@ -256,31 +275,40 @@ else WebKit's own swipe shows WebKit's own picture.[^task-355]
 and completion), the pending tracker (threshold, began-after-arming,
 vertical, momentum, reversal, forward), the momentum filter, the picture
 cache and geometry, the forward picture's rules (when one is taken, how
-long it lasts, a new forward list or a jump, a resized pane); with real
-`file://` history items in a window: Back from page 2 pictures page 2 (its
-colour sampled) and the forward card carries it, then spends it; WebKit's
-swipe callback pictures it too and a cancelled one leaves none; a `goBack()` the window did not start
-leaves the plain card; a navigation from the first page drops it; a tab
+long it lasts, a new forward list or a jump, a resized pane, a request in
+flight); with real history items from a loopback server in a window: Back
+from page 2 pictures page 2 (its colour sampled) and the forward card
+carries it, then spends it; the page's `history.back()` pictures it too;
+WebKit's swipe begun and cancelled takes none; only a back to the first
+page asks; with the snapshot held (`takeForwardPictureSnapshot`), a picture
+coming back after the page was returned to is dropped and an older one never
+replaces a newer one; a same-document back never pictures the wrong page;
+the picture moves with the web view to another window; a resized window
+gives the plain card; a navigation from the first page drops it; a tab
 with no opener takes none; and in a window (Private, scripted tracker): the mode on
 a child, none without an opener, off when the opener closes or the tab is
 left, off during a load, held until WebKit's swipe ends, a completed swipe
 closing to the opener, a cancelled one leaving the tab, a navigation
 cancelling it, an unfocused split pane closing, a split child returning to
 its partner, and the Back button's result. `WebKitDelegateReachabilityTests`
-checks the three private callbacks.
+checks the private callbacks and the public `shouldGoTo` method (its Swift
+signature first did not match the SDK's, which only that test caught).
 
 At runtime, `docs/harness/task325-swipe-checks.py` drives a Debug build
 through the endpoint's Debug-only `navigation_swipe` tool (state; begin at a
 progress with the veneer showing; finish or spring back), which runs a
 swipe's completion through the same code with a scripted tracker; it also
 samples the forward card's colour from a screenshot (page 2's picture after
-Back, the plain card after the page's `history.back()`). Synthetic events
+Back and after the page's `history.back()`, the plain card after a window
+resize). Synthetic events
 cannot drive `trackSwipeEvent`, so the real trackpad gesture (follow,
 spring, momentum, the 15 pt start) is checked by hand only.[^checks] The
 user ran that hand check on a real trackpad on 2026-11-15 and reported it
-works.[^task-325] The forward picture after WebKit's own swipe back is
-likewise checked only by calling `_webViewDidBeginNavigationGesture:`
-directly, not with a real gesture.[^task-355]
+works.[^task-325] The forward picture after WebKit's own swipe back rests
+on WebKit asking the delegate at the swipe's end (`willEndSwipeGesture` →
+`goToBackForwardItem`, source reading) and on the same path checked for
+`goBack()` and `history.back()`; a real trackpad swipe back then forward is
+owed by hand.[^task-376]
 
 # Related
 
@@ -296,3 +324,4 @@ directly, not with a real gesture.[^task-355]
 [^checks]: TASK-325 runtime checks through the automation endpoint
 [^task-332]: Tabs: Reopen Closed Tab restores a child tab's link to its opener
 [^task-355]: Back swipe: swiping forward shows a picture of the page being returned to, not a blank card
+[^task-376]: Back swipe: forward-picture races and gaps (capture token, gesture-begin capture, cross-window, entry points)

@@ -2380,14 +2380,16 @@ class BrowserWindowController: NSWindowController {
     // MARK: - Window Events
 
     @objc private func handleWebViewOwnershipChanged(_ notification: Notification) {
-        guard let sender = notification.object as? BrowserWindowController, sender !== self,
-              let tab = selectedTab else { return }
+        guard let sender = notification.object as? BrowserWindowController, sender !== self else { return }
+        let claimedIDs = notification.userInfo?["tabIDs"] as? [UUID]
+            ?? (notification.userInfo?["tabID"] as? UUID).map { [$0] } ?? []
+        // Whether or not this window shows the tab now (TASK-376).
+        handOverForwardPictures(of: claimedIDs, to: sender)
+        guard let tab = selectedTab else { return }
         // Another window claiming any pane of our selected tab's group takes
         // the whole hosted view with it — two windows showing the same split
         // may focus different members, so match on group membership, not the
         // single focused tabID.
-        let claimedIDs = notification.userInfo?["tabIDs"] as? [UUID]
-            ?? (notification.userInfo?["tabID"] as? UUID).map { [$0] } ?? []
         guard !Set(splitMembers(of: tab).map(\.id)).isDisjoint(with: claimedIDs) else { return }
 
         // The sender has already reparented the container by the time this
@@ -2580,9 +2582,9 @@ class BrowserWindowController: NSWindowController {
     func navigateBackOrCloseChildTab(_ tab: BrowserTab) {
         if tab.canGoBack {
             ensureOwnsWebView()
-            // Before the navigation: a back to a child's first page pictures
-            // the page it leaves, for the forward swipe (TASK-355).
-            pictureLeavingPageIfNeeded(tab)
+            // A back to a child's first page pictures the page it leaves, for
+            // the forward swipe, as WebKit asks before it goes (TASK-355,
+            // TASK-376: `pictureLeavingPageIfNeeded(in:goingTo:)`).
             tab.webView?.goBack()
         } else if let parent = parentTab(for: tab) {
             guard let space = activeSpace else { return }

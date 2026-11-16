@@ -391,6 +391,12 @@ struct ForwardPagePicture<Item: AnyObject> {
     /// the forward list, a jump elsewhere in the history moves it, and a return
     /// to the pictured page uses it up: each drops it.
     mutating func stillApplies(currentItem: Item?, forwardItem: Item?) -> Bool {
+        Self.stillApplies(item, hasBeenLeft: &hasBeenLeft, currentItem: currentItem, forwardItem: forwardItem)
+    }
+
+    /// The rule above, shared with the request for a picture still in flight.
+    fileprivate static func stillApplies(_ item: Item, hasBeenLeft: inout Bool,
+                                         currentItem: Item?, forwardItem: Item?) -> Bool {
         if currentItem === item { return !hasBeenLeft }
         hasBeenLeft = true
         return forwardItem === item
@@ -402,6 +408,40 @@ struct ForwardPagePicture<Item: AnyObject> {
     /// the plain card then.
     func shows(forwardItem: Item?, webViewSize: CGSize) -> Bool {
         forwardItem === item && abs(size.width - webViewSize.width) <= 1 && abs(size.height - webViewSize.height) <= 1
+    }
+}
+
+/// A picture of a page left going back that has been asked for and has not
+/// come back yet (TASK-376): which request it is, since only a tab's latest
+/// counts, and where its page stands in the history meanwhile. Kept apart from
+/// the pictures, so one in flight cannot push another tab's picture out.
+struct ForwardPictureRequest<Item: AnyObject> {
+    let token: Int
+    let item: Item
+    private(set) var hasBeenLeft = false
+
+    init(token: Int, item: Item) {
+        self.token = token
+        self.item = item
+    }
+
+    /// `ForwardPagePicture.stillApplies`: the history moving on while the
+    /// snapshot is in flight is followed as for a picture already kept.
+    mutating func stillApplies(currentItem: Item?, forwardItem: Item?) -> Bool {
+        ForwardPagePicture<Item>.stillApplies(item, hasBeenLeft: &hasBeenLeft, currentItem: currentItem, forwardItem: forwardItem)
+    }
+
+    /// The picture its snapshot makes on coming back, with `currentItem` the
+    /// web view's current item then: only while its page is still the current
+    /// one and has not been left meanwhile. The snapshot is asked for just
+    /// before the back goes ahead, so it normally comes back first. One that
+    /// comes back after its page was left may have painted the page after it
+    /// (the web process runs a same-document back before it gets to the
+    /// snapshot); one whose page was left and returned to is of a page the
+    /// user has already gone forward to again.
+    func picture(image: NSImage, size: CGSize, currentItem: Item?) -> ForwardPagePicture<Item>? {
+        guard currentItem === item, !hasBeenLeft else { return nil }
+        return ForwardPagePicture(item: item, image: image, size: size)
     }
 }
 

@@ -66,6 +66,8 @@ nonisolated final class WebKitDelegateReachabilityTests: XCTestCase {
                         "webView:didFinishNavigation:",
                         "webView:didReceiveAuthenticationChallenge:completionHandler:",
                         "webViewWebContentProcessDidTerminate:",
+                        // The forward picture's capture (TASK-376), macOS 26.
+                        "webView:shouldGoToBackForwardListItem:willUseInstantBack:completionHandler:",
                     ]),
         Expectation(cls: BrowserWindowController.self, protocolName: "WKUIDelegate",
                     selectors: windowUIDelegate),
@@ -153,10 +155,14 @@ nonisolated final class WebKitDelegateReachabilityTests: XCTestCase {
     /// (`WKUIDelegatePrivate`), and WebKit's own swipe's begin and snapshot
     /// removal (`WKNavigationDelegatePrivate`), which hold the own mode off
     /// while WebKit's swipe runs. Without them the swipe never starts, or a
-    /// swipe back to the first page could also close the tab.
+    /// swipe back to the first page could also close the tab. The history
+    /// move about to happen (`WKNavigationDelegatePrivate`, macOS 15; the
+    /// public method is checked above) pictures the page a back leaves
+    /// (TASK-376).
     @MainActor func testTheBrowserWindowTakesTheBackSwipeCallbacks() {
         for name in ["_webView:didNotHandleWheelEvent:", "_webViewDidBeginNavigationGesture:",
-                     "_webViewDidRemoveNavigationGestureSnapshot:"] {
+                     "_webViewDidRemoveNavigationGestureSnapshot:",
+                     "_webView:willGoToBackForwardListItem:inPageCache:"] {
             XCTAssertTrue(BrowserWindowController.instancesRespond(to: NSSelectorFromString(name)),
                           "BrowserWindowController does not answer \(name)")
         }

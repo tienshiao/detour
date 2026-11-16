@@ -17,8 +17,9 @@ scripted tracker in place of the real one:
   4. A page 2 gives the gesture back to WebKit; Back to page 1 brings the own
      swipe back with forward (edges 10); a forward swipe goes forward.
      TASK-355: Back pictured page 2 as it left it, and the forward swipe's
-     card carries that picture (its colour sampled from a screenshot); after
-     the page's own history.back() there is no picture and the card is plain.
+     card carries that picture (its colour sampled from a screenshot).
+     TASK-376: the page's own history.back() pictures page 2 too; after the
+     window is resized the card is plain.
   5. A completed back swipe closes it and selects the opener; Reopen Closed
      Tab brings it back.
   6. The sidebar's Back button still closes a child to its opener.
@@ -316,14 +317,32 @@ def main():
         # Committed (it has a back item again) before Back is pressed.
         went = went and wait(lambda: (lambda q: q if q and q["can_go_back"] and not q["own_swipe"] else None)(pane(child)))
         check("A forward swipe goes forward", began["began"] is True and bool(went), selected().get("selected_tab_url"))
-        # The page's own history.back(): no picture, the plain card.
+        # The page's own history.back(): WebKit asks the window before it
+        # goes back, so page 2 is pictured too (TASK-376; the plain card
+        # before it).
         call("evaluate_js", context=ctx(child), expression="history.back()")
         wait_selected_url("/child.html")
-        p = wait(lambda: (lambda q: q if q and q["own_swipe_forward"] else None)(pane(child)))
+        p = wait(lambda: (lambda q: q if q and q["own_swipe_forward"] and q["forward_picture"] else None)(pane(child)),
+                 timeout=5) or pane(child)
+        began = swipe("begin", direction="forward", progress=0.5)
+        time.sleep(0.3)
+        rgb = png_pixel(shoot("4-forward-swipe-after-history-back"), 0.85, 0.6)
+        check("The page's own history.back() pictures page 2 too (TASK-376)",
+              bool(p) and p["forward_picture"] and began.get("forward_picture") is True and is_page2_green(rgb),
+              f"pane {p}, card picture {began.get('forward_picture')}, colour {rgb}")
+        swipe("finish", complete=False)
+        time.sleep(0.4)
+        # A resized pane: the picture would stretch, so the plain card.
+        frame = selected()["frame"]
+        screen = call("list_windows")["windows"][0]["screen_bounds"]
+        call("set_window_frame", window_id=1, x=screen["x"], y=screen["y"],
+             width=frame["width"] - 120, height=frame["height"])
+        time.sleep(0.5)
+        p = pane(child)
         began = swipe("begin", direction="forward", progress=0.5)
         time.sleep(0.3)
         rgb = png_pixel(shoot("4-forward-swipe-plain-card"), 0.85, 0.6)
-        check("Without a picture the forward card is plain (TASK-355)",
+        check("After a resize the forward card is plain (TASK-355)",
               bool(p) and not p["forward_picture"] and began["began"] is True
               and began.get("forward_picture") is False and not is_page2_green(rgb),
               f"pane {p}, card picture {began.get('forward_picture')}, colour {rgb}")

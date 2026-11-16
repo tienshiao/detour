@@ -30,6 +30,16 @@ extension BrowserWindowController: WKNavigationDelegate {
         return (policy, preferences)
     }
 
+    /// Every move in the history asks this first, and the web process waits
+    /// for the answer: the forward swipe's picture of the page a back leaves
+    /// is taken here (TASK-376, `pictureLeavingPageIfNeeded(in:goingTo:)`).
+    @available(macOS 26.0, *)
+    func webView(_ webView: WKWebView, shouldGoTo backForwardListItem: WKBackForwardListItem,
+                 willUseInstantBack: Bool, completionHandler: @escaping (Bool) -> Void) {
+        pictureLeavingPageIfNeeded(in: webView, goingTo: backForwardListItem)
+        completionHandler(true)
+    }
+
     private func decidePolicy(for navigationAction: WKNavigationAction,
                               in webView: WKWebView) async -> WKNavigationActionPolicy {
         // Before everything else, so a refused internal URL is not Cmd+clicked
