@@ -3,11 +3,11 @@ id: TASK-372
 title: >-
   Error page: a failed in-page navigation names the previous page's URL, so
   Reload goes back instead of retrying
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:54:00Z'
-updated_date: '2026-11-16T10:32:00Z'
+updated_date: '2026-11-16T15:57:00Z'
 labels:
   - navigation
   - error-pages
@@ -27,18 +27,19 @@ Found 2026-11-15/16 during the two-lane batch (TASK-349..358, 228.12/228.13), TA
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The error page shows and retries the URL that failed
-- [ ] #2 Tests cover a script navigation, a link click and tabs.update failing
+- [x] #1 The error page names the URL that failed, including a refused extension page whose error names no URL (script, link, tabs.update, window.open child, background tab); a refused extension page never becomes the tab's url and Reload acts on the page the tab was on (the user's decision, 2026-11-16)
+- [x] #2 Tests cover a script navigation, a link click and tabs.update failing (network and refused extension page), a background tab, a window.open child and Reload
 <!-- AC:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-1. Confirm with failing tests in NavigationFailureURLTests: script, link, tabs.update to a refused loopback port and to a refused webkit-extension:// page.
-2. Find which failures name the previous page and why (log didStart/didFail URLs and the error's userInfo).
-3. Fix in BrowserTab.didFailProvisionalNavigation without breaking the typed/redirect/reload cases.
-4. Check what adopting the failing URL grants (wakeConfiguration rehosts a tab whose URL is an extension page) before committing the fix.
-5. Wiki (error-pages, wkwebview-delegate-order, extension-pages), Backlog notes, commit on lane-b.
+User's decision 2026-11-16, option (c) 'show it, don't adopt', on top of TASK-381 (595434a5):
+1. Apply the parked provisionalURL fallback (record webView.url at didStartProvisionalNavigation, clear on commit, use when the error has no failing URL).
+2. lastAttemptedURL (Reload's target) = the failed URL when mayAdopt, else the tab's url; the error page names the failed URL either way. A window.open child (url nil) keeps reload()'s fallback to the error page's URL, refused again.
+3. Tests: five refused-extension cases with tab.url unchanged, Reload loads the page, window.open child; drop the probes; Reload waits for the next document instead of 300 ms.
+4. Run NavigationFailureURLTests, ExtensionPageProvenanceTests, BrowserTabWakeTests, BrowserTabUnclaimedNavigationTests, PageOpenedWindowTests, CommittedLoadFailureTests.
+5. /verify through the endpoint (docs/harness/task372-endpoint-checks.py); wiki; /code-review; commit.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -55,4 +56,18 @@ Investigation (2026-11-16, lane-b):
 - AC #1 not checked (only refused extension pages reproduce, and their fix waits for the decision). AC #2 not checked: script/link/tabs.update are covered for network failures on main; the refused-extension-page versions live in the parked patch.
 
 /code-review medium --fix (2026-11-16): 7 findings. Fixed: task status wording removed from wiki/features/error-pages.md. Recorded in the patch header: no redirect update of provisionalURL, probes to drop, the Reload test's fixed 300 ms wait (shared with the existing TASK-170 test). Left for the lead: the wake hole on main (probe A) deserves its own task; the hand-copied extension/profile tearDown follows the existing suites' pattern.
+
+Decision (the user, 2026-11-16, relayed by the lead): option (c) 'show it, don't adopt' — the error page names the refused extension URL; the tab's url and Reload stay on the page the tab was on. Built on TASK-381 (595434a5: mayAdopt gate, servedExtensionOriginHost, currentPageURL).
+Implementation: BrowserTab.provisionalURL = webView.url at didStartProvisionalNavigation (blank/error scheme/internal excluded), cleared on commit and in releaseWebView; didFailProvisionalNavigation names key ?? provisionalURL ?? lastAttemptedURL; lastAttemptedURL (Reload's target) = that URL when mayAdopt, else the tab's url. TASK-381 had Reload retry the refused URL; nothing in it relied on that (ExtensionPageProvenanceTests 7/7 unchanged).
+Chosen by Claude (not yet confirmed by the user): a window.open child has no page of its own (url nil), so its Reload keeps reload()'s fallback and retries the error page's URL, refused again; alternative: Reload does nothing there (one guard in reload()).
+Tests: NavigationFailureURLTests 14 (6 new: script, link, tabs.update, background tab, Reload loads the page, window.open child; probes dropped; both Reload tests now mark the document and wait for the next one instead of sleeping 300 ms). Without the BrowserTab change 5 of them fail (the window.open case passes on 381's code). Affected suites 44/44 after the review fixes: NavigationFailureURLTests 14, ExtensionPageProvenanceTests 7, BrowserTabWakeTests 11, BrowserTabUnclaimedNavigationTests 3, PageOpenedWindowTests 7... (per-suite counts 3/7/2/7/14/11 as xcodebuild printed them).
+Runtime (/verify, DetourVerify-372, build of this tree before the review's two-line follow-up): docs/harness/task372-endpoint-checks.py 10/10 — trusted clicks on a loopback page: dead-port link -> error page and list_tabs url name the dead URL, Cmd+R retries it; link to an installed extension's options.html -> error page names it (screenshot: 'Looks like you took a Detour.' + the webkit-extension URL), url stays the page, Cmd+R loads the page ('Links'); window.open of options.html -> child error page names it, url empty, Cmd+R refused again. Defaults keys and the data dir removed.
+/code-review medium --fix: 6 findings; fixed: stale load(_:) comment, provisionalURL cleared in releaseWebView, parked patch removed, harness script cleanups. Not fixed: provisionalURL is not updated on a server redirect (a redirect to a refused extension page would name the pre-redirect URL; needs didReceiveServerRedirect in both delegates + reachability rows). The reviewer asked about a typed refused extension URL: typed webkit-extension:// is a search (AddressInputClassifier), so load(_:) only sees page-chosen ones (Open Link in New Tab, routed links), which the decision covers.
+Not verified: a relaunch with this change (TASK-381's check covers url/extensionID persistence, unchanged here); Quick Detour (same BrowserTab method).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A failed navigation whose error names no URL now gets an error page naming the URL it was loading: BrowserTab records webView.url at didStartProvisionalNavigation and falls back to it. In practice that is a refused webkit-extension:// main frame (-1008, userInfo nil); network failures already named their target (TASK-170). Per the user's decision (option c), a refused extension page is named but never adopted: tab.url stays on the page the tab was on (TASK-381) and Reload loads that page; a window.open child with no page keeps no URL and its Reload is refused again (Claude's choice). Tests: 6 new in NavigationFailureURLTests (5 fail without the change), Reload tests wait for the next document; 44/44 across the affected suites; runtime 10/10 through the endpoint. Follow-up candidate: provisionalURL is not updated on a server redirect.
+<!-- SECTION:FINAL_SUMMARY:END -->

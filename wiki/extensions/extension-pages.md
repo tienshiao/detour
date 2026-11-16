@@ -4,7 +4,7 @@ title: Extension pages in tabs
 description: A tab showing a webkit-extension:// page is tied to one loaded context's origin, which dies on every context reload and every relaunch; how such tabs, pinned tiles, favourites and closed-tab records are rehomed, restored, refused or closed, and why a Quick Detour or quarantine window cannot show one.
 tags: [extensions, tabs, persistence, pinned, favorites]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T12:00:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T16:05:00Z }
 sources:
   - id: page-url
     resource: ../../Detour/Extensions/Runtime/ExtensionPageURL.swift
@@ -187,17 +187,20 @@ for:
   rehomed the tab onto the new origin.
 
 A page navigating *itself* was safe on main, because WebKit sets the web view
-back to the committed page before the failure. The parked TASK-372 fix would
-have widened the hole to that case too.
+back to the committed page before the failure. TASK-372's fix, which names
+the refused URL in that case, landed after this rule, so it does not widen
+the hole.
 
-**What the tab shows instead** (Chosen by Claude, not yet confirmed by the
-user):
+**What the tab shows instead** (the user's decision, 2026-11-16, TASK-372):
 
-- The error page still names the refused URL, and Reload retries it.
-  `lastAttemptedURL` keeps it, and the retry is refused again, because the
-  web view's configuration is unchanged.
-- `url` stays on the page the tab was on. A `window.open` child has no such
-  page, so its `url` stays nil, and it is saved and restored that way.
+- The error page names the refused URL, including when a page navigated
+  itself (the error names no URL; the tab takes it from the navigation's
+  start).
+- `url` stays on the page the tab was on, and Reload loads that page. A
+  `window.open` child has no such page: its `url` stays nil, it is saved and
+  restored that way, and its Reload tries the refused URL again, which the
+  unchanged configuration refuses again. See
+  [error pages](../features/error-pages.md#who-decides).
 
 **Rejected.**
 

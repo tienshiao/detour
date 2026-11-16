@@ -133,7 +133,8 @@ Other facts from the same runs:
   page again when `didFailProvisionalNavigation` does. Not every error has
   the key: a refused `webkit-extension://` main frame (-1008) carries only
   `_WKRecoveryAttempterErrorKey`, because WebKit's extension scheme handler
-  fails the task with `userInfo:nil`.[^task-372]
+  fails the task with `userInfo:nil`. `BrowserTab` records the URL at the
+  start for that case.[^task-372]
 - **An extension page's `window.open` is supplied the extension context's
   configuration** (`_requiredWebExtensionBaseURL` set; CORS checks off for the
   extension's hosts). A child built from it for a web URL carried the

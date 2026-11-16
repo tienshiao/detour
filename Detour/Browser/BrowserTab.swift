@@ -556,8 +556,15 @@ class BrowserTab: NSObject {
     /// The URL the tab is on or trying to reach: what `load(_:)` asked for, the
     /// web view's URL as the observer records it, or the URL a provisional
     /// failure names (TASK-170: a page-started navigation's target, a
-    /// redirect's). The target of the error page and of Reload.
+    /// redirect's). The target of Reload, and what the error page names
+    /// unless the failure was a refused extension page (TASK-372).
     private var lastAttemptedURL: URL?
+    /// What the provisional navigation in flight is loading, as the web view
+    /// names it when the navigation starts (WebKit has already set it to the
+    /// target then, and sets it back before a failure is reported): the URL a
+    /// failure names when its error does not (TASK-372). Nil when it is not a
+    /// URL a failure may name.
+    private var provisionalURL: URL?
     /// Set from `wake()` until the fresh web view reports its first real URL.
     /// While it is set the URL observer ignores the web view's nil URL so `url`
     /// survives the wake; it is deliberately *not* `lastAttemptedURL`, which
@@ -1112,6 +1119,8 @@ class BrowserTab: NSObject {
         webViewContainer = nil
         self.webView = nil
         servedExtensionOriginHost = nil
+        // Scoped to the web view being released, like `awaitingFirstURL`.
+        provisionalURL = nil
     }
 
     /// A window just hosted this tab's web view — the pane was attached, or an
@@ -1467,8 +1476,8 @@ class BrowserTab: NSObject {
         lastAttemptedURL = url
         // Not an extension page this web view cannot show (TASK-381): it
         // fails, and in `url` a wake would build it into its extension's
-        // configuration. `lastAttemptedURL` still names it, for the error
-        // page and Reload, which retry it here and fail again.
+        // configuration. `lastAttemptedURL` names it only until the failure,
+        // which hands Reload the page the tab was on (TASK-372).
         if mayAdopt(url) { self.url = url }
         resetBlockedCount()
         navigationPending = true
@@ -1556,6 +1565,7 @@ class BrowserTab: NSObject {
     /// WebKit reported a provisional load starting — through whichever
     /// navigation delegate the web view has, like the callbacks below.
     func didStartProvisionalNavigation() {
+        provisionalURL = webView?.url.flatMap { Self.isNameableFailingURL($0) ? $0 : nil }
         applyLoadRecovery(.answered)
     }
 
@@ -1666,6 +1676,7 @@ class BrowserTab: NSObject {
         // exception: its commit is the restore succeeding.
         if restoringSession, webView?.url == Self.blankURL, url != Self.blankURL { return }
         routedOpen = nil
+        provisionalURL = nil
         navigationPending = false
         restoringSession = false
         resetBlockedCount()
@@ -1716,13 +1727,26 @@ class BrowserTab: NSObject {
         // `loadRecordedURL`, which arms it, and a failing internal URL the tab
         // did not load itself is one a page chose. An armed load that fails
         // already set `lastAttemptedURL` to it.
-        if let failingURL = (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL,
-           failingURL != Self.blankURL, failingURL.scheme != ErrorPage.scheme,
-           !InternalPage.isInternal(failingURL) {
-            lastAttemptedURL = failingURL
-        }
-        guard let lastAttemptedURL else { return }
-        showErrorPage(for: lastAttemptedURL, error: error)
+        // An error that names no URL (WebKit's extension scheme handler
+        // refusing a main frame) is about the navigation that started last
+        // (TASK-372).
+        let failingURL = (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL ?? provisionalURL
+        provisionalURL = nil
+        var failedURL = lastAttemptedURL
+        if let failingURL, Self.isNameableFailingURL(failingURL) { failedURL = failingURL }
+        guard let failedURL else { return }
+        // A refused extension page is named but not retried (the user's
+        // decision, TASK-372): it never becomes `url` (TASK-381), and Reload
+        // acts on the page the tab was on. A tab with no page of its own (a
+        // window a page opened) has nothing else, and `reload()` falls back to
+        // the error page's URL, which is refused again.
+        lastAttemptedURL = mayAdopt(failedURL) ? failedURL : url
+        showErrorPage(for: failedURL, error: error)
+    }
+
+    /// Whether a URL a failure reports may be named by the error page.
+    private static func isNameableFailingURL(_ url: URL) -> Bool {
+        url != blankURL && url.scheme != ErrorPage.scheme && !InternalPage.isInternal(url)
     }
 
     private func showErrorPage(for failedURL: URL, error: Error) {

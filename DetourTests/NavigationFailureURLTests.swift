@@ -123,25 +123,69 @@ nonisolated final class NavigationFailureURLTests: XCTestCase {
 
     @MainActor private func assertNamesTheDeadURL(_ tab: BrowserTab, _ fixture: Fixture,
                                        file: StaticString = #filePath, line: UInt = #line) async throws {
-        let named = try await errorPageURL(of: tab, file: file, line: line)
-        XCTAssertEqual(named, fixture.dead, "the error page names the URL that failed", file: file, line: line)
-        XCTAssertEqual(tab.url, fixture.dead, "the tab shows the URL that failed", file: file, line: line)
+        try await assertNames(fixture.dead, tab, file: file, line: line)
     }
 
-    /// An extension loaded into a profile of its own: the context `tabs.update`
-    /// acts for.
-    @MainActor private func makeExtension() async throws -> (Profile, WKWebExtensionContext) {
+    @MainActor private func assertNames(_ failed: URL, _ tab: BrowserTab,
+                                        file: StaticString = #filePath, line: UInt = #line) async throws {
+        let named = try await errorPageURL(of: tab, file: file, line: line)
+        XCTAssertEqual(named, failed, "the error page names the URL that failed", file: file, line: line)
+        XCTAssertEqual(tab.url, failed, "the tab shows the URL that failed", file: file, line: line)
+    }
+
+    /// A refused extension page: the error page names it, and the tab keeps
+    /// the URL it had (the user's decision, TASK-372; TASK-381).
+    @MainActor private func assertNamesTheRefused(_ refused: URL, _ tab: BrowserTab, keeping kept: URL?,
+                                                  file: StaticString = #filePath, line: UInt = #line) async throws {
+        let named = try await errorPageURL(of: tab, file: file, line: line)
+        XCTAssertEqual(named, refused, "the error page names the refused URL", file: file, line: line)
+        XCTAssertEqual(tab.url, kept, "the refused URL does not become the tab's URL", file: file, line: line)
+    }
+
+    /// Reloads `tab` and waits for the document Reload produced, not the one
+    /// on screen when it was called: that one is marked first.
+    @MainActor private func reloadAndWaitForTheNextDocument(_ tab: BrowserTab,
+                                                            file: StaticString = #filePath, line: UInt = #line) async throws {
+        _ = try await XCTUnwrap(tab.webView, file: file, line: line).evaluateJavaScript("window.__task372 = 1; 1")
+        tab.reload()
+        try await waitUntil("the document Reload loads", file: file, line: line) {
+            guard let webView = tab.webView, webView.url != nil, !webView.isLoading else { return false }
+            return (try? await webView.evaluateJavaScript("window.__task372 === 1")) as? Bool != true
+        }
+    }
+
+    @MainActor private func clickLink(to target: URL, in tab: BrowserTab) async throws {
+        try await run("""
+            const a = document.createElement('a');
+            a.href = '\(target.absoluteString)';
+            document.body.appendChild(a);
+            a.click();
+            """, in: tab)
+    }
+
+    /// An extension loaded into a profile of its own, and the URL of a
+    /// web-accessible page of it. A web page's tab cannot show that page:
+    /// WebKit's extension scheme handler refuses a main-frame load in a web
+    /// view not built from the extension's own configuration, with an error
+    /// that names no URL (TASK-352).
+    @MainActor private func makeExtension() async throws -> (Profile, WKWebExtensionContext, URL) {
         let id = "task-372-\(UUID().uuidString.prefix(8))"
         let ext = try await makeTestExtension(id: id, manifestJSON: """
-            { "manifest_version": 3, "name": "TASK-372", "version": "1.0.0" }
-            """)
+            {
+                "manifest_version": 3,
+                "name": "TASK-372",
+                "version": "1.0.0",
+                "web_accessible_resources": [{ "resources": ["war.html"], "matches": ["<all_urls>"] }]
+            }
+            """, files: ["war.html": "<html><head><title>War</title></head><body>war</body></html>"])
         tempDirs.append(ext.basePath)
         ExtensionManager.shared.extensions.append(ext)
         registeredExtensionIDs.append(id)
         let profile = TabStore.shared.addProfile(name: "TASK-372 \(id)")
         createdProfiles.append(profile)
         _ = profile.extensionController
-        return (profile, try loadTestContext(ext, in: profile))
+        let context = try loadTestContext(ext, in: profile)
+        return (profile, context, try extensionPageURL("war.html", on: context.baseURL))
     }
 
     // MARK: - Page-started navigations
@@ -156,12 +200,7 @@ nonisolated final class NavigationFailureURLTests: XCTestCase {
     @MainActor func testAClickedLinkToADeadHostNamesItInASelectedTab() async throws {
         let fixture = try await makeFixture()
         let tab = try await openerTab(fixture, inWindow: true)
-        try await run("""
-            const a = document.createElement('a');
-            a.href = '\(fixture.dead.absoluteString)';
-            document.body.appendChild(a);
-            a.click();
-            """, in: tab)
+        try await clickLink(to: fixture.dead, in: tab)
         try await assertNamesTheDeadURL(tab, fixture)
     }
 
@@ -180,8 +219,7 @@ nonisolated final class NavigationFailureURLTests: XCTestCase {
         try await run("location.href = '\(fixture.dead.absoluteString)';", in: tab)
         try await assertNamesTheDeadURL(tab, fixture)
 
-        tab.reload()
-        try await Task.sleep(nanoseconds: 300_000_000)
+        try await reloadAndWaitForTheNextDocument(tab)
         try await assertNamesTheDeadURL(tab, fixture)
         XCTAssertNotEqual(tab.title, "Opener", "Reload must not go back to the opener")
     }
@@ -191,10 +229,83 @@ nonisolated final class NavigationFailureURLTests: XCTestCase {
     /// navigation.
     @MainActor func testATabsUpdateToADeadHostNamesIt() async throws {
         let fixture = try await makeFixture()
-        let (profile, context) = try await makeExtension()
+        let (profile, context, _) = try await makeExtension()
         let tab = try await openerTab(fixture, inWindow: true, profile: profile)
         tab.loadURL(fixture.dead, for: context) { _ in }
         try await assertNamesTheDeadURL(tab, fixture)
+    }
+
+    // MARK: - A refused extension page (TASK-372)
+
+    // WebKit's extension scheme handler refuses a main frame in a web view not
+    // built from the extension's configuration with an NSError that has no
+    // userInfo, so the error does not say which URL failed: the tab knows it
+    // from the navigation's start. The user's decision (2026-11-16): the
+    // error page names it; the tab's URL and Reload stay on the page the tab
+    // was on (a page-chosen extension URL never becomes the tab's, TASK-381).
+
+    @MainActor func testAScriptLocationChangeToARefusedExtensionPageNamesIt() async throws {
+        let fixture = try await makeFixture()
+        let (profile, _, page) = try await makeExtension()
+        let tab = try await openerTab(fixture, inWindow: true, profile: profile)
+        try await run("location.href = '\(page.absoluteString)';", in: tab)
+        try await assertNamesTheRefused(page, tab, keeping: fixture.page)
+    }
+
+    @MainActor func testAClickedLinkToARefusedExtensionPageNamesIt() async throws {
+        let fixture = try await makeFixture()
+        let (profile, _, page) = try await makeExtension()
+        let tab = try await openerTab(fixture, inWindow: true, profile: profile)
+        try await clickLink(to: page, in: tab)
+        try await assertNamesTheRefused(page, tab, keeping: fixture.page)
+    }
+
+    @MainActor func testATabsUpdateToARefusedExtensionPageNamesIt() async throws {
+        let fixture = try await makeFixture()
+        let (profile, context, page) = try await makeExtension()
+        let tab = try await openerTab(fixture, inWindow: true, profile: profile)
+        tab.loadURL(page, for: context) { _ in }
+        try await assertNamesTheRefused(page, tab, keeping: fixture.page)
+    }
+
+    @MainActor func testARefusedExtensionPageInABackgroundTabNamesIt() async throws {
+        let fixture = try await makeFixture()
+        let (profile, _, page) = try await makeExtension()
+        let tab = try await openerTab(fixture, inWindow: false, profile: profile)
+        try await run("location.href = '\(page.absoluteString)';", in: tab)
+        try await assertNamesTheRefused(page, tab, keeping: fixture.page)
+    }
+
+    /// Reload acts on the page the tab was on, not the refused URL.
+    @MainActor func testReloadAfterARefusedExtensionPageReloadsThePageTheTabWasOn() async throws {
+        let fixture = try await makeFixture()
+        let (profile, _, page) = try await makeExtension()
+        let tab = try await openerTab(fixture, inWindow: true, profile: profile)
+        try await clickLink(to: page, in: tab)
+        try await assertNamesTheRefused(page, tab, keeping: fixture.page)
+
+        try await reloadAndWaitForTheNextDocument(tab)
+        XCTAssertEqual(tab.webView?.url, fixture.page, "Reload loads the page the tab was on")
+        XCTAssertEqual(tab.url, fixture.page)
+        try await waitUntil("the opener's title") { tab.title == "Opener" }
+    }
+
+    /// A window a page opened has no page of its own: it keeps no URL, and
+    /// Reload can only try the error page's URL again, which is refused again.
+    @MainActor func testAWindowOpenedOnARefusedExtensionPageNamesItAndKeepsNoURL() async throws {
+        let fixture = try await makeFixture()
+        let (profile, _, page) = try await makeExtension()
+        let opener = try await openerTab(fixture, inWindow: true, profile: profile)
+        let space = try XCTUnwrap(opener.spaceID.flatMap { TabStore.shared.space(withID: $0) })
+        let before = Set(space.tabs.map(\.id))
+        // evaluateJavaScript counts as a user gesture, so the page may open a window.
+        _ = try await XCTUnwrap(opener.webView).evaluateJavaScript("window.open('\(page.absoluteString)'); 1")
+        try await waitUntil("the opened tab") { space.tabs.count > before.count }
+        let child = try XCTUnwrap(space.tabs.first { !before.contains($0.id) })
+        try await assertNamesTheRefused(page, child, keeping: nil)
+
+        try await reloadAndWaitForTheNextDocument(child)
+        try await assertNamesTheRefused(page, child, keeping: nil)
     }
 
     // MARK: - Loads the tab starts
