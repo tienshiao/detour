@@ -59,6 +59,19 @@ nonisolated enum ShortcutOverride: Equatable, Sendable {
     case none
 }
 
+/// Why a command cannot have its built-in shortcut back (TASK-374: the one
+/// check behind a row's Reset and Restore Defaults).
+enum ShortcutResetConflict: Equatable {
+    /// Another command's shortcut is that very shortcut.
+    case heldBy(CommandID)
+    /// Another command's shortcut, given, fires on the same keystroke
+    /// through a shifted character on the layout (TASK-343).
+    case sameKeystroke(CommandID, KeyEquivalent)
+    /// A shortcut held outside the commands has it or its keystroke
+    /// (TASK-350: a menu item that is no command, the Quick Detour hotkey).
+    case outside(KeystrokeHolder)
+}
+
 /// From the registry's defaults and the user's overrides to the shortcut each
 /// command has. Pure.
 enum ShortcutResolution {
@@ -141,6 +154,62 @@ enum ShortcutResolution {
         }
         return result
     }
+
+    /// Why `id` cannot have `builtIn`, its built-in shortcut, back, or nil
+    /// (TASK-374: one check for a row's Reset and Restore Defaults). In
+    /// order: another command of `others` holding that very shortcut, one
+    /// holding a shortcut on its keystroke through a shifted character
+    /// (TASK-343), a holder outside the commands (TASK-350). `others` are the
+    /// shortcuts the commands will have (`id`'s own is skipped): today's for
+    /// a Reset, those the restore leaves for Restore Defaults.
+    static func resetConflict(of id: CommandID, builtIn: KeyEquivalent, others: [(id: CommandID, key: KeyEquivalent)],
+                              holders: [KeystrokeHolder],
+                              shiftedEquivalents: (KeyEquivalent) -> [KeyEquivalent]) -> ShortcutResetConflict? {
+        let others = others.filter { $0.id != id }
+        if let held = others.first(where: { $0.key.isSameShortcut(as: builtIn) }) { return .heldBy(held.id) }
+        // `builtIn`'s own equivalents are read once, not once per command.
+        let builtInShifted = shiftedEquivalents(builtIn)
+        func equivalents(_ key: KeyEquivalent) -> [KeyEquivalent] {
+            key == builtIn ? builtInShifted : shiftedEquivalents(key)
+        }
+        if let shared = others.first(where: { $0.key.firesOnSameKeystroke(as: builtIn, shiftedEquivalents: equivalents) }) {
+            return .sameKeystroke(shared.id, shared.key)
+        }
+        return outsideHolderConflicts(of: [(id: id, key: builtIn)], holders: holders,
+                                      shiftedEquivalents: equivalents)[id].map(ShortcutResetConflict.outside)
+    }
+
+    /// The commands Restore Defaults leaves as they are (TASK-374), each
+    /// with why, in menu order: the overridden commands whose default
+    /// `resetConflict` refuses against the state the restore leaves, not
+    /// today's bindings (two commands that swapped their defaults are both
+    /// restored). A command left as it is keeps its own shortcut, so a
+    /// command whose default that shortcut holds, or shares a keystroke
+    /// with, is left too, until none is added. The defaults are not compared
+    /// with each other: a fresh install has them all.
+    static func restoreDefaultsConflicts(of commands: [(id: CommandID, default: KeyEquivalent?)],
+                                         overrides: [CommandID: ShortcutOverride], holders: [KeystrokeHolder],
+                                         shiftedEquivalents: (KeyEquivalent) -> [KeyEquivalent])
+        -> [(id: CommandID, conflict: ShortcutResetConflict)] {
+        var left: [CommandID: ShortcutResetConflict] = [:]
+        var added = true
+        while added {
+            added = false
+            // What the commands left as they are keep: their own shortcuts.
+            let leftKeys: [(id: CommandID, key: KeyEquivalent)] = commands.compactMap { command in
+                guard left[command.id] != nil, case .key(let key)? = overrides[command.id] else { return nil }
+                return (id: command.id, key: key)
+            }
+            for command in commands where overrides[command.id] != nil && left[command.id] == nil {
+                guard let builtIn = command.default,
+                      let conflict = resetConflict(of: command.id, builtIn: builtIn, others: leftKeys, holders: holders,
+                                                   shiftedEquivalents: shiftedEquivalents) else { continue }
+                left[command.id] = conflict
+                added = true
+            }
+        }
+        return commands.compactMap { command in left[command.id].map { (id: command.id, conflict: $0) } }
+    }
 }
 
 /// The user's shortcuts, stored in the data directory's defaults suite
@@ -214,28 +283,6 @@ final class ShortcutBindingStore {
         return cachedKeys?[id]
     }
 
-    /// The command other than `id` whose shortcut is `key` now, if any.
-    func command(holding key: KeyEquivalent, except id: CommandID) -> BrowserCommand? {
-        commands.first { $0.id != id && keyEquivalent(for: $0.id)?.isSameShortcut(as: key) == true }
-    }
-
-    /// The command other than `id`, and its shortcut, that fires on the
-    /// keystroke `key` fires on through a shifted character (TASK-343:
-    /// resetting Zoom In to ⌘+ while another command holds ⇧⌘=), if any.
-    func command(sharingKeystrokeWith key: KeyEquivalent, except id: CommandID,
-                 shiftedEquivalents: (KeyEquivalent) -> [KeyEquivalent] = { KeyEquivalent.currentShiftedEquivalents($0) })
-        -> (command: BrowserCommand, key: KeyEquivalent)? {
-        // `key`'s own equivalents are read once, not once per command.
-        let keyShifted = shiftedEquivalents(key)
-        let equivalents: (KeyEquivalent) -> [KeyEquivalent] = { $0 == key ? keyShifted : shiftedEquivalents($0) }
-        for command in commands where command.id != id {
-            guard let held = keyEquivalent(for: command.id), !held.isSameShortcut(as: key),
-                  held.firesOnSameKeystroke(as: key, shiftedEquivalents: equivalents) else { continue }
-            return (command, held)
-        }
-        return nil
-    }
-
     /// The saved shortcuts that fire on one keystroke on the layout
     /// (`ShortcutResolution.sameKeystrokeConflicts`): each command of a pair
     /// mapped to the other. Read again for each layout, never cached: the
@@ -307,13 +354,15 @@ final class ShortcutBindingStore {
         write(entries)
     }
 
-    /// Every command back to the registry's shortcut: Restore Defaults. Also
-    /// drops the entries of IDs this build does not know, so nothing comes
-    /// back after an upgrade.
-    func resetAll() {
-        guard defaults.object(forKey: Self.defaultsKey) != nil else { return }
-        defaults.removeObject(forKey: Self.defaultsKey)
-        didChange()
+    /// Every command back to the registry's shortcut but those of `kept`,
+    /// which keep theirs: Restore Defaults (TASK-374: the commands whose
+    /// default the reset check refuses, `restoreDefaultsConflicts`, are left
+    /// as they are). Also drops the entries of IDs this build does not know,
+    /// so nothing comes back after an upgrade.
+    func resetAll(keeping kept: Set<CommandID> = []) {
+        let entries = stored.filter { kept.contains(CommandID(rawValue: $0.key)) }
+        guard !entries.isEmpty || defaults.object(forKey: Self.defaultsKey) != nil else { return }
+        write(entries)
     }
 
     private func write(_ entries: [String: Any]) {

@@ -135,6 +135,23 @@ nonisolated final class ShortcutBindingStoreTests: XCTestCase {
         XCTAssertEqual(store.keyEquivalent(for: reload), BrowserCommands.reload.keyEquivalent)
     }
 
+    /// TASK-374: Restore Defaults can leave the commands whose default is
+    /// taken outside the commands as they are; every other entry goes,
+    /// unknown IDs included.
+    @MainActor func testRestoreDefaultsCanLeaveSomeCommandsAsTheyAre() {
+        let (store, defaults) = makeStore()
+        defaults.set([reload.rawValue: optionCommandE.propertyList, newTab.rawValue: [String: Any](),
+                      "future.command": optionCommandE.propertyList],
+                     forKey: ShortcutBindingStore.defaultsKey)
+        store.resetAll(keeping: [reload])
+        XCTAssertEqual(store.override(for: reload), .key(optionCommandE))
+        XCTAssertFalse(store.isOverridden(newTab))
+        XCTAssertEqual(defaults.dictionary(forKey: ShortcutBindingStore.defaultsKey)?.keys.sorted(), [reload.rawValue],
+                       "unknown IDs go")
+        store.resetAll(keeping: [newTab])
+        XCTAssertNil(defaults.object(forKey: ShortcutBindingStore.defaultsKey), "nothing kept")
+    }
+
     // MARK: - Persistence
 
     @MainActor func testOverridesSurviveANewStoreOverTheSameDefaults() throws {

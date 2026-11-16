@@ -59,6 +59,9 @@ sources:
   - id: task-350
     resource: backlog:TASK-350
     title: "Shortcuts: Reset and saved-pair checks also compare against the Quick Detour hotkey's item and AppKit's own menu items"
+  - id: task-374
+    resource: backlog:TASK-374
+    title: "Shortcuts: Restore Defaults can put a default onto the Quick Detour hotkey's key without a warning"
   - id: spike-350
     resource: ../../docs/harness/task350/dup-key-equivalents.swift
     title: "TASK-350 spike: AppKit keeps a key equivalent on one item of the menu bar (macOS 26, 2026-11-16)"
@@ -115,8 +118,10 @@ never writes the production app's. One key, `CommandShortcuts`:
   in the mask), so "Z" with ⌘ and "z" with ⇧⌘ are one shortcut.
 - IDs this build does not know (a newer version's command) and values it
   cannot read are ignored, and kept: every write rewrites the dictionary it
-  read. Restore Defaults removes the whole key, unknown IDs included, so
-  nothing comes back after an upgrade.
+  read. Restore Defaults removes every entry, unknown IDs included, so
+  nothing comes back after an upgrade; only the entries of the commands it
+  leaves as they are stay ([below](#holders-outside-the-commands),
+  TASK-374).
 - `ShortcutResolution.effectiveKeys` resolves: overrides first (of two on
   one key, the first command's in menu order wins), then defaults whose key
   no override took. A new default landing on a key the user already gave
@@ -373,6 +378,27 @@ also compare with what the store does not resolve:[^task-350]
   checks: "⌘R is the Quick Detour shortcut (Settings > Quick Detour).
   Change that one first.", "⌘0 and ⇧⌘À are one keystroke on this keyboard,
   and ⇧⌘À is the shortcut of Extra > Thing, which cannot be changed here."
+  The three checks are one function, `ShortcutResolution.resetConflict`
+  (TASK-374), given the shortcuts the other commands will have.
+- **Restore Defaults** asks the same check of every overridden command,
+  against the state the restore leaves rather than today's bindings
+  (`ShortcutResolution.restoreDefaultsConflicts`),[^task-374] so two
+  commands that swapped their defaults are both restored. A command whose
+  default a holder outside the commands has, or shares a keystroke with,
+  keeps its own shortcut; a command whose default that kept shortcut holds
+  (exactly or on its keystroke) is then kept too, until none is added. The
+  others are restored (`ShortcutBindingStore.resetAll(keeping:)`), and the
+  warning line names each command kept with Reset's reason: "Restore
+  Defaults left Reload Page as it is: ⌘R is the Quick Detour shortcut
+  (Settings > Quick Detour). Change that one first." Defaults are not
+  compared with each other: a fresh install has them all. Before, the
+  restore put the default back and the "Same key as" mark (below) was the
+  only sign; with the hotkey on, the default then did nothing (the Carbon
+  hotkey takes the key first, and AppKit leaves the later of two items on
+  one key with none). Keeping the row rather than restoring it and warning
+  is Claude's choice (2026-11-16, not yet confirmed by the user), so a
+  restore never leaves a command on a taken key, as a row's Reset never
+  does.
 - **Saved shortcuts**: the pane asks it with the effective keys once per
   reload (`outsideConflicts`) and marks the command's row "Same key as
   Copy" / "Same key as Quick Detour", the pair note's look; a pair of
@@ -389,7 +415,7 @@ Limits: items whose mask has Fn (fn-D, fn-E, the Window menu's tiling
 items when AppKit adds them) are compared without it, as the recorder's
 matcher narrows modifiers; a binding never holds Fn, so such an item can be
 named for a binding on the same key without Fn (none of the defaults is
-one). Restore Defaults does not check holders outside the commands.
+one).
 
 ## The pane
 
@@ -570,7 +596,8 @@ for the app. To try one at runtime, pass it as a launch argument; never
   giving a shortcut to a command with none, clearing (an empty dictionary),
   the default dropping the override, normalized storage, non-bindable
   commands never stored, reset and Restore Defaults, persistence across a
-  new store over the same suite, the shared store's scoped suite, unknown
+  new store over the same suite, the shared store's scoped suite, Restore
+  Defaults leaving some commands as they are (TASK-374), unknown
   IDs ignored and kept, unreadable values, the resolver's collisions,
   property lists and key names.
 - `ShortcutConflictTests`: the modifier rule and function keys, another
@@ -594,7 +621,11 @@ for the app. To try one at runtime, pass it as a launch argument; never
   French) and an item no command is (exact, French-only ⇧⌘à), either
   direction, saved shortcuts marked (⇧⌘/ against ⌘? on US only, ⌘+ against
   ⇧⌘=, a French-only ⌥⇧⌘à, the Quick Detour shortcut and keystroke), a
-  pair of commands named first.
+  pair of commands named first; Restore Defaults (TASK-374): a command left
+  as it is for the Quick Detour shortcut and for its keystroke (US and
+  French), for an item no command is (French only), a command left because
+  a kept one holds its default (exactly, and on the keystroke), a swap
+  restored, every other command restored.
   The layout-change test posts on a center of its own
   (`layoutChangeCenter`), not the system's distributed one.
   `ShortcutsSettingsPaneTests.testTheListKeepsItsHeightWhileARefusalShows`:
@@ -631,6 +662,7 @@ for the app. To try one at runtime, pass it as a launch argument; never
 [^spike-335]: TASK-335 spikes
 [^task-350]: TASK-350
 [^spike-350]: TASK-350 spike
+[^task-374]: TASK-374
 [^task-343]: TASK-343
 [^spike]: NSUserKeyEquivalents spikes
 [^task-56]: Implement menuHasKeyEquivalent so key presses stop rebuilding the Spaces and Extensions menus

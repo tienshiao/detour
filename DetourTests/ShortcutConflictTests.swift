@@ -459,17 +459,21 @@ nonisolated final class ShortcutConflictTests: XCTestCase {
 
     /// The other direction: a default holding Shift on a key whose shifted
     /// character another binding has (⇧⌘[ against ⌘{).
-    @MainActor func testTheStoreFindsTheHolderInEitherDirection() throws {
+    @MainActor func testTheResetCheckFindsTheHolderInEitherDirection() throws {
         let store = try throwawayStore()
         store.setKeyEquivalent(KeyEquivalent("{", [.command]), for: BrowserCommands.reload.id)
-        let shared = store.command(sharingKeystrokeWith: KeyEquivalent("[", [.shift, .command]),
-                                   except: BrowserCommands.back.id,
-                                   shiftedEquivalents: Self.shiftedEquivalents(on: Self.us))
-        XCTAssertEqual(shared?.command.id, BrowserCommands.reload.id)
-        XCTAssertEqual(shared?.key, KeyEquivalent("{", [.command]))
-        XCTAssertNil(store.command(sharingKeystrokeWith: KeyEquivalent("[", [.command]), except: BrowserCommands.back.id,
-                                   shiftedEquivalents: Self.shiftedEquivalents(on: Self.us)),
-                     "⌘[ is not ⌘{'s keystroke")
+        func conflict(_ builtIn: KeyEquivalent) -> ShortcutResetConflict? {
+            ShortcutResolution.resetConflict(of: BrowserCommands.back.id, builtIn: builtIn, others: store.effectiveKeys,
+                                             holders: [], shiftedEquivalents: Self.shiftedEquivalents(on: Self.us))
+        }
+        XCTAssertEqual(conflict(KeyEquivalent("[", [.shift, .command])),
+                       .sameKeystroke(BrowserCommands.reload.id, KeyEquivalent("{", [.command])))
+        XCTAssertNil(conflict(KeyEquivalent("[", [.command])), "⌘[ is not ⌘{'s keystroke")
+        XCTAssertEqual(conflict(KeyEquivalent("{")), .heldBy(BrowserCommands.reload.id), "the very same shortcut first")
+        XCTAssertNil(ShortcutResolution.resetConflict(of: BrowserCommands.reload.id, builtIn: KeyEquivalent("{"),
+                                                      others: store.effectiveKeys, holders: [],
+                                                      shiftedEquivalents: Self.shiftedEquivalents(on: Self.us)),
+                     "a command's own shortcut is no conflict")
     }
 
     // MARK: - Holders outside the commands (TASK-350)
@@ -711,5 +715,117 @@ nonisolated final class ShortcutConflictTests: XCTestCase {
         store.setKeyEquivalent(KeyEquivalent("=", [.shift, .command]), for: BrowserCommands.reload.id)
         let pane = pane(store, layout: Self.us, menu: outsideMenu([item("Thing", "+", [.command])]))
         XCTAssertEqual(pane.rowState(for: try command(BrowserCommands.reload.id)).sameKeystroke?.otherTitle, "Zoom In")
+    }
+
+    // MARK: - Restore Defaults (TASK-374)
+
+    /// Reload Page rebound, the Quick Detour hotkey then set to ⌘R: Restore
+    /// Defaults gives every other command its default back and leaves Reload
+    /// Page as it is, named on the warning line with Reset's reason. Without
+    /// the hotkey on ⌘R everything is restored.
+    @MainActor func testRestoreDefaultsLeavesACommandWhoseDefaultIsTheQuickDetourShortcut() throws {
+        let commandR = shortcut(kVK_ANSI_R, [.command], "r")
+        for (quickDetour, kept) in [(commandR, true), (nil, false)] {
+            let store = try throwawayStore()
+            store.setKeyEquivalent(KeyEquivalent("e", [.option, .command]), for: BrowserCommands.reload.id)
+            store.setKeyEquivalent(nil, for: BrowserCommands.closeTab.id)
+            let pane = pane(store, layout: Self.us, menu: outsideMenu(), quickDetour: quickDetour)
+            pane.reload()
+            pane.restoreDefaultsButton.performClick(nil)
+            XCTAssertFalse(store.isOverridden(BrowserCommands.closeTab.id), "the others are restored")
+            XCTAssertEqual(store.override(for: BrowserCommands.reload.id),
+                           kept ? .key(KeyEquivalent("e", [.option, .command])) : nil)
+            XCTAssertEqual(pane.warningLabel.isHidden, !kept)
+            if kept {
+                XCTAssertEqual(pane.warningLabel.stringValue,
+                               "Restore Defaults left Reload Page as it is: ⌘R is the Quick Detour shortcut "
+                               + "(Settings > Quick Detour). Change that one first.")
+            }
+        }
+    }
+
+    /// The Quick Detour hotkey on Zoom In's ⌘+ keystroke (⇧⌘ and the key
+    /// typing "=", a different key on US and French): Zoom In is left as it
+    /// is on both layouts.
+    @MainActor func testRestoreDefaultsLeavesACommandWhoseDefaultIsTheQuickDetourKeystroke() throws {
+        for (layout, keyCode) in [(Self.us, kVK_ANSI_Equal), (Self.french, kVK_ANSI_Slash)] {
+            let store = try throwawayStore()
+            store.setKeyEquivalent(KeyEquivalent("=", [.option, .command]), for: BrowserCommands.zoomIn.id)
+            store.setKeyEquivalent(KeyEquivalent("e", [.option, .command]), for: BrowserCommands.reload.id)
+            let pane = pane(store, layout: layout, menu: outsideMenu(),
+                            quickDetour: shortcut(keyCode, [.shift, .command], "="))
+            pane.reload()
+            pane.restoreDefaultsButton.performClick(nil)
+            XCTAssertTrue(store.isOverridden(BrowserCommands.zoomIn.id), "kept")
+            XCTAssertFalse(store.isOverridden(BrowserCommands.reload.id))
+            XCTAssertEqual(pane.warningLabel.stringValue,
+                           "Restore Defaults left Zoom In as it is: ⌘+ and ⇧⌘= are one keystroke on this keyboard, "
+                           + "and ⇧⌘= is the Quick Detour shortcut (Settings > Quick Detour). Change that one first.")
+        }
+    }
+
+    /// An item no command is on ⇧⌘à: Actual Size's ⌘0 is that keystroke on
+    /// French only, so it is left as it is there and restored on US.
+    @MainActor func testRestoreDefaultsLeavesACommandWhoseDefaultAnItemOutsideTheCommandsHolds() throws {
+        for (layout, kept) in [(Self.french, true), (Self.us, false)] {
+            let store = try throwawayStore()
+            store.setKeyEquivalent(KeyEquivalent("0", [.option, .command]), for: BrowserCommands.actualSize.id)
+            let pane = pane(store, layout: layout, menu: outsideMenu([item("Thing", "à", [.shift, .command])]))
+            pane.reload()
+            pane.restoreDefaultsButton.performClick(nil)
+            XCTAssertEqual(store.isOverridden(BrowserCommands.actualSize.id), kept)
+            XCTAssertEqual(pane.warningLabel.isHidden, !kept)
+            if kept {
+                XCTAssertEqual(pane.warningLabel.stringValue,
+                               "Restore Defaults left Actual Size as it is: ⌘0 and ⇧⌘À are one keystroke on this "
+                               + "keyboard, and ⇧⌘À is the shortcut of Extra > Thing, which cannot be changed here.")
+            }
+        }
+    }
+
+    /// A command left as it is keeps its own shortcut, so a command whose
+    /// default that shortcut is stays as it is too: New Tab cleared and its
+    /// ⌘T given to Reload Page, the Quick Detour hotkey then on ⌘R.
+    @MainActor func testRestoreDefaultsLeavesACommandWhoseDefaultAnotherLeftCommandHolds() throws {
+        let store = try throwawayStore()
+        store.setKeyEquivalent(nil, for: BrowserCommands.newTab.id)
+        store.setKeyEquivalent(KeyEquivalent("t"), for: BrowserCommands.reload.id)
+        store.setKeyEquivalent(nil, for: BrowserCommands.closeTab.id)
+        let pane = pane(store, layout: Self.us, menu: outsideMenu(), quickDetour: shortcut(kVK_ANSI_R, [.command], "r"))
+        pane.reload()
+        pane.restoreDefaultsButton.performClick(nil)
+        XCTAssertEqual(store.override(for: BrowserCommands.reload.id), .key(KeyEquivalent("t")))
+        XCTAssertEqual(store.override(for: BrowserCommands.newTab.id), ShortcutOverride.none)
+        XCTAssertFalse(store.isOverridden(BrowserCommands.closeTab.id))
+        XCTAssertEqual(pane.warningLabel.stringValue,
+                       "Restore Defaults left 2 commands as they are. New Tab: ⌘T is now Reload Page's shortcut. "
+                       + "Change that one first. Reload Page: ⌘R is the Quick Detour shortcut (Settings > Quick "
+                       + "Detour). Change that one first.")
+        // On the keystroke too: Zoom In cleared, Reload Page on ⇧⌘= (its ⌘+
+        // keystroke on US), the hotkey on ⌘R.
+        let keystroke = ShortcutResolution.restoreDefaultsConflicts(
+            of: BrowserCommands.bindable.map { (id: $0.id, default: $0.keyEquivalent) },
+            overrides: [BrowserCommands.zoomIn.id: ShortcutOverride.none,
+                        BrowserCommands.reload.id: .key(KeyEquivalent("=", [.shift, .command]))],
+            holders: [KeystrokeHolder(kind: .quickDetour, title: "Quick Detour", key: KeyEquivalent("r"))],
+            shiftedEquivalents: Self.shiftedEquivalents(on: Self.us))
+        XCTAssertEqual(keystroke.map(\.id), [BrowserCommands.reload.id, BrowserCommands.zoomIn.id])
+        XCTAssertEqual(keystroke.last?.conflict,
+                       .sameKeystroke(BrowserCommands.reload.id, KeyEquivalent("=", [.shift, .command])))
+    }
+
+    /// The state the restore leaves is what counts, not today's bindings:
+    /// two commands that swapped their defaults are both restored.
+    @MainActor func testRestoreDefaultsRestoresASwap() throws {
+        let store = try throwawayStore()
+        store.setKeyEquivalent(KeyEquivalent("r"), for: BrowserCommands.newTab.id)
+        store.setKeyEquivalent(KeyEquivalent("t"), for: BrowserCommands.reload.id)
+        let pane = pane(store, layout: Self.us, menu: outsideMenu())
+        pane.reset(BrowserCommands.reload.id)
+        XCTAssertFalse(pane.warningLabel.isHidden, "one row's reset is refused: New Tab holds ⌘R today")
+        pane.reload()
+        pane.restoreDefaultsButton.performClick(nil)
+        XCTAssertFalse(store.hasOverrides)
+        XCTAssertTrue(pane.warningLabel.isHidden, "the refusal shown before goes")
     }
 }

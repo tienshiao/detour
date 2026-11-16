@@ -539,9 +539,23 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
         reload()
     }
 
+    /// Every command back to its built-in shortcut, except one whose
+    /// default the check of a row's Reset refuses against the state the
+    /// restore leaves (TASK-374: the Quick Detour hotkey or an item no
+    /// command is holds it, or a command left as it is does): that one keeps
+    /// its shortcut and the warning line names it with the reason.
     @objc private func restoreDefaults() {
         endRecording()
-        store.resetAll()
+        let left = ShortcutResolution.restoreDefaultsConflicts(
+            of: store.commands.map { (id: $0.id, default: $0.keyEquivalent) }, overrides: store.overrides,
+            holders: outsideHolders(), shiftedEquivalents: shiftedEquivalents)
+        if left.isEmpty {
+            refusal = nil
+            updateWarning()
+        } else {
+            refuseReset(Self.restoreDefaultsRefusal(left))
+        }
+        store.resetAll(keeping: Set(left.map(\.id)))
     }
 
     /// Back to the built-in shortcut, unless another command's binding now
@@ -552,27 +566,49 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
     /// Zoom In's ⌘+ while another command holds ⇧⌘=), as recording it is,
     /// and when a holder outside the commands has it or its keystroke
     /// (TASK-350: the Quick Detour hotkey set to the default, an AppKit item).
+    /// Restore Defaults asks the same check (TASK-374).
     func reset(_ id: CommandID) {
         endRecording()
-        if let builtIn = BrowserCommands.command(withID: id)?.keyEquivalent {
-            if let holder = store.command(holding: builtIn, except: id) {
-                refuseReset("\(builtIn.displayString ?? "") is now \(holder.title)'s shortcut. Change that one first.")
-                return
-            }
-            if let shared = store.command(sharingKeystrokeWith: builtIn, except: id,
-                                          shiftedEquivalents: shiftedEquivalents) {
-                refuseReset(Self.sameKeystrokeRefusal(builtIn: builtIn, held: shared.key, holder: shared.command.title))
-                return
-            }
-            if let holder = ShortcutResolution.outsideHolderConflicts(
-                of: [(id: id, key: builtIn)], holders: outsideHolders(), shiftedEquivalents: shiftedEquivalents)[id] {
-                refuseReset(Self.outsideRefusal(builtIn: builtIn, holder: holder))
-                return
-            }
+        if let builtIn = BrowserCommands.command(withID: id)?.keyEquivalent,
+           let conflict = ShortcutResolution.resetConflict(of: id, builtIn: builtIn, others: store.effectiveKeys,
+                                                           holders: outsideHolders(),
+                                                           shiftedEquivalents: shiftedEquivalents) {
+            refuseReset(Self.resetRefusal(builtIn: builtIn, conflict: conflict))
+            return
         }
         refusal = nil
         updateWarning()
         store.reset(id)
+    }
+
+    /// Why a reset onto `builtIn` is refused, holder named.
+    static func resetRefusal(builtIn: KeyEquivalent, conflict: ShortcutResetConflict) -> String {
+        func title(_ id: CommandID) -> String { BrowserCommands.command(withID: id)?.title ?? id.rawValue }
+        switch conflict {
+        case .heldBy(let id):
+            return "\(builtIn.displayString ?? "") is now \(title(id))'s shortcut. Change that one first."
+        case .sameKeystroke(let id, let held):
+            return sameKeystrokeRefusal(builtIn: builtIn, held: held, holder: title(id))
+        case .outside(let holder):
+            return outsideRefusal(builtIn: builtIn, holder: holder)
+        }
+    }
+
+    /// The commands Restore Defaults left as they are, each with Reset's
+    /// reason (TASK-374): "Restore Defaults left Reload Page as it is: ⌘R is
+    /// the Quick Detour shortcut (Settings > Quick Detour). Change that one
+    /// first."
+    static func restoreDefaultsRefusal(_ left: [(id: CommandID, conflict: ShortcutResetConflict)]) -> String {
+        let reasons: [(title: String, reason: String)] = left.compactMap { entry in
+            guard let command = BrowserCommands.command(withID: entry.id), let builtIn = command.keyEquivalent
+            else { return nil }
+            return (command.title, resetRefusal(builtIn: builtIn, conflict: entry.conflict))
+        }
+        if reasons.count == 1, let only = reasons.first {
+            return "Restore Defaults left \(only.title) as it is: \(only.reason)"
+        }
+        return "Restore Defaults left \(reasons.count) commands as they are. "
+            + reasons.map { "\($0.title): \($0.reason)" }.joined(separator: " ")
     }
 
     private func refuseReset(_ message: String) {
