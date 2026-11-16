@@ -141,8 +141,9 @@ Almost every mutation follows the same order, and the order is load-bearing:
 1. Capture what undo needs (interaction state via
    `currentInteractionStateData()` must be read **before** teardown).
 2. Mutate the model.
-3. `registerUndo(actionName:)` with a closure that performs the inverse and
-   registers its own redo.
+3. `registerUndo(actionName:in:)` with the spaces the closure acts in and a
+   closure that performs the inverse and registers its own redo (a Private
+   space's entries leave with its window: [browser undo](./browser-undo.md#a-private-windows-entries-go-with-the-window)).
 4. `notifyObservers`.
 5. `scheduleSave()`.
 

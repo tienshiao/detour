@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T05:53:00Z'
-updated_date: '2026-11-16T06:37:00Z'
+updated_date: '2026-11-16T06:39:00Z'
 labels:
   - incognito
   - undo
@@ -64,6 +64,8 @@ Verification:
 - Not verified: real keyboard Cmd+Z by a person (the endpoint's run_menu_item drives Edit > Undo without events); the case where removeIncognitoSpace runs during an undo/redo (no code path does today).
 - /code-review medium --fix: applied a single-pass dropUndoEntries, a corrected registerUndo doc comment, a clearer harness failure. Not fixed (out of scope, reported): Move Space's undo stores indices into spaces, which include Private spaces, so opening/closing a Private window shifts them (pre-existing); reRegisterRunningUndoEntry re-registers with in: [] (only Add/Delete Space use it, never Private).
 Chosen by Claude (not yet confirmed by the user): per-window removal (other Private windows and normal windows keep their entries) rather than clearing the whole stack; alternative: removeAllActions() on every Private window close (simpler, loses normal history).
+
+Follow-up commit: test for an Undo whose open group holds only the dropped Private entry (no exception, nothing restored, canUndo/canRedo false) — PrivateWindowUndoTests now 13 + 1 window test, all pass; wiki/architecture/tabstore.md mutation shape updated to registerUndo(actionName:in:).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

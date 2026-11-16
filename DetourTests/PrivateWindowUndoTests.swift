@@ -295,6 +295,25 @@ nonisolated final class PrivateWindowUndoTests: XCTestCase {
         XCTAssertFalse(hasPage("secret.example", in: priv))
         XCTAssertEqual(restored, [f.normal.id])
     }
+
+    /// The dropped entry is all there is: the Undo that closes the event's
+    /// group finds an empty stack once it is taken off, and does nothing.
+    @MainActor func testAnUndoOfOnlyTheDroppedEntryDoesNothing() throws {
+        let f = try makeFixture()
+        let (priv, page) = addPrivateSpace(f.store)
+        f.store.undoManager.groupsByEvent = true
+        defer { f.store.undoManager.groupsByEvent = false }
+        f.store.closeTab(id: page.id, in: priv)
+        XCTAssertEqual(f.store.undoManager.groupingLevel, 1, "precondition: the registration opened the event's group")
+        f.store.removeIncognitoSpace(id: priv.id)
+
+        let restored = restoredSpaceIDs { f.store.undoManager.undo() }
+
+        XCTAssertFalse(hasPage("secret.example", in: priv))
+        XCTAssertTrue(restored.isEmpty)
+        XCTAssertFalse(f.store.undoManager.canUndo)
+        XCTAssertFalse(f.store.undoManager.canRedo)
+    }
 }
 
 /// TASK-357 AC #3 through the real windows: a Private window closes with its
