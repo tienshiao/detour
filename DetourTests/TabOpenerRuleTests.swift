@@ -140,6 +140,147 @@ nonisolated final class TabOpenerRuleTests: XCTestCase {
                        "the favourite restores after the spaces, and still resolves")
     }
 
+    // MARK: - A pinned tab or favourite going dormant and waking (TASK-378)
+
+    /// Nothing listens on port 1: a woken tile's load goes nowhere real.
+    private let quietOpener = "http://127.0.0.1:1/opener"
+    private let quietChild = "http://127.0.0.1:1/child"
+
+    @MainActor private func pinnedChild(_ f: Fixture) throws -> (opener: BrowserTab, child: BrowserTab, entry: PinnedEntry) {
+        let opener = makeTab(quietOpener, in: f.a)
+        let child = makeTab(quietChild, in: f.a, parent: opener)
+        f.a.tabs.append(contentsOf: [opener, child])
+        inUndoGroup(f.store) { f.store.pinTab(id: child.id, in: f.a) }
+        let entry = try XCTUnwrap(f.a.pinnedEntries.first { $0.tab === child })
+        return (opener, child, entry)
+    }
+
+    @MainActor func testAPinnedTabKeepsItsOpenerWhenItGoesDormantAndWakes() throws {
+        let f = try makeFixture()
+        let (opener, child, entry) = try pinnedChild(f)
+        inUndoGroup(f.store) { f.store.closePinnedTab(id: entry.id, in: f.a) }
+        XCTAssertNil(entry.tab, "precondition: Cmd+W leaves a dormant tile")
+
+        XCTAssertTrue(f.store.activatePinnedEntry(id: entry.id, in: f.a))
+        let woken = try XCTUnwrap(entry.tab)
+        XCTAssertNotEqual(woken.id, child.id, "waking builds a new tab")
+        XCTAssertEqual(woken.parentID, opener.id, "which keeps the link its backing tab had")
+        XCTAssertTrue(f.a.openerTab(id: try XCTUnwrap(woken.parentID)) === opener)
+    }
+
+    @MainActor func testUndoClosingAPinnedTabKeepsItsOpener() throws {
+        let f = try makeFixture()
+        let (opener, _, entry) = try pinnedChild(f)
+        inUndoGroup(f.store) { f.store.closePinnedTab(id: entry.id, in: f.a) }
+
+        f.store.undoManager.undo()
+
+        XCTAssertEqual(try XCTUnwrap(entry.tab, "the undo brings the tab back").parentID, opener.id,
+                       "as the normal close undo does (TASK-332)")
+    }
+
+    @MainActor func testADormantPinnedTabWhoseOpenerClosedWakesUnlinked() throws {
+        let f = try makeFixture()
+        let (opener, _, entry) = try pinnedChild(f)
+        inUndoGroup(f.store) { f.store.closePinnedTab(id: entry.id, in: f.a) }
+        inUndoGroup(f.store) { f.store.closeTab(id: opener.id, in: f.a) }
+
+        XCTAssertTrue(f.store.activatePinnedEntry(id: entry.id, in: f.a))
+        XCTAssertNil(try XCTUnwrap(entry.tab).parentID, "an opener gone meanwhile is not linked (liveOpenerID)")
+    }
+
+    @MainActor func testUnpinningADormantPinnedTabKeepsItsOpener() throws {
+        let f = try makeFixture()
+        let (opener, _, entry) = try pinnedChild(f)
+        inUndoGroup(f.store) { f.store.closePinnedTab(id: entry.id, in: f.a) }
+
+        inUndoGroup(f.store) { XCTAssertTrue(f.store.unpinTab(id: entry.id, in: f.a)) }
+
+        let unpinned = try XCTUnwrap(f.a.tabs.first { $0.url?.absoluteString == quietChild })
+        XCTAssertEqual(unpinned.parentID, opener.id)
+    }
+
+    @MainActor func testAFavouriteKeepsItsOpenerWhenItGoesDormantAndWakes() throws {
+        let f = try makeFixture()
+        let opener = makeTab(quietOpener, in: f.a)
+        let child = makeTab(quietChild, in: f.a, parent: opener)
+        f.a.tabs.append(contentsOf: [opener, child])
+        XCTAssertTrue(f.store.moveTabToFavorites(id: child.id, from: f.a, profileID: f.profile.id))
+        let favorite = try favorite(backedBy: child, in: f)
+        f.store.deactivateFavorite(id: favorite.id, profileID: f.profile.id)
+        XCTAssertNil(favorite.tab, "precondition: a dormant favourite")
+
+        XCTAssertTrue(f.store.activateFavorite(id: favorite.id, profileID: f.profile.id, in: f.a))
+        let woken = try XCTUnwrap(favorite.tab)
+        XCTAssertNotEqual(woken.id, child.id)
+        XCTAssertEqual(woken.parentID, opener.id)
+
+        // Dormant again, then dragged into the tab list as a tab.
+        f.store.deactivateFavorite(id: favorite.id, profileID: f.profile.id)
+        XCTAssertTrue(f.store.restoreFavoriteAsTab(id: favorite.id, profileID: f.profile.id, in: f.a,
+                                                   at: f.a.tabs.count))
+        let restored = try XCTUnwrap(f.a.tabs.last)
+        XCTAssertEqual(restored.url?.absoluteString, quietChild)
+        XCTAssertEqual(restored.parentID, opener.id)
+    }
+
+    @MainActor func testADormantFavouriteWakingInASpaceWithoutItsOpenerIsUnlinked() throws {
+        let f = try makeFixture()
+        let opener = makeTab(quietOpener, in: f.a)
+        let child = makeTab(quietChild, in: f.a, parent: opener)
+        f.a.tabs.append(contentsOf: [opener, child])
+        XCTAssertTrue(f.store.moveTabToFavorites(id: child.id, from: f.a, profileID: f.profile.id))
+        let favorite = try favorite(backedBy: child, in: f)
+        f.store.deactivateFavorite(id: favorite.id, profileID: f.profile.id)
+
+        XCTAssertTrue(f.store.activateFavorite(id: favorite.id, profileID: f.profile.id, in: f.b))
+        XCTAssertNil(try XCTUnwrap(favorite.tab).parentID,
+                     "woken in B, where its opener is not: the rule for a tab coming back (liveOpenerID)")
+    }
+
+    @MainActor func testADormantFavouriteDraggedIntoThePinnedSectionKeepsItsOpener() throws {
+        let f = try makeFixture()
+        let opener = makeTab(quietOpener, in: f.a)
+        let child = makeTab(quietChild, in: f.a, parent: opener)
+        f.a.tabs.append(contentsOf: [opener, child])
+        XCTAssertTrue(f.store.moveTabToFavorites(id: child.id, from: f.a, profileID: f.profile.id))
+        let favorite = try favorite(backedBy: child, in: f)
+        f.store.deactivateFavorite(id: favorite.id, profileID: f.profile.id)
+
+        XCTAssertTrue(f.store.restoreFavoriteAsPinned(id: favorite.id, profileID: f.profile.id, in: f.a, at: 0))
+        let entry = try XCTUnwrap(f.a.pinnedEntries.first)
+        XCTAssertNil(entry.tab, "precondition: a dormant entry")
+        XCTAssertTrue(f.store.activatePinnedEntry(id: entry.id, in: f.a))
+        XCTAssertEqual(try XCTUnwrap(entry.tab).parentID, opener.id)
+    }
+
+    @MainActor func testUndoDeletingAPinnedTabKeepsItsOpener() throws {
+        let f = try makeFixture()
+        let (opener, _, entry) = try pinnedChild(f)
+        inUndoGroup(f.store) { f.store.deletePinnedEntry(id: entry.id, in: f.a) }
+
+        f.store.undoManager.undo()
+
+        let restored = try XCTUnwrap(f.a.pinnedEntries.first { $0.id == entry.id }, "the undo brings the entry back")
+        XCTAssertTrue(f.store.activatePinnedEntry(id: restored.id, in: f.a))
+        XCTAssertEqual(try XCTUnwrap(restored.tab).parentID, opener.id)
+    }
+
+    @MainActor func testUndoDeleteSpaceKeepsADormantPinnedTabsOpener() throws {
+        let f = try makeFixture()
+        let (opener, _, entry) = try pinnedChild(f)
+        inUndoGroup(f.store) { f.store.closePinnedTab(id: entry.id, in: f.a) }
+        inUndoGroup(f.store) { _ = f.store.deleteSpace(id: f.a.id) }
+
+        f.store.undoManager.undo()
+
+        let space = try XCTUnwrap(f.store.spaces.first { $0.id == f.a.id }, "the undo brings the space back")
+        let restored = try XCTUnwrap(space.pinnedEntries.first { $0.id == entry.id })
+        XCTAssertNil(restored.tab, "precondition: still dormant")
+        XCTAssertTrue(f.store.activatePinnedEntry(id: restored.id, in: space))
+        XCTAssertEqual(try XCTUnwrap(restored.tab).parentID, opener.id)
+    }
+
     // MARK: - The one rule: which tabs count
 
     @MainActor func testTheOpenerKinds() throws {
@@ -391,6 +532,46 @@ nonisolated final class TabOpenerWindowTests: XCTestCase {
         let after = try XCTUnwrap(wc.navigationSwipePaneStates().first { $0.tabID == child.id })
         XCTAssertEqual(after.mode, .webKit, "no opener left: WebKit's gesture is back")
         XCTAssertTrue(after.gesturesEnabled)
+    }
+
+    /// TASK-378: a pinned child closed to a dormant tile and woken by a click
+    /// still returns to its opener with Back.
+    @MainActor func testBackOnAPinnedTabWokenFromDormantSelectsItsOpener() throws {
+        let (wc, space, _) = makeWindow("Woken pinned")
+        let opener = wc.store.addTab(in: space, url: pageURL)
+        let child = wc.store.addTab(in: space, url: pageURL, parentID: opener.id)
+        wc.store.pinTab(id: child.id, in: space)
+        let entry = try XCTUnwrap(space.pinnedEntries.first { $0.tab === child })
+        wc.store.closePinnedTab(id: entry.id, in: space)
+        XCTAssertNil(entry.tab, "precondition: dormant")
+
+        XCTAssertTrue(wc.store.activatePinnedEntry(id: entry.id, in: space))
+        let woken = try XCTUnwrap(entry.tab)
+        wc.selectTab(id: woken.id)
+        XCTAssertTrue(wc.parentTab(for: woken) === opener)
+
+        wc.goBack(nil)
+
+        XCTAssertEqual(wc.selectedTabID, opener.id, "Back selects the opener")
+        XCTAssertTrue(entry.tab === woken, "and leaves the pinned tab")
+    }
+
+    /// TASK-378's premise: the sleep sweep keeps a pinned tab live but
+    /// asleep (the same tab), so its link was never at risk there.
+    @MainActor func testAPinnedTabPutToSleepAndWokenKeepsItsOpener() throws {
+        let (wc, space, _) = makeWindow("Slept pinned")
+        let opener = wc.store.addTab(in: space, url: pageURL)
+        let child = wc.store.addTab(in: space, url: pageURL, parentID: opener.id)
+        wc.store.pinTab(id: child.id, in: space)
+        let entry = try XCTUnwrap(space.pinnedEntries.first { $0.tab === child })
+
+        child.sleep(force: true)
+        XCTAssertTrue(entry.tab === child)
+        XCTAssertNil(child.webView, "precondition: asleep")
+        wc.selectTab(id: child.id)
+        XCTAssertNotNil(child.webView, "precondition: woken")
+
+        XCTAssertEqual(child.parentID, opener.id)
     }
 
     // MARK: - Whether Back is enabled (TASK-377)

@@ -1706,6 +1706,7 @@ class TabStore {
               let url = rehomedTileURL(fav.url, page: page, in: profile) else { return false }
 
         let tab = makeTab(loading: url, title: fav.title, faviconURL: fav.faviconURL, in: space)
+        tab.parentID = space.liveOpenerID(fav.dormantOpenerID)
         // A favourite's tab never enters space.tabs, so no insert notification
         // reports it — but its web view is built from the profile's
         // configuration and runs content scripts, which need the tab to be known
@@ -1740,12 +1741,20 @@ class TabStore {
     func deactivateFavorite(id: UUID, profileID: UUID) {
         guard let profile = profiles.first(where: { $0.id == profileID }),
               let fav = profile.favorites.first(where: { $0.id == id }),
-              let tab = fav.tab else { return }
+              fav.tab != nil else { return }
+        makeFavoriteDormant(fav)
+        notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
+        scheduleSave()
+    }
+
+    /// Drops a favourite's live backing tab, keeping its opener link for the
+    /// tab a wake builds (TASK-378). The caller announces and saves.
+    private func makeFavoriteDormant(_ fav: Favorite) {
+        guard let tab = fav.tab else { return }
+        fav.dormantOpenerID = tab.parentID
         tabSubscriptions.removeValue(forKey: tab.id)
         tab.teardown()
         fav.tab = nil
-        notifyObservers { $0.tabStoreDidUpdateFavorites(for: profile) }
-        scheduleSave()
     }
 
     /// The favourite whose live backing tab is `tab`, with the profile that owns it.
@@ -1919,6 +1928,7 @@ class TabStore {
             guard dormantTileDropTargets(page).contains(.tabList),
                   let url = rehomedTileURL(fav.url, page: page, in: profile) else { return false }
             tab = makeTab(loading: url, title: fav.title, faviconURL: fav.faviconURL, in: space)
+            tab.parentID = space.liveOpenerID(fav.dormantOpenerID)
             subscribeToTab(tab)
         }
         profile.favorites.remove(at: favIdx)
@@ -1976,6 +1986,7 @@ class TabStore {
             tab: fav.tab
         )
         if fav.tab == nil {
+            entry.dormantOpenerID = fav.dormantOpenerID
             entry.onFaviconDownloaded = { [weak self, weak entry] in
                 guard let self, let entry else { return }
                 for space in self.spaces {
@@ -2389,6 +2400,9 @@ class TabStore {
             let splitGroupID: UUID?
             let splitFraction: Double?
             let extensionID: String?
+            /// The opener link a dormant entry keeps (TASK-378): the backing
+            /// tab's while live, so an entry whose tab is not rebuilt keeps it.
+            let dormantOpenerID: UUID?
         }
         struct FolderSnapshot {
             let id: UUID
@@ -2432,7 +2446,8 @@ class TabStore {
                 backingTab: entry.tab.map(snapshot),
                 splitGroupID: entry.splitGroupID,
                 splitFraction: entry.splitFraction,
-                extensionID: space.profile?.extensionID(forPageURL: entry.pinnedURL)
+                extensionID: space.profile?.extensionID(forPageURL: entry.pinnedURL),
+                dormantOpenerID: entry.tab?.parentID ?? entry.dormantOpenerID
             )
         }
         let savedFolders: [FolderSnapshot] = space.pinnedFolders.map { folder in
@@ -2596,6 +2611,7 @@ class TabStore {
                 entry.splitGroupID = e.splitGroupID
                 entry.splitFraction = e.splitFraction
                 if backing == nil {
+                    entry.dormantOpenerID = e.dormantOpenerID
                     entry.onFaviconDownloaded = { [weak self, weak entry] in
                         guard let self, let entry else { return }
                         for space in self.spaces {
@@ -2696,9 +2712,7 @@ class TabStore {
                         space.selectedTabID = space.tabs.first?.id
                             ?? space.pinnedEntries.first(where: { $0.tab != nil })?.tab?.id
                     }
-                    tabSubscriptions.removeValue(forKey: favTab.id)
-                    favTab.teardown()
-                    fav.tab = nil
+                    makeFavoriteDormant(fav)
                     deactivatedAny = true
                 }
                 if deactivatedAny {
@@ -4427,6 +4441,7 @@ class TabStore {
         guard dormantTileDropTargets(page).contains(.tabList),
               let url = rehomedTileURL(entry.pinnedURL, page: page, in: space) else { return nil }
         let tab = makeTab(loading: url, title: entry.pinnedTitle, faviconURL: entry.faviconURL, in: space)
+        tab.parentID = space.liveOpenerID(entry.dormantOpenerID)
         subscribeToTab(tab)
         return tab
     }
@@ -4625,11 +4640,13 @@ class TabStore {
         let tabTitle = tab?.title
         let tabFaviconURL = tab?.faviconURL
         let tabExtensionID = space.profile?.extensionID(forPageURL: tabURL ?? entry.pinnedURL)
+        let tabParentID = tab?.parentID
 
         // Cache favicon before discarding tab
         if let tab {
             if let url = tab.faviconURL { entry.faviconURL = url }
             if let image = tab.favicon { entry.favicon = image }
+            entry.dormantOpenerID = tab.parentID
             tabSubscriptions.removeValue(forKey: tab.id)
             tab.teardown()
         }
@@ -4666,6 +4683,9 @@ class TabStore {
                     interactionState: stateData,
                     extensionID: extensionID, in: space
                 ) else { return }
+                // Its opener only while it is still one (TASK-378), as the
+                // normal close undo does (TASK-332).
+                restored.parentID = space.liveOpenerID(tabParentID)
                 entry.tab = restored
                 self.subscribeToTab(restored)
                 self.registerUndo(actionName: "Close Tab", in: [space]) { [weak self] in
@@ -4691,6 +4711,8 @@ class TabStore {
         let savedFavicon = entry.favicon
         let savedFolderID = entry.folderID
         let savedSortOrder = entry.sortOrder
+        // The undo brings the entry back dormant, with the link it had (TASK-378).
+        let savedOpenerID = entry.tab?.parentID ?? entry.dormantOpenerID
         // The home page's durable identity if it is an extension page (TASK-24):
         // its origin can die before the undo (a context reload, a disable).
         let savedExtensionID = space.profile?.extensionID(forPageURL: savedPinnedURL)
@@ -4723,6 +4745,7 @@ class TabStore {
                 folderID: savedFolderID,
                 sortOrder: savedSortOrder
             )
+            restored.dormantOpenerID = savedOpenerID
             let insertAt = min(index, space.pinnedEntries.count)
             space.pinnedEntries.insert(restored, at: insertAt)
             self.rejoinPinnedSplit(restored, membership: membership, in: space)

@@ -20,6 +20,12 @@ class PinnedEntry {
     var splitGroupID: UUID?
     /// Left pane's width fraction; both members store it, first wins.
     var splitFraction: Double?
+    /// The opener link (`BrowserTab.parentID`) of the backing tab this entry
+    /// last had, kept while it is dormant so the tab a wake builds gets it
+    /// back, through `Space.liveOpenerID` (TASK-378). Set when the backing tab
+    /// is dropped; read only while dormant. In memory only: a relaunch with
+    /// the entry dormant loses it.
+    var dormantOpenerID: UUID?
 
     var isLive: Bool { tab != nil }
 

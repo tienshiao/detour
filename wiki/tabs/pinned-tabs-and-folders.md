@@ -42,6 +42,9 @@ sources:
   - id: task-154
     resource: backlog:TASK-154
     title: A session save that fails is handled, not only logged
+  - id: task-378
+    resource: backlog:TASK-378
+    title: "Tab opener: a pinned tab or favourite that goes to sleep loses its own opener link"
 ---
 
 # Summary
@@ -70,7 +73,9 @@ view) when the question is
 
 "Dormant" and "asleep" are different things. A dormant entry draws its cached
 `favicon` / `faviconURL` (copied from the tab when it went dormant) and its
-`pinnedTitle`.
+`pinnedTitle`. It also keeps the tab's [opener link](./tab-opener.md)
+(`dormantOpenerID`, in memory only), which the tab built on activation or
+unpin gets back while that opener is still one in the space.[^task-378]
 
 ## Identity
 
@@ -153,7 +158,8 @@ it**: it tears the tab down, caches the favicon on the entry and sets
 The close notifies `tabStoreDidUpdatePinnedEntry`, not a removal, because the
 row stays. A background window whose selection was that tab deselects (or
 follows a split partner) in that callback. No closed-tab record is written;
-the undo ("Close Tab") rebuilds the tab on the entry.
+the undo ("Close Tab") rebuilds the tab on the entry, with its opener link
+while that opener is still one (TASK-378, as the normal close undo).
 
 **There is no "reset to home" operation.** Home is reached by closing the tab
 and clicking the tile again, which loads `pinnedURL` in a new tab. Closing a
@@ -259,3 +265,4 @@ rejection), `TabStoreTests`, `SplitTabTests` (pinned splits),
 [^task-34]: Moving an extension page favourite into the tab list or pinned section must give a loadable tab
 [^task-37]: Activating or unpinning a dormant pinned entry of a disabled or uninstalled extension gives a dead tab
 [^task-40]: Undo actions registered before Delete Space act on a stale Space object after Undo Delete Space
+[^task-378]: Tab opener: a pinned tab or favourite that goes to sleep loses its own opener link

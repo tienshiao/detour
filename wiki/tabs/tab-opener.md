@@ -57,6 +57,9 @@ sources:
   - id: task-377
     resource: backlog:TASK-377
     title: "Sidebar: the Back button stays enabled after a child's opener closes or a favourite opener sleeps"
+  - id: task-378
+    resource: backlog:TASK-378
+    title: "Tab opener: a pinned tab or favourite that goes to sleep loses its own opener link"
   - id: checks-377
     resource: ../../docs/harness/task377-back-enabled-checks.py
     title: TASK-377 runtime checks through the automation endpoint (Back's enabled state)
@@ -201,9 +204,24 @@ favourite of its profile, an opener moved there first).
   favourite backing rows and, since TASK-358, read back for them too. Before,
   restore read it only for normal tabs, so after a relaunch Back on a pinned
   child no longer selected its opener.[^task-358]
-- **A pinned tab or favourite going to sleep** loses its own link: the entry
-  keeps no backing tab, and waking it builds a new tab at its home page with
-  no `parentID` (its history is gone too).
+- **A pinned tab or favourite going to sleep** (the sleep sweep) keeps its
+  link: it stays live but asleep, the same `BrowserTab`, and wakes into it.
+- **A pinned tab or favourite going dormant** (Cmd+W, the row's minus
+  button, an extension's `tabs.remove`, a space moved to another profile)
+  drops its backing tab, and the wake (a click, an unpin, a dormant
+  favourite dragged into the tab list) builds a new tab with a new id at its
+  home page. The entry or favourite keeps the dropped tab's `parentID`
+  (`dormantOpenerID`) and the new tab gets it back through
+  `space.liveOpenerID`, in the space it wakes in, as a reopened tab does;
+  Undo Close Tab of a pinned tab likewise. A dormant favourite dragged into
+  the pinned section hands the link to its entry, and Undo Delete (pinned
+  entry) and Undo Delete Space bring a dormant entry back with it. Before
+  TASK-378 the woken tab had no link.[^task-378] Limits: it is kept **in
+  memory only** (a relaunch with the tile dormant loses it: keeping it would
+  need new columns on the `pinnedTab` and `favorite` tables); and a favourite woken in
+  another space than its opener's is unlinked. The other direction is not
+  kept: the woken tab has a new id, so children of the tab that went dormant
+  no longer resolve it.
 
 # Runtime check
 
@@ -227,6 +245,12 @@ the root tab. The button is read from screenshots (the darkest pixel around
 it); the sidebar table hit-tests as a whole, so the opener's row is found by
 its place in the list.[^checks-377]
 
+`docs/harness/task378-dormant-opener-checks.py` pins a `target=_blank`
+child (Cmd+D), closes it to a dormant tile (Cmd+W), wakes it with a click
+(a new tab id) and checks Cmd+[ selects the opener and keeps the pinned tab;
+then, dormant again with the opener closed meanwhile, the woken tab has no
+opener and Navigate › Back is disabled.[^task-378]
+
 # Where it lives
 
 | What | Where |
@@ -234,7 +258,7 @@ its place in the list.[^checks-377]
 | The field | `BrowserTab.parentID` in [BrowserTab.swift](../../Detour/Browser/BrowserTab.swift); `TabRecord.parentID` in the session database |
 | Resolution | `Space.openerTab(id:)`, `Space.liveOpenerID(_:)` in [TabStore.swift](../../Detour/Browser/TabStore.swift); `BrowserWindowController.parentTab(for:)` |
 | Pure rules | [TabInsertion.swift](../../Detour/Browser/TabInsertion.swift), [TabCloseSelection.swift](../../Detour/Browser/TabCloseSelection.swift) |
-| Tests | `TabOpenerRuleTests` (the rule per kind, the relaunch round trips, reopen, close undo and Move to Space with pinned and favourite openers), `TabOpenerWindowTests` (Back, Cmd+W, `window.close()` and the swipe mode with pinned and favourite openers; Back's enabled state, button and menu, as an opener closes, goes dormant, is removed or moves away and back), `TabInsertionTests`, `TabCloseSelectionTests`, `ClosedTabOpenerTests` (written, kept, dropped on reopen and on a close undo, v26), `MoveTabToSpaceTests`, `NavigationSwipeTests`, `PageOpenedWindowTests` |
+| Tests | `TabOpenerRuleTests` (the rule per kind, the relaunch round trips, reopen, close undo and Move to Space with pinned and favourite openers; a pinned tab or favourite keeping its own link across dormancy, its close undo, unpin and the drag to the tab list), `TabOpenerWindowTests` (Back, Cmd+W, `window.close()` and the swipe mode with pinned and favourite openers; Back's enabled state, button and menu, as an opener closes, goes dormant, is removed or moves away and back), `TabInsertionTests`, `TabCloseSelectionTests`, `ClosedTabOpenerTests` (written, kept, dropped on reopen and on a close undo, v26), `MoveTabToSpaceTests`, `NavigationSwipeTests`, `PageOpenedWindowTests` |
 
 # Related
 
@@ -251,3 +275,4 @@ its place in the list.[^checks-377]
 [^checks-358]: TASK-358 runtime checks through the automation endpoint (three launches)
 [^task-377]: Sidebar: the Back button stays enabled after a child's opener closes or a favourite opener sleeps
 [^checks-377]: TASK-377 runtime checks through the automation endpoint (Back's enabled state)
+[^task-378]: Tab opener: a pinned tab or favourite that goes to sleep loses its own opener link

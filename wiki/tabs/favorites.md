@@ -42,6 +42,9 @@ sources:
   - id: task-58
     resource: backlog:TASK-58
     title: A live favourite moved back into the tab list or pinned section keeps a stale spaceID
+  - id: task-378
+    resource: backlog:TASK-378
+    title: "Tab opener: a pinned tab or favourite that goes to sleep loses its own opener link"
 ---
 
 # What it does
@@ -68,7 +71,10 @@ same live page.
 
 `Favorite` (id, `url`, `title`, `faviconURL`, published `favicon`, `sortOrder`,
 optional `tab`) lives in `Profile.favorites`. A favourite with `tab == nil` is
-dormant. The code spells it `Favorite`; comments and tasks say "favourite".
+dormant. A dormant favourite keeps its last backing tab's
+[opener link](./tab-opener.md) in memory (`dormantOpenerID`); activating it,
+or dragging it into the tab list, gives the new tab that link while the
+opener is still one in the space it wakes in.[^task-378] The code spells it `Favorite`; comments and tasks say "favourite".
 
 ## The backing tab is in no space
 
@@ -233,3 +239,4 @@ next save. A profile with no space left restores its favourites dormant.
 [^task-53]: Tiles show the globe placeholder instead of favicons on first launch
 [^task-54]: Switching away and back drops a favourite backing tab as the space's selected tab
 [^task-58]: A live favourite moved back into the tab list or pinned section keeps a stale spaceID
+[^task-378]: Tab opener: a pinned tab or favourite that goes to sleep loses its own opener link
