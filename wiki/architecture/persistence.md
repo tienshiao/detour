@@ -320,7 +320,9 @@ For normal tabs, `lastDeselectedAt` is restored from the row, or set to
 launch instead of being slept or archived immediately. The selected tab gets
 nil (it is on screen). Pinned and favourite backing tabs are rebuilt with nil
 whatever their row holds, although the save writes the value for them
-(TASK-49). An unselected one comes back without a web view, so nothing reads
+(TASK-49). Their `parentID` is read back, unchecked, as a normal tab's is
+(TASK-358): ids are kept, so the [tab opener](../tabs/tab-opener.md) link
+still resolves after the relaunch. An unselected one comes back without a web view, so nothing reads
 the nil until it is woken; its first deselect stamps it (read from the code,
 2026-11-15).
 

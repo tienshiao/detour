@@ -534,6 +534,8 @@ extension BrowserWindowController {
     // MARK: Opener pictures
 
     /// Whether some normal tab was opened from `tabID` and is still open.
+    /// The raw id in any space, not the opener rule: it only decides how long
+    /// a picture is kept, and keeping one a little longer costs nothing.
     static func hasOpenChild(_ tabID: UUID, in store: TabStore) -> Bool {
         store.spaces.contains { space in space.tabs.contains { $0.parentID == tabID } }
     }

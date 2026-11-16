@@ -210,9 +210,11 @@ leaves no closed-tab record.
 - Different profile: the web view has to go. The tab is slept (forced) and
   wakes from the destination's configuration.
 - Either way the tab arrives as a root tab (`parentID` cleared, see
-  [tab opener](../tabs/tab-opener.md)); undoing
-  the move restores the link while the opener is still a normal tab of the
-  home space.
+  [tab opener](../tabs/tab-opener.md)), unless its opener also resolves in
+  the destination (a favourite of its profile, or an opener moved there
+  first; TASK-358); undoing the move restores the
+  link while the opener is still an opener of the home space (a normal tab,
+  live pinned tab or live favourite).
 - Across the incognito boundary: refused (`canMove`). An incognito tab's
   interaction state landing in a persistent space would be written to the
   session database.

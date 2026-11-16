@@ -27,6 +27,9 @@ sources:
   - id: split-tests
     resource: ../../DetourTests/SplitTabTests.swift
     title: SplitTabTests.swift
+  - id: task-358
+    resource: backlog:TASK-358
+    title: "Tab opener: a pinned or favourite tab's opener is lost at relaunch, and the readers disagree on which openers count"
 ---
 
 # Summary
@@ -35,8 +38,9 @@ The normal-tab list is flat, but each tab remembers the tab it was opened from
 (`BrowserTab.parentID`, the [tab opener](./tab-opener.md) link). Two pure functions give the list a tree-like feel
 without a tree: `tabInsertionIndex` keeps a parent's children in a run right
 below it, and `tabCloseSelectionID` walks siblings, then the parent, then a
-neighbour. Both take `(id, parentID)` tuples and the set of pinned backing-tab
-ids, so they are testable without a web view. A third function,
+neighbour. Both take `(id, parentID)` tuples (the insertion rule also the set
+of pinned backing-tab ids, the close rule the opener rule as a predicate), so
+they are testable without a web view. A third function,
 `snappedToSplitGroupBoundary`, keeps every insertion out of a
 [split group](./split-tabs.md).
 
@@ -60,7 +64,10 @@ Consequences:
   user dragged elsewhere no longer extends the run, so later children land
   right under the parent again.
 - A child of a pinned tab or favourite cannot sit under its parent (the parent
-  is not in `space.tabs`), so children of such tabs collect at the top.
+  is not in `space.tabs`), so children of such tabs collect at the top. A
+  favourite's tab is in neither list and takes the same branch. This is a
+  placement rule, not the opener rule: it asks where the parent is, not
+  whether the child can return to it (TASK-358).
 
 ## The split snap: `snappedToSplitGroupBoundary`
 
@@ -98,11 +105,17 @@ In order, for the tab at `closingIndex`:
 1. **Next sibling**: the first *later* tab with the same `parentID` (it does not
    have to be adjacent).
 2. **Previous sibling**: the nearest *earlier* tab with the same `parentID`.
-3. **Parent**, when it is a normal tab. A pinned parent is skipped here.
+3. **Parent**, while it is an opener by the one opener rule
+   (`isOpener`, which the window answers with `Space.openerTab(id:)`): a
+   normal tab, a live pinned tab or a live favourite's tab. It need not be in
+   the list, so the last normal tab still returns to a pinned or favourite
+   opener. Before TASK-358 a pinned parent was skipped here and a favourite
+   one never matched, unlike the Back button.[^task-358]
 4. **Right neighbour**, or the left one when the closing tab is last.
 
-It returns nil when the closing tab is the only one. A root tab (no parent)
-skips straight to step 4.
+It returns nil when nothing is left to select. A root tab (no parent) skips
+straight to step 4. Siblings match on the raw `parentID`, not the opener
+rule: two children of a closed opener are still siblings.
 
 ## What the window adds
 
@@ -110,7 +123,7 @@ skips straight to step 4.
 it wraps the pure rule:
 
 - **A split partner wins over everything.** Closing one pane selects the other.
-- If the rule returns nil (last normal tab): the first live pinned tab, else the
+- If the rule returns nil (last normal tab, no opener): the first live pinned tab, else the
   first pinned entry is activated and selected. If that entry refuses to wake
   (a disabled extension's page), the window deselects and shows the
   [refusal toast](./pinned-tabs-and-folders.md).
@@ -120,9 +133,11 @@ Selection is settled *before* the tab leaves `space.tabs`, so the store's
 removal notification finds nothing to fix. The same helper serves "Move to
 Space", which takes a tab out of the list without closing it.
 
-`parentID` is cut when a tab moves to another space (it arrives as a root tab)
-and restored if the move is undone while the parent is still a normal tab of
-the home space ([tab opener](./tab-opener.md)).
+`parentID` is cut when a tab moves to another space (it arrives as a root tab,
+unless its opener also resolves there: a favourite of the destination's
+profile, or an opener moved there first) and
+restored if the move is undone while the parent is still an opener of the
+home space ([tab opener](./tab-opener.md)).
 
 # Where it lives
 
@@ -135,7 +150,7 @@ the home space ([tab opener](./tab-opener.md)).
 
 # Tests
 
-`TabInsertionTests` (9) and `TabCloseSelectionTests` (17) cover the two rules;
+`TabInsertionTests` (10) and `TabCloseSelectionTests` (19) cover the two rules;
 the snap and the block moves are in `SplitTabTests`
 (`testSnappedToSplitGroupBoundary`, `testChildTabInsertionNeverLandsInsideGroup`,
 the `testResolveTabMove…` and `testGapMove…` cases). These are the suites a
@@ -148,3 +163,5 @@ change to the rules extends.
 - [Split tabs](./split-tabs.md): the invariant the snap protects.
 - [Sidebar row layout](../sidebar/row-layout.md): item indices versus tab indices, which drop gaps are expressed in.
 - [Sidebar drag and drop](../sidebar/drag-and-drop.md): where gap indices come from.
+
+[^task-358]: Tab opener: a pinned or favourite tab's opener is lost at relaunch, and the readers disagree on which openers count

@@ -17,10 +17,10 @@ extension TabRecord {
     ///
     /// Decision (TASK-49): favourite backing tabs now persist `lastDeselectedAt`
     /// and `parentID` like every other row, rather than hard-coding them to nil.
-    /// Restore does not read either column for a backing tab — they drive
-    /// `sleepStaleTabs` and child-tab ordering, both of which only apply to tabs
-    /// in `space.tabs` — so nothing changes on load; the special case, and the
-    /// drift it invited, go away.
+    /// Restore does not read `lastDeselectedAt` for a backing tab (it drives
+    /// `sleepStaleTabs`, which only applies to tabs in `space.tabs`). It does
+    /// read `parentID` for pinned and favourite backing tabs since TASK-358, so
+    /// Back on one still selects the tab it was opened from after a relaunch.
     ///
     /// `splitGroupID`/`splitFraction` stay parameters instead of being read off
     /// the tab because a *pinned* split lives on the pinned entries, never on

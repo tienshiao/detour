@@ -215,7 +215,7 @@ extension BrowserWindowController: WKUIDelegate {
             if space.id == activeSpaceID, tab.id == selectedTabID {
                 settlingSelectionForClose {
                     if store.splitGroup(containing: tab.id, in: space) == nil,
-                       let opener = tab.parentID.flatMap({ space.displayableTab(id: $0) }) {
+                       let opener = tab.parentID.flatMap({ space.openerTab(id: $0) }) {
                         selectTab(id: opener.id)
                     } else {
                         settleSelectionLeaving(tabAt: index, in: space)

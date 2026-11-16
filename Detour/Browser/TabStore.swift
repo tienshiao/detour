@@ -146,19 +146,27 @@ class Space {
         selectedTabID.flatMap { displayableTab(id: $0) } ?? pinnedTabs.first ?? tabs.first
     }
 
-    /// The tab with `id` as the opener a child tab of this space closes to
-    /// (the Back button, Cmd+[, the back swipe): a normal tab of the space or
-    /// a live pinned tab. Nil for a closed, archived or moved tab, an asleep
-    /// pinned entry, a favourite, or a tab of another space. The one rule
-    /// both the window (`parentTab(for:)`) and Reopen Closed Tab use
-    /// (TASK-332).
+    /// The tab with `id` as the opener a child tab of this space returns to:
+    /// a normal tab of the space, a live pinned tab, or the live backing tab
+    /// of one of the profile's favourites. Nil for a closed, archived or moved
+    /// tab, an asleep pinned entry, a dormant favourite, or a tab of another
+    /// space (a favourite belongs to every space of its profile).
+    ///
+    /// The one rule for which tabs count as an opener (TASK-358): the Back
+    /// button, Cmd+[ and the back swipe (`parentTab(for:)`), the close
+    /// selection (`tabCloseSelectionID`), a page's `window.close()`, Reopen
+    /// Closed Tab and the close undos (`liveOpenerID`), and Move to Space and
+    /// its undo all resolve the link here. One line per kind, so a kind can be
+    /// dropped (or added) for every reader at once.
     func openerTab(id: UUID) -> BrowserTab? {
-        tabs.first { $0.id == id } ?? pinnedEntries.lazy.compactMap(\.tab).first { $0.id == id }
+        tabs.first { $0.id == id }
+            ?? pinnedEntries.lazy.compactMap(\.tab).first { $0.id == id }
+            ?? profile?.favorites.lazy.compactMap(\.tab).first { $0.id == id }
     }
 
     /// `id` while `openerTab(id:)` still resolves it, else nil: the opener
-    /// link a tab coming back (Reopen Closed Tab, a close undo) keeps
-    /// (TASK-332).
+    /// link a tab arriving in this space keeps (Reopen Closed Tab, a close
+    /// undo, TASK-332; Move to Space and its undo, TASK-358).
     func liveOpenerID(_ id: UUID?) -> UUID? {
         id.flatMap { openerTab(id: $0)?.id }
     }
@@ -1426,6 +1434,10 @@ class TabStore {
                         )
                     }
                     backingTab?.spaceID = spaceID
+                    // Unchecked, as for a normal tab: ids are kept, and the
+                    // opener may be a pinned entry or favourite not yet rebuilt
+                    // (TASK-358). Each reader resolves it when it reads it.
+                    backingTab?.parentID = tabRecord.parentID.flatMap { UUID(uuidString: $0) }
                     backingTab?.applyPersistedPeekState(from: tabRecord)
                     if let tab = backingTab {
                         self.subscribeToTab(tab)
@@ -1512,6 +1524,7 @@ class TabStore {
                         )
                     }
                     backingTab?.spaceID = hostSpace.id
+                    backingTab?.parentID = tabRecord.parentID.flatMap { UUID(uuidString: $0) }
                     backingTab?.applyPersistedPeekState(from: tabRecord)
                     if let tab = backingTab {
                         self.subscribeToTab(tab)
@@ -3401,9 +3414,11 @@ class TabStore {
         // announces the move.
         notifyObservers { $0.tabStoreDidRemoveTab(tab, at: index, in: source) }
         carry(tab, plan, from: source, to: destination)
-        // The tab it was opened from stays behind, so it arrives as a root tab.
+        // The tab it was opened from usually stays behind, so it arrives as a
+        // root tab; a favourite of the destination's profile is there too and
+        // stays its opener (TASK-358).
         let savedParentID = tab.parentID
-        tab.parentID = nil
+        tab.parentID = destination.liveOpenerID(savedParentID)
 
         let insertAt = snappedToSplitGroupBoundary(
             min(destinationIndex ?? destination.tabs.count, destination.tabs.count),
@@ -3425,11 +3440,13 @@ class TabStore {
                   let current = self.space(withID: destinationID),
                   self.moveTab(id: id, from: current, to: home, at: index) else { return }
             // Coming home means coming back under the tab it was opened from,
-            // while that tab is still there. The reverse move captured the cut
-            // link (nil), so the redo it registered leaves this alone.
-            if let savedParentID, home.tabs.contains(where: { $0.id == savedParentID }),
+            // while that tab is still an opener there (`openerTab`: a live
+            // pinned tab or favourite too, TASK-358). The reverse move captured
+            // the link the tab had in the destination (nil, or a favourite kept
+            // within the profile), so the redo it registered restores that.
+            if let relinked = home.liveOpenerID(savedParentID),
                let returned = home.tabs.first(where: { $0.id == id }) {
-                returned.parentID = savedParentID
+                returned.parentID = relinked
                 self.scheduleSave()
             }
         }

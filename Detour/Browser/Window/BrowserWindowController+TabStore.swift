@@ -173,6 +173,11 @@ extension BrowserWindowController: TabStoreObserver {
         tabSidebar.inactiveSpaceContentDidChange()
         guard let space = activeSpace, space.profileID == profile.id else { return }
         tabSidebar.updateFavorites(profile.favorites, selectedTabID: selectedTabID)
+        // A favourite is an opener (TASK-358): one removed or put to sleep
+        // leaves its children nothing to swipe back to. Only this profile's
+        // favourites are openers here, and no normal tab changed, so the
+        // picture caches need no pruning.
+        refreshNavigationSwipeModes()
     }
 
     func tabStoreDidUpdateClosedTabRecords() {

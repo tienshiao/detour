@@ -5,7 +5,7 @@
 * [Split tabs](split-tabs.md) - The data model of a split (two adjacent tabs sharing a splitGroupID), the contiguity invariants TabStore keeps in every mutation, and where a pinned split's group lives.
 * [Tab insertion and close selection](tab-insertion-and-close-selection.md) - The two pure rules that decide where a new tab lands in a space's list and which tab is selected after one closes, plus what the window layers on top of them.
 * [Tab lifecycle](tab-lifecycle.md) - How a tab comes into being, navigates, closes and comes back, which object is its navigation delegate at each point, and when each step reaches the database.
-* [Tab opener](tab-opener.md) - The link from a tab to the tab it was opened from (BrowserTab.parentID): which paths set it, the readers (insertion, close selection, Back and the back swipe, window.close, reopen and the close undos, Move to Space) and the different openers each accepts, and when the link is cut, re-checked or left dangling.
+* [Tab opener](tab-opener.md) - The link from a tab to the tab it was opened from (BrowserTab.parentID): which paths set it, the one opener rule (Space.openerTab: a normal, live pinned or live favourite tab) every reader resolves it by (close selection, Back and the back swipe, window.close, reopen and the close undos, Move to Space), the deliberate exceptions, and when the link is cut, re-checked or left dangling.
 
 # Components
 

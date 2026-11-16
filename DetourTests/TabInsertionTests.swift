@@ -93,6 +93,24 @@ nonisolated final class TabInsertionTests: XCTestCase {
         XCTAssertEqual(result, 2, "Should insert after existing siblings from pinned parent")
     }
 
+    /// A favourite's backing tab is in neither list: placement treats it as a
+    /// pinned parent, at the top after its children (TASK-358 keeps this
+    /// placement rule apart from the opener rule).
+    @MainActor func testFavouriteParentPlacesLikeAPinnedOne() {
+        let favouriteParent = UUID()
+        let child = UUID()
+        let other = UUID()
+        let result = tabInsertionIndex(
+            parentID: favouriteParent,
+            existingTabs: [
+                (id: child, parentID: favouriteParent),
+                (id: other, parentID: nil),
+            ],
+            pinnedTabIDs: []
+        )
+        XCTAssertEqual(result, 1, "after the favourite's existing child, at the top")
+    }
+
     @MainActor func testPinnedParentSiblingsContiguous() {
         let parentID = UUID()
         let child1 = UUID()

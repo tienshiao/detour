@@ -2570,6 +2570,8 @@ class BrowserWindowController: NSWindowController {
         navigateBackOrCloseChildTab()
     }
 
+    /// The tab `tab` was opened from, by the one opener rule
+    /// (`Space.openerTab(id:)`) in this window's active space.
     func parentTab(for tab: BrowserTab) -> BrowserTab? {
         guard let parentID = tab.parentID else { return nil }
         return activeSpace?.openerTab(id: parentID)
@@ -2971,8 +2973,9 @@ class BrowserWindowController: NSWindowController {
     ///
     /// Leaving one pane of a split stays in the split: the surviving partner
     /// wins over the generic adjacent-tab fallback. Otherwise the next tab is
-    /// the close order's (`tabCloseSelectionID`: a child's parent, else a
-    /// neighbour), then the first live pinned tab, then the first pinned tile —
+    /// the close order's (`tabCloseSelectionID`: a sibling, then the tab's
+    /// opener by `Space.openerTab(id:)` (a pinned tab or favourite included,
+    /// TASK-358), else a neighbour), then the first live pinned tab, then the first pinned tile —
     /// which may refuse to wake and then explains itself (TASK-37).
     func settleSelectionLeaving(tabAt index: Int, in space: Space) {
         let tabs = space.tabs
@@ -2985,7 +2988,7 @@ class BrowserWindowController: NSWindowController {
         let nextID: UUID? = tabCloseSelectionID(
             closingIndex: index,
             tabs: tabs.map { ($0.id, $0.parentID) },
-            pinnedTabIDs: Set(space.pinnedEntries.compactMap { $0.tab?.id })
+            isOpener: { space.openerTab(id: $0) != nil }
         )
         if let nextID { selectTab(id: nextID) }
         else if let firstLiveEntry = space.pinnedEntries.first(where: { $0.tab != nil }),

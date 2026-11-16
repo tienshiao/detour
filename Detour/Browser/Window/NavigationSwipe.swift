@@ -38,7 +38,8 @@ struct NavigationSwipeFacts: Equatable {
     /// ignores the others).
     var isNormalTab: Bool
     /// Its opener resolves the way the Back button resolves it
-    /// (`parentTab(for:)`: a tab or pinned tab of the window's active space).
+    /// (`parentTab(for:)`: a tab, live pinned tab or live favourite of the
+    /// window's active space, `Space.openerTab(id:)`).
     var hasOpener: Bool
     var canGoBack: Bool
     var canGoForward: Bool

@@ -36,6 +36,9 @@ sources:
   - id: task-355
     resource: backlog:TASK-355
     title: "Back swipe: swiping forward shows a picture of the page being returned to, not a blank card"
+  - id: task-358
+    resource: backlog:TASK-358
+    title: "Tab opener: a pinned or favourite tab's opener is lost at relaunch, and the readers disagree on which openers count"
 ---
 
 # What it does
@@ -51,9 +54,11 @@ ordinary closed tab: Reopen Closed Tab brings it back, still closing to its
 opener while that tab is open.[^task-325][^task-332]
 
 Once the tab has history of its own, the swipe walks it with WebKit's own
-gesture, as before; it closes to the opener only from the first page. With
-no opener left (none, closed, asleep in a pinned slot, or in another
-space), the swipe on a first page does nothing, as before.
+gesture, as before; it closes to the opener only from the first page. The
+opener may be a normal tab, a live pinned tab or a live favourite (the
+[one opener rule](./tab-opener.md#the-opener-rule-spaceopenertabid)). With
+no opener left (none, closed, asleep in a pinned slot, a dormant favourite,
+or in another space), the swipe on a first page does nothing, as before.
 
 # How it works
 
@@ -68,8 +73,8 @@ pane in this state runs Detour's own swipe instead.
 
 - The own swipe is for a **normal tab** (in its space's list) whose opener
   resolves as the Back button resolves it (`parentTab(for:)`, through
-  `Space.openerTab(id:)`: a tab or live pinned tab of the window's active
-  space), with **no back item**.
+  `Space.openerTab(id:)`: a tab, live pinned tab or live favourite of the
+  window's active space; favourites since TASK-358), with **no back item**.
 - In it, WebKit's `allowsBackForwardNavigationGestures` is off and the left
   edge does not rubber-band (`_setRubberBandingEnabled:` 14, or 10 when the
   tab also has a forward item, so forward scrolls are reported too). The
@@ -91,7 +96,8 @@ pane in this state runs Detour's own swipe instead.
   while a window hosts it: `wireOwnedWebView` and `removeContentViews` (and
   window close) put WebKit's gesture back; every claim re-applies the mode.
   Re-evaluated on every pane's `canGoBack`/`canGoForward`/`isLoading`, store
-  changes (an opener closed, pinned, restored) and the callbacks above.
+  changes (an opener closed, pinned, restored; a favourite removed or put to
+  sleep, `tabStoreDidUpdateFavorites`, since TASK-358) and the callbacks above.
 
 ## Starting and tracking a swipe
 
@@ -214,6 +220,7 @@ else WebKit's own swipe shows WebKit's own picture.[^task-355]
 | Peek | The Peek's web view keeps WebKit's gesture (its own history; Back acts on it too); the tab under an open Peek starts nothing | Back targets the Peek while one is open; the overlay also swallows scrolls |
 | Quick Detour | Unchanged: WebKit's gesture, history only | Its Back is history only and its tab has no opener |
 | Pinned tab or favourite with a `parentID` | WebKit's gesture; never swiped closed (confirmed: the user's decision, 2026-11-15; the other option was to select the opener as Back does) | `TabStore.closeTab` closes normal tabs only. The Back button on a pinned child still selects the opener without closing it (behaviour before TASK-325) |
+| Child of a favourite | Closes to the favourite and selects it, as for a pinned opener; a dormant favourite is no opener, so WebKit's gesture (chosen by Claude, TASK-358, not yet confirmed by the user; the other option was no opener, as before) | One opener rule for every reader; before TASK-358 a favourite was an opener for `window.close()` and for the tab's placement but not for Back |
 | Reopened child | Closes to its opener again while that tab is still an opener `Space.openerTab` resolves (the record carries `parentID` since v26); with the opener closed, archived, moved or asleep meanwhile, no opener and WebKit's gesture | The record is the tab's only life after closing (TASK-332) |
 | Child brought back by Undo Close Tab (or Undo Close Both Splits) | The same rule: its captured opener only while `Space.openerTab` resolves it; an opener closed since (even if its own close was undone first: a new tab) leaves no opener | One rule for every way a closed tab comes back (the user's decision on TASK-332, 2026-11-14) |
 
