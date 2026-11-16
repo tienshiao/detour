@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-15T07:30:00Z'
-updated_date: '2026-11-15T22:03:00Z'
+updated_date: '2026-11-16T22:01:00Z'
 labels:
   - tests
   - windows
@@ -35,4 +35,6 @@ Seen 2026-11-14 in a full DetourTests run on main (7d4d616): WindowCloseReleaseT
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-15 (lead, TASK-228.11 rebase): reproduced in a 13-suite run that included AutomationStagingTests (180 tests, this one failure; WindowCloseReleaseTests + AutomationAgentPointerTests alone 33/33). The retain tree leads through TabStore.observers to an ArcImportWindowController still alive from AutomationStagingTests (its window held via LaunchServices/NSScrollPocket), so the interfering suite is AutomationStagingTests: it leaves an Arc import window open. Start there.
+
+Seen again 2026-11-16 in the full run on main 3223cd7d (4931 tests): testAWindowShowingASplitIsFreed, 'the closed window's controller is still alive'. The retain tree (task315-split.txt) shows the controller reached through a BrowserWebView's WebKit::UIDelegate, whose NavigationState is held by a WebKit RunLoop item: a web view still alive in WebKit's queue, not an app cycle. The suite passed alone right after (WindowCloseReleaseTests 21/0).
 <!-- SECTION:NOTES:END -->

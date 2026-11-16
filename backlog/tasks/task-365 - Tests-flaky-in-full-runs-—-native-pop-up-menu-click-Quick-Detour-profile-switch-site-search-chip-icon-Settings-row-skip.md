@@ -3,11 +3,11 @@ id: TASK-365
 title: >-
   Tests: flaky in full runs — native pop-up menu click, Quick Detour profile
   switch, site search chip icon, Settings row skip
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:54:00Z'
-updated_date: '2026-11-16T21:37:00Z'
+updated_date: '2026-11-16T22:01:00Z'
 labels:
   - tests
   - flaky
@@ -28,7 +28,7 @@ Found 2026-11-15/16 during the two-lane batch (TASK-349..358, 228.12/228.13). Ea
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Each flake's cause is found and fixed, or the test is made order-independent
-- [ ] #2 A full run passes them
+- [x] #2 A full run passes them
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -64,6 +64,8 @@ Code review (medium --fix, on the uncommitted diff): 7 findings, 3 fixed. Fixed:
 Tests after the review: AutomationInputTests, AutomationWindowKindsTests, AutomationToolsTests, AutomationPrivateAccessTests, SiteSearchChipColorTests, QuickDetourProfileSwitchWindowTests, SpaceJumpTests: 93 tests, 0 failures, 0 skipped. Before it: the five task suites plus SiteColorTests/SiteFaviconURLTests: 76 tests, 0 failures. Automation* group with the activation helper: 223 tests, 0 failures, 0 skipped (the Settings row test ran, the host left the front inside it).
 No /verify: test-only changes apart from the endpoint's closeAll wait, which the new test and the Automation suites exercise in the test host. Not verified: a full run (AC #2, the lead's).
 Chosen by Claude (not yet confirmed by the user): moveTestHostToBackground hands activation to the regular app whose window is frontmost behind the test host, else the Finder; alternative: leave the host active and keep skipping.
+
+Full run on main 3223cd7d (2026-11-16): 4931 tests, 24 skipped, 2 failures, neither one of this task's tests (WindowCloseReleaseTests split freed = TASK-344, and a new PageOpenedWindowTests opener timeout, filed separately); both passed alone right after (32/0). All of this task's tests passed in the full run, including the Settings row test (not skipped).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
