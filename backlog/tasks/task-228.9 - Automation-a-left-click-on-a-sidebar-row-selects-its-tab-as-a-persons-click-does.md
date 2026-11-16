@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-15T07:30:00Z'
-updated_date: '2026-11-16T00:00:00Z'
+updated_date: '2026-11-16T04:51:00Z'
 labels:
   - automation
   - sidebar
@@ -56,6 +56,8 @@ A person's first click on a row of a window that is not key: by the disassembly,
 Out of scope: every other NSTableView (Archived Tabs list, Settings lists) has the same AppKit check, so endpoint clicks there may not select either. The in-app (source app) screenshot showed a stale sidebar right after pinning a tab at runtime; source=screen was right.
 Tests: AutomationInputTests 14/0 (new: testALeftClickOnASidebarRowSelectsItsTab, testALeftClickOnARowsCloseButtonClosesTheTab, testPinnedEntryFolderAndNewTabRowsTakeAClick; row tests wait for the rows to settle, which also hardens the existing right-click test that flaked once with the row still sliding in), AutomationAgentPointerTests 12/0, AutomationToolsTests 22/0, AutomationWindowKindsTests 10/0 (58/0 together).
 Runtime (Debug build, DETOUR_MCP=1, isolated data dir, through scripts/detour-mcp): Detour in the background (app_active false throughout, window never key): click on a row's title selected it; a click at the close button's place closed the tab (view HoverButton); a pinned entry's row selected it; a folder's row collapsed it and its disclosure expanded it; the New Tab row opened the palette; with the agent pointer on, the click glided and selected the row. With Detour active (set_window_frame activate=true, window key): pinned row selected, folder row toggled, close button closed the tab. Not checked at runtime: a person's drag of a row out of a background window (needs a real drag; the person's press path is unchanged by construction). The runtime pass ran before the review's small fixes (per-view layout, isTracking, the view-scoped flag); the tests cover those.
+
+User confirmed 2026-11-15: hover on arrival (a left click first hovers the views under the point so hover-only controls like the close button take it). Follow-up filed for other table views.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

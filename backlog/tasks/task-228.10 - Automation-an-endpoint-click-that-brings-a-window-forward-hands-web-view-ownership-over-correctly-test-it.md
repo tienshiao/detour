@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-15T07:30:00Z'
-updated_date: '2026-11-16T00:14:00Z'
+updated_date: '2026-11-16T04:51:00Z'
 labels:
   - automation
   - windows
@@ -55,6 +55,8 @@ Tests: AutomationInputTests 16/0 (new: testWithDetourActiveAClickInAWindowThatIs
 Runtime (Debug build, DETOUR_MCP=1, isolated data dir, two browser windows showing the same tab, ownership read with hit_test on the page area: BrowserWebView vs NSImageView): in the background, clicks on window 2's snapshot and its row left app_active false, neither window key, the web view in window 1. After set_window_frame activate=true (window 1 key): a click on window 2's page made window 2 key, moved the web view there (window 1 now NSImageView) and reached the page (target web_view); a click on window 1's row made it key and moved the web view back. The runtime pass ran before the review's reorder (gates checked before the window is made key) and the other-Space guard; the tests cover those.
 
 Correction to the note above: the tests do not cover the review's two late changes. The reorder (gates checked again after the glide before the window is made key) has no test: it needs a gate that flips during the glide (agent pointer on, a Private window whose opt-in turns off mid-glide); left to code order and review. The other-Space guard cannot be tested in the host (it cannot put a window on another Space). Final runtime pass on the committed code (rebuilt 16:12, active, two windows): a click on window 2's snapshot made it key and moved the web view there (target web_view); a click on another tab's row (Bravo) in window 1, not key, made window 1 key and selected Bravo; a click at the close button's place on Alpha's row in window 2, not key, made window 2 key and closed Alpha. activate=true took focus from the user's front app in each active run. The three tests that need an inactive host (row select, both 228.10 tests) now skip when the host is the active app; AutomationInputTests 16/0 after that.
+
+User confirmed 2026-11-15: a window on another macOS Space is never made key by an agent click; with Detour active a click on a snapshot reaches the live page, and a row click in a non-key window selects as well as raises (more than a person's first click may do).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

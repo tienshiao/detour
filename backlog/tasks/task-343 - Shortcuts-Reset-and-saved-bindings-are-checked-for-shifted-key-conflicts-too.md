@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-15T07:30:00Z'
-updated_date: '2026-11-15T23:56:00Z'
+updated_date: '2026-11-16T04:51:00Z'
 labels:
   - keyboard
   - settings
@@ -54,6 +54,8 @@ Found at runtime and fixed (pre-existing, TASK-327's warning line): while a refu
 Tests: ShortcutConflictTests +7 (the mapping on US and French: keypad-only '+', ⇧⌘à = ⌘0 on French only, ⇧⌘/ none on French, ⌥⇧⌘=, letters, no layout; a saved ⇧⌘= pair with Zoom In found on US and French with both kept; ⇧⌘à vs Actual Size on French only; both rows marked, the note and tooltip, macOS's note first; the marks following a layout change; Zoom In's reset refused on US and French and Actual Size's on French only; the holder in either direction), ShortcutsSettingsPaneTests +1 (the list keeps its height under a refusal; failed before the fix: list 2 pt). Run: ShortcutsSettingsPaneTests, ShortcutConflictTests, ShortcutBindingStoreTests, ShortcutMenuTests, SpaceJumpTests, HotKeyShortcutTests, QuickDetourHotKeyTests, MenuKeyEquivalentMatcherTests, MainMenuCharacterizationTests, SettingsSwitchRowTests, SettingsPaneColumnsTests, SettingsPaneHeightTests: 233 tests, 0 failures (after the review's fixes and the layout fix).
 Runtime (/verify, DETOUR_DATA_DIR=DetourVerify-343, its defaults suite seeded with CommandShortcuts page.reload = ⇧⌘=; current layout of this Mac): launch logged 'Shortcuts page.reload (⇧⌘=) and page.zoom-in (⌘+) are one keystroke on this keyboard layout; both kept, marked in Settings > Shortcuts'; Settings > Shortcuts (Accessibility reader, search 'zoom in' / 'reload page', screenshot): Zoom In's row 'Same key as Reload Page', Reload Page's 'Same key as Zoom In', both keys kept (⌘+, ⇧⌘=). A posted input source change notification logged the pair again (pre-review build). Relaunched with Zoom In also saved on ⌥⌘=: its reset button pressed through Accessibility was refused with the message above and Zoom In kept ⌥⌘=; on the final build (15:54, after the review and the layout fix) the warning shows under the list and the list keeps its rows (screenshot). Not verified: an actual input source switch (the user's input source was not changed; the notification was posted instead, which also reached other apps listening to it, harmlessly); a non-US layout at runtime (tests only).
 Review (code-review medium --fix): 7 findings, 4 fixed (the test posted the real distributed notification system-wide: the pane now takes layoutChangeCenter and the test posts on its own center; the layout is read only for Shift-held shortcuts; the holder lookup computes the key's shifted equivalents once; a duplicate assertion and a doc). Left: saved bindings and Reset are compared with the registry's bindable commands only, not the Quick Detour item's hotkey or AppKit's own items, which the recorder's menu-based check covers (a follow-up candidate); a command in two pairs shows one partner (documented).
+
+User confirmed 2026-11-15: the orange "Same key as <other>" row note for saved pairs; the list-collapse fix stays in this task. Follow-up filed for the Quick Detour hotkey / AppKit items.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

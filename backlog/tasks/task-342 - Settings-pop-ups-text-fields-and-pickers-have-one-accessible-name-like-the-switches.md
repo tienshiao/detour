@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-15T07:30:00Z'
-updated_date: '2026-11-15T23:37:00Z'
+updated_date: '2026-11-16T04:51:00Z'
 labels:
   - settings
   - accessibility
@@ -53,6 +53,8 @@ Chosen by Claude (not yet confirmed by the user): a Shortcuts row is read as its
 Tests: SettingsSwitchRowTests +2 (every control of every type in every pane, a user profile with a custom user agent, a route row, the site search sheet and Shortcuts rows of each kind: named, its name not read again as text, a recorder's shortcut read once; the Shortcuts search field and the Quick Detour recorder); checked that they fail with the source changes reverted (recorders' shortcuts, route labels, sheet labels, Shortcuts search). Runs: SettingsSwitchRowTests, ShortcutsSettingsPaneTests, SiteSearchPaletteTests, LinkRouteEditorTests, SettingsPanesFormTests, SettingsFormTests, SettingsProfilesExtensionsFormTests, SettingsPaneColumnsTests, SettingsPaneHeightTests, SettingsGuideLinkTests, QuickDetourHotKeyTests, HotKeyShortcutTests: 229 tests, 0 failures; after the review's fixes SettingsSwitchRowTests, ShortcutsSettingsPaneTests, SiteSearchPaletteTests 62/0 (and the reviewer's run of SettingsSwitchRowTests, ShortcutsSettingsPaneTests, SettingsFormTests, QuickDetourHotKeyTests 77/0).
 Runtime after (Debug 15:31, DetourVerify-342b, same world): every pane, Profiles Private / Personal / Custom user agent, Spaces both rows, Links with routes and a new route, Search's Add and Edit sheets, Extensions with API Explorer: 0 unnamed controls, 0 labels read again, 0 read twice, 0 unnamed switches, 0 duplicates everywhere, except one expected hit: the Add sheet's title 'Add Site Search' beside the pane's button of that name. Every AXIdentifier per pane identical before and after (11 trees compared). Not verified at runtime: the review's recording value (tests only); VoiceOver itself (the Accessibility hierarchy stands in for it, as in TASK-336).
 Review (code-review medium --fix): 6 findings, 5 fixed (recording value, the .quickDetour row kind added to the test, wrong command IDs in the test rows, one list of names for the site search labels and fields, axsettings choose cancels its menu on a miss); left: the test copies the Profiles pane's private profile-list filter to find the row (exposing it is outside this change).
+
+User confirmed 2026-11-15: a Shortcuts row is read as its recorder ("Zoom In shortcut, ⌘+") with the title hidden.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
