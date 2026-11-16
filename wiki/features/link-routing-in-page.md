@@ -231,7 +231,11 @@ Cases the task's decisions did not name were decided while implementing
   window on the space, the most recent normal window switches to it
   ([placement](./link-routing-placement.md)). Unrouted (no route, a route to
   the current space, Most Recent Space, a Private window), each opens as
-  before: a background tab from the page's tab, or `createNewWindowWithURL`.
+  before: a background tab from the page's tab, or `createNewWindowWithURL`,
+  Private from a Private window. That last part was a fix found in the
+  task's review: a Private window's Open Link in New Window had opened the
+  link in a **normal** window on the last normal space and its profile
+  (`incognito` defaulted to false; confirmed by a failing test).
   The TASK-191.4 estimate of "one line in `createWebViewWith`" was short:
   production never built a `.linkMenuAction` request, so the menu's
   `contextMenuLinkAction` now asks the rule there, and the entry carries the

@@ -608,6 +608,21 @@ nonisolated final class InPageLinkRoutingTests: XCTestCase {
         XCTAssertTrue(work.tabs.isEmpty)
     }
 
+    @MainActor func testOpenLinkInNewWindowInAPrivateWindowOpensAPrivateWindow() async throws {
+        let base = try await makeServer()
+        makeWindow(showing: work)
+        let wc = makePrivateWindow()
+        let tab = try await openPage(base + "/links", in: wc)
+
+        try await chooseLinkMenuItem(.openInNewWindow, in: wc, on: tab.webView)
+        try await waitUntil("a new Private window with the link") {
+            self.newPrivateWindows().contains { $0 !== wc && $0.selectedTab?.url?.query == "open" }
+        }
+        XCTAssertTrue(work.tabs.isEmpty, "nothing routes out of a Private window")
+        XCTAssertFalse(store.spaces.filter { !$0.isIncognito }.contains { !tabs(in: $0, query: "open").isEmpty },
+                       "the link never lands in a normal space")
+    }
+
     // MARK: - Typed URLs
 
     @MainActor private func submit(_ input: String, in wc: BrowserWindowController, inPlace: Bool) {

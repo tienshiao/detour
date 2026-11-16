@@ -32,8 +32,10 @@ extension BrowserWindowController: WKUIDelegate {
         case .openInNewTab:
             _ = TabStore.shared.addTab(in: space, url: url, parentID: selectedTabID)
         case .openInNewWindow:
+            // A Private window's link opens in a new Private window, never
+            // in a normal one on the last normal space (and its profile).
             if let appDelegate = NSApp.delegate as? AppDelegate {
-                appDelegate.createNewWindowWithURL(url)
+                appDelegate.createNewWindowWithURL(url, incognito: isIncognito)
             }
         case .openInSplitView:
             // The tab whose page the menu was opened on, by Option-click's rules.
