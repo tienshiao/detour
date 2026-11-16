@@ -6,7 +6,7 @@
 
 # Concepts
 
-* [Extension pages in tabs](extension-pages.md) - A tab showing a webkit-extension:// page is tied to one loaded context's origin, which dies on every context reload and every relaunch; how such tabs, pinned tiles, favourites and closed-tab records are rehomed, restored, refused or closed.
+* [Extension pages in tabs](extension-pages.md) - A tab showing a webkit-extension:// page is tied to one loaded context's origin, which dies on every context reload and every relaunch; how such tabs, pinned tiles, favourites and closed-tab records are rehomed, restored, refused or closed, and why a Quick Detour or quarantine window cannot show one.
 * [Extension permissions](permissions.md) - How permission decisions are stored, prompted for and re-applied to every loaded context, the order that makes the restore deterministic, how nativeMessaging is enforced, and what WebKit does with overlapping grants and denials.
 * [Extensions in the Private profile](private-profile-extensions.md) - The rules for extensions in Private windows — off unless allowed per extension, pages in the profile's own non-persistent store, and the WebKit private-data gate that silently stops events without hasAccessToPrivateData.
 * [Frames and content scripts](frames-and-content-scripts.md) - What WebKit does with frames in an extension context — native getAllFrames with its own frame ids, empty URLs and no content scripts for srcdoc and about:blank frames, the limits seen in cross-origin iframes — and what Detour adds for content scripts.

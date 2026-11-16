@@ -1,10 +1,10 @@
 ---
 type: Concept
 title: Extension pages in tabs
-description: A tab showing a webkit-extension:// page is tied to one loaded context's origin, which dies on every context reload and every relaunch; how such tabs, pinned tiles, favourites and closed-tab records are rehomed, restored, refused or closed.
+description: A tab showing a webkit-extension:// page is tied to one loaded context's origin, which dies on every context reload and every relaunch; how such tabs, pinned tiles, favourites and closed-tab records are rehomed, restored, refused or closed, and why a Quick Detour or quarantine window cannot show one.
 tags: [extensions, tabs, persistence, pinned, favorites]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:59:43Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T07:45:00Z }
 sources:
   - id: page-url
     resource: ../../Detour/Extensions/Runtime/ExtensionPageURL.swift
@@ -51,6 +51,9 @@ sources:
   - id: persistence-tests
     resource: ../../DetourTests/ExtensionPagePersistenceTests.swift
     title: ExtensionPagePersistenceTests
+  - id: webkit-scheme-handler
+    resource: https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionURLSchemeHandlerCocoa.mm
+    title: WebKit, WebExtensionURLSchemeHandlerCocoa.mm (main-frame loads need the configuration's requiredWebExtensionBaseURL)
   - id: task-352
     resource: backlog:TASK-352
     title: "Extensions: reloading or updating an extension leaves its page in a Quick Detour window on the dead origin"
@@ -65,9 +68,13 @@ page follows from the origin being short-lived.
 # Summary
 
 - A `webkit-extension://` page can load only in a web view built from the
-  serving context's `webViewConfiguration`. A space's own configuration has no
-  handler for the scheme. `TabStore.addExtensionTab(in:url:configuration:)`
-  takes that configuration for this reason.
+  serving context's `webViewConfiguration`. Every web view on the profile's
+  controller has WebKit's handler for the scheme, but the handler refuses a
+  main-frame load unless the configuration's `_requiredWebExtensionBaseURL` is
+  that extension's, which only the context's own configuration sets
+  ([below](#where-an-extension-page-cannot-be)).
+  `TabStore.addExtensionTab(in:url:configuration:)` takes that configuration
+  for this reason.
 - WebKit gives each loaded context a fresh base URL. The origin dies when the
   context is unloaded: on a background-recovery reload, an update, a
   disable → enable, and at every quit. (Its IndexedDB and `localStorage` move
@@ -88,11 +95,13 @@ onto the new one:
 
 1. Find the pages (`extensionPageLocations`). A page can be in four places: a
    space's tabs, a pinned entry's tab, a favourite's backing tab, a Peek.
-   A [Quick Detour](../features/quick-detour.md) window's page
-   (`TabStore.quickDetourTabs`) is not covered: whether such a window can
-   show an extension page is not established, and if it can, a reload or
-   update would leave that page on the old origin and the deferred-update
-   check would not count it as open. Planned in TASK-352.[^task-352]
+   The walk leaves out the [Quick Detour](../features/quick-detour.md) and
+   quarantine pages (`TabStore.quickDetourTabs`) because they cannot show an
+   extension page ([below](#where-an-extension-page-cannot-be)). Reaching one
+   in the future would mean more than adding a case: the walk, the
+   disable/uninstall close (`closePagesOfUnloadedExtension`), `wakeConfiguration`
+   (which finds the context through the tab's space) and the window's re-host
+   on `.spaceTabsNeedRehost` would all need a Quick Detour answer.[^task-352]
 2. Rewrite each URL with `rewriteExtensionPageURL`, which carries path, query
    and fragment over in their percent-encoded form. An extension page's query
    often holds a URL of its own, and decoding then re-encoding would change it.
@@ -221,10 +230,60 @@ profiles it is retargeted onto the destination profile's origin for that
 extension, or refused with a toast when the extension is not enabled there.
 Moves across the incognito boundary are refused.[^task-38]
 
+## Where an extension page cannot be
+
+Established in TASK-352 (2026-11-15): the gate read from WebKit `main`, the
+results measured on macOS 26.7 (25G229).[^task-352]
+
+**The gate (read from WebKit `main`).** `WebExtensionController::addPage` installs the extension URL
+scheme handler on every page of the controller, so a space's, a Peek's or a
+Quick Detour's web view has it. The handler
+(`WebExtensionURLSchemeHandlerCocoa.mm`) refuses a main-frame load whose
+configuration's `_requiredWebExtensionBaseURL` is not the extension's, with
+`NSURLErrorResourceUnavailable` (-1008). That holds even for a
+`web_accessible_resources` page. Only `WKWebExtensionContext.webViewConfiguration`
+sets that base URL.[^webkit-scheme-handler]
+
+**Quick Detour and quarantine pages never get a context's configuration.**
+`openQuickDetourTab` is the only code that adds to `quickDetourTabs`, and it
+builds the web view from one of three things:
+
+- `Space.makeWebViewConfiguration(for:inSpace: false)`, the profile's configuration;
+- the same configuration with the quarantine's store;
+- WebKit's copy of a Quick Detour opener's configuration (`createWebViewWith` in a Quick Detour).
+
+The `adopting:` parameter is used only by tests, and `wakeConfiguration` has no
+space to find a context through. A browser window never hands its
+`createWebViewWith` configuration to a Quick Detour: Opt-Cmd-click, Open Link
+in Quick Detour and routed links all open a fresh window with a URL.
+
+**Probed on a real Quick Detour window** (`QuickDetourWindowController`,
+a loaded test extension with `options.html` and a web-accessible `war.html`,
+a loopback page). Every cell ended on Detour's error page with -1008, and
+`showsExtensionPage` was false:
+
+| Entry | Example path | Result |
+|---|---|---|
+| Fresh window loads the extension URL | sidebar Opt-Cmd-click or Open in Quick Detour on an extension-page tab (`sidebarCopyURL` has no scheme filter), an archived record | error page; `tab.url` keeps the extension URL |
+| Same, web-accessible page | — | error page |
+| `location.href =` from a web page, web-accessible or not | a content script or a link followed in the page | error page |
+| A link clicked in a web page | — | error page |
+| `tabs.update` (`loadURL(_:for:)`) on the Quick Detour's tab | an extension acting on the popup window's tab | error page |
+| `window.open` of the web-accessible page | the child Quick Detour | error page |
+| A space tab, `location.href =` (comparison) | — | error page |
+
+Typed `webkit-extension://…` in the launcher or palette is a search
+(`AddressInputClassifier` reads `webkit-extension:` as a host with an empty
+port, which is no URL), and would be the fresh-load cell anyway. The rehoming walk and the
+deferred-update count therefore lose nothing by leaving Quick Detour pages
+out. The probe test was not kept; it was the
+`QuickDetourExtensionTests` harness with the cells above.
+
 # Gotchas
 
 - A Peek cannot show an extension page: its web view is built from the space
-  configuration.
+  configuration, which WebKit refuses for an extension main frame
+  ([below](#where-an-extension-page-cannot-be)).
 - If an extension is enabled but its `WKWebExtension` fails to load, its
   restored pages stay pending and display as an empty page, not an error page.
 - The window registers its owned-pane script message handlers on the web
@@ -256,3 +315,4 @@ Moves across the incognito boundary are refused.[^task-38]
 [^task-37]: Activating a dormant pinned entry of a disabled or uninstalled extension gives a dead tab
 [^task-38]: Move to Space loses extension pages
 [^task-352]: Extensions: reloading or updating an extension leaves its page in a Quick Detour window on the dead origin
+[^webkit-scheme-handler]: WebKit, WebExtensionURLSchemeHandlerCocoa.mm (main-frame loads need the configuration's requiredWebExtensionBaseURL)
