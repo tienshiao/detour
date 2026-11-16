@@ -2307,17 +2307,21 @@ class TabStore {
     }
 
     /// Deletes a space, with an undo. Refused (nothing changes) for an
-    /// unknown space, the last space, and a space that a link route
-    /// or the Default targets (user decision 2026-10-25): the result carries
-    /// those routes so the UI can say why.
+    /// unknown space, the last space, a Private window's space, and a space
+    /// that a link route or the Default targets (user decision 2026-10-25):
+    /// the result carries those routes so the UI can say why.
     @discardableResult
     func deleteSpace(id: UUID) -> SpaceDeletionResult {
-        guard spaces.count > 1,
-              let index = spaces.firstIndex(where: { $0.id == id }) else { return .notDeleted }
+        guard let index = spaces.firstIndex(where: { $0.id == id }) else { return .notDeleted }
+        // A Private window's space goes only with its window
+        // (`removeIncognitoSpace`), which also drops its undo entries and ends
+        // the Private session; deleted here, it would leave both behind
+        // (TASK-362). No UI offers it.
+        guard !spaces[index].isIncognito else { return .notDeleted }
         // The last NORMAL space stays even while a Private window's space makes
         // `spaces.count` larger: deleting it would leave no space for a normal
         // window.
-        guard spaces[index].isIncognito || nonIncognitoSpaces.count > 1 else { return .notDeleted }
+        guard nonIncognitoSpaces.count > 1 else { return .notDeleted }
         // A route must never point into nothing: the user changes or removes
         // the routes first (user decision 2026-10-25).
         let references = linkRoutes.references(toSpace: id)

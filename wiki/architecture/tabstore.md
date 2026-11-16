@@ -216,6 +216,11 @@ automation endpoint's staging tools. Details and the write order are on
 - **At least one space.** `deleteSpace` refuses the last space and the last
   non-incognito space (a Private window's space does not count).
   `forceRemoveSpace` skips the guard and is for test teardown only.
+- **A Private window's space goes only with its window.** `deleteSpace`
+  refuses one (`.notDeleted`); `removeIncognitoSpace` removes it, dropping its
+  undo entries and ending the Private session if nothing else uses it
+  (TASK-362: deleted through `deleteSpace`, its entries stayed on the stack
+  and the session was not reset; no UI offers it).
 - **A space's profile exists.** `deleteProfile` refuses a profile a space
   uses; `updateSpace` refuses an unknown profile id.
 - **Incognito never reaches disk.** `saveNow` filters incognito spaces out;

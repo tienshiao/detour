@@ -315,6 +315,31 @@ nonisolated final class PrivateWindowUndoTests: XCTestCase {
         XCTAssertFalse(f.store.undoManager.canRedo)
     }
 
+    // MARK: - Delete Space on a Private window's space (TASK-362)
+
+    /// `deleteSpace` refuses a Private window's space: it goes only with its
+    /// window, which drops its undo entries. Before the fix the space was
+    /// deleted, its entries stayed on the stack (inert), and nothing could
+    /// undo the deletion.
+    @MainActor func testDeleteSpaceRefusesAPrivateWindowsSpace() throws {
+        let f = try makeFixture()
+        // A second normal space, so the old code's last-normal-space guard
+        // does not refuse first.
+        inUndoGroup(f.store) {
+            _ = f.store.addSpace(name: "O", emoji: "O", colorHex: "007AFF", profileID: f.normal.profileID)
+        }
+        f.store.undoManager.removeAllActions()
+        let (priv, page) = addPrivateSpace(f.store)
+        inUndoGroup(f.store) { f.store.closeTab(id: page.id, in: priv) }
+
+        XCTAssertEqual(f.store.deleteSpace(id: priv.id), .notDeleted)
+
+        XCTAssertNotNil(f.store.space(withID: priv.id), "the space stays while its window is open")
+        XCTAssertEqual(f.store.undoManager.undoActionName, "Close Tab", "its entries stay with it")
+        f.store.removeIncognitoSpace(id: priv.id)
+        XCTAssertFalse(f.store.undoManager.canUndo, "and go with the window")
+    }
+
     // MARK: - An entry put back on its stack (TASK-361)
 
     /// An undo that puts itself back (as a refused space deletion does) keeps
