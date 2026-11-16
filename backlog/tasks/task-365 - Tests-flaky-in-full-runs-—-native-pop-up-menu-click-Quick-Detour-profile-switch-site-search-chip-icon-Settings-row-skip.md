@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:54:00Z'
-updated_date: '2026-11-16T22:01:00Z'
+updated_date: '2026-11-16T22:11:00Z'
 labels:
   - tests
   - flaky
@@ -66,6 +66,8 @@ No /verify: test-only changes apart from the endpoint's closeAll wait, which the
 Chosen by Claude (not yet confirmed by the user): moveTestHostToBackground hands activation to the regular app whose window is frontmost behind the test host, else the Finder; alternative: leave the host active and keep skipping.
 
 Full run on main 3223cd7d (2026-11-16): 4931 tests, 24 skipped, 2 failures, neither one of this task's tests (WindowCloseReleaseTests split freed = TASK-344, and a new PageOpenedWindowTests opener timeout, filed separately); both passed alone right after (32/0). All of this task's tests passed in the full run, including the Settings row test (not skipped).
+
+User decision 2026-11-16: moveTestHostToBackground() handing activation to the app behind the test host (else the Finder) is confirmed; the brief focus blip during test runs is accepted.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

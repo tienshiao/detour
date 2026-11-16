@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-16T09:55:00Z'
-updated_date: '2026-11-16T21:45:00Z'
+updated_date: '2026-11-16T22:11:00Z'
 labels:
   - tabs
   - opener
@@ -56,6 +56,8 @@ Code review (/code-review medium --fix): fixed by the review (above: Undo Delete
 Not verified at runtime: the favourite cases and the undos (tests only); the full suite (the lead's).
 
 User decisions 2026-11-16: CHANGED (c): YES, keep a dormant pinned tab's or favourite's opener link across a relaunch (new columns on pinnedTab and favorite, migration v27); filed as TASK-384. (a) keeping the link across dormancy stands (the relaunch decision builds on it). (b) (put back through space.liveOpenerID in the space the tile wakes in) was not addressed in the user's answer and stays as built. Also filed: TASK-393 (a dormant pinned tile dragged to the favourites bar loses the link), TASK-394 (children of a tile that went dormant lose their opener after its wake).
+
+User decision 2026-11-16 (later): choice (b) confirmed — a woken pinned tile or favourite gets its opener link back only when the opener resolves in the space it wakes in.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
