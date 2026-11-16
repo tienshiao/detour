@@ -260,6 +260,102 @@ nonisolated final class ContentBlockerExceptionTests: XCTestCase {
         XCTAssertTrue(evaluator.blocks("https://ads.example/x.js", on: "https://site.example/", type: "script"))
     }
 
+    // MARK: - Options the parser does not support (TASK-351)
+
+    /// `$removeparam` strips a query parameter; it never blocks a load. Each
+    /// form is left out and counted as skipped, never a block rule for its
+    /// pattern (before TASK-351 `$removeparam=x` blocked the whole host).
+    @MainActor func testARemoveParamRuleCompilesToNothing() {
+        let lines = [
+            "||tracker.example^$removeparam",
+            "||tracker.example^$removeparam=utm_source",
+            "||tracker.example^$removeparam=~ref",
+            "$removeparam=fbclid",
+            "||tracker.example^$important,removeparam=gclid",
+            "||tracker.example^$removeparam=gclid,domain=site.example",
+            "||tracker.example^$script,removeparam=gclid,third-party",
+            "||tracker.example/*?$removeparam=/^utm_/",
+            "||tracker.example^$removeparam=/^(utm_source|utm_medium)\\,x/",
+            "||tracker.example^$removeparam=/^ref$/",
+            "||TRACKER.example^$RemoveParam=X",
+        ]
+        for line in lines {
+            let result = parser.parse(text: line)
+            XCTAssertEqual(result.rules.count, 0, "\(line): \(result.rules)")
+            XCTAssertEqual(result.skippedCount, 1, line)
+        }
+    }
+
+    /// The exception form must not unblock the host's loads, which a network
+    /// exception for its pattern would.
+    @MainActor func testARemoveParamExceptionUndoesNoBlockRule() {
+        let evaluator = RuleListEvaluator(rules("""
+        ||ads.example^
+        @@||ads.example^$removeparam
+        @@||ads.example^$removeparam=utm_source
+        @@||ads.example^$script,removeparam=utm_source,domain=site.example
+        @@$removeparam=~bar
+        """))
+
+        XCTAssertTrue(evaluator.blocks("https://ads.example/x.js", on: "https://site.example/", type: "script"))
+        XCTAssertTrue(evaluator.blocks("https://ads.example/x.js?utm_source=a", on: "https://other.example/", type: "raw"))
+    }
+
+    /// Other options that change or narrow what a rule does are left out the
+    /// same way: ignoring them would block (or unblock) every load the pattern
+    /// matches. EasyPrivacy has `$method=POST` and `$redirect-rule` lines.
+    @MainActor func testRulesWithOtherUnsupportedOptionsAreLeftOut() {
+        let lines = [
+            "||void.example/rec$method=POST",
+            "@@||ads.example/analytics.js$redirect-rule,script,domain=site.example",
+            "||ads.example^$removeheader=refresh",
+            "||ads.example^$permissions=browsing-topics=()",
+            "||ads.example^$header=set-cookie:foo",
+            "||ads.example^$replace=/ad/x/",
+            "||ads.example^$jsonprune=\\$..ads",
+            "||ads.example^$urltransform=/a/b/",
+            "||ads.example^$cookie",
+            "||ads.example^$cookie=__utm",
+            "||ads.example^$hls=/ad/",
+            "||ads.example^$stealth",
+            "||ads.example^$denyallow=cdn.example",
+            "@@||ads.example^$stealth",
+        ]
+        for line in lines {
+            let result = parser.parse(text: "||ads.example^\n" + line)
+            XCTAssertEqual(result.rules.count, 1, "\(line) adds no rule: \(result.rules)")
+            XCTAssertEqual(result.skippedCount, 1, line)
+        }
+    }
+
+    /// The supported options keep working after TASK-351, and a `$` followed
+    /// by a word that is no option stays part of the pattern.
+    @MainActor func testSupportedOptionsAndLiteralDollarsAreUnchanged() {
+        let evaluator = RuleListEvaluator(rules("""
+        ||ads.example^$script,domain=site.example|~sub.site.example
+        ||track.example^$third-party,~image
+        ||rewrite.example^$rewrite=abp-resource:blank-js
+        ||redirect.example^$redirect=noop.js
+        $csp=script-src 'none',domain=csp.example
+        /hit$value
+        ||site.example/banner$id=1,2$image
+        """))
+
+        // A `$` followed by `name=` and then a token that is no option is part
+        // of the pattern, not the options of an unsupported `id=`.
+        XCTAssertTrue(evaluator.blocks("https://site.example/banner$id=1,2", on: "https://site.example/", type: "image"))
+
+        XCTAssertTrue(evaluator.blocks("https://ads.example/x.js", on: "https://site.example/", type: "script"))
+        XCTAssertFalse(evaluator.blocks("https://ads.example/x.js", on: "https://sub.site.example/", type: "script"))
+        XCTAssertFalse(evaluator.blocks("https://ads.example/x.png", on: "https://site.example/", type: "image"))
+        XCTAssertTrue(evaluator.blocks("https://track.example/t.js", on: "https://site.example/", type: "script"))
+        XCTAssertFalse(evaluator.blocks("https://rewrite.example/x.js", on: "https://site.example/", type: "script"))
+        XCTAssertFalse(evaluator.blocks("https://redirect.example/x.js", on: "https://site.example/", type: "script"))
+        XCTAssertFalse(evaluator.blocks("https://csp.example/", on: "https://csp.example/", type: "document"))
+        XCTAssertTrue(evaluator.blocks("https://site.example/hit$value", on: "https://site.example/", type: "image"))
+        XCTAssertFalse(evaluator.blocks("https://site.example/hit", on: "https://site.example/", type: "image"))
+    }
+
     // MARK: - The real lists
 
     /// EasyList as downloaded: a generically blocked script stays blocked on
@@ -353,6 +449,8 @@ nonisolated final class ContentBlockerExceptionTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(EasyListParser.rulesFormatVersion, 2, "TASK-199 changed the compiled output")
         XCTAssertGreaterThanOrEqual(EasyListParser.rulesFormatVersion, 3,
                                     "TASK-201 changed mixed domain lists and internationalised domains")
+        XCTAssertGreaterThanOrEqual(EasyListParser.rulesFormatVersion, 4,
+                                    "TASK-351 left out rules with unsupported options")
         XCTAssertTrue(ContentBlockerManager.shouldReuseCompiledList(recordedFormat: EasyListParser.rulesFormatVersion))
         XCTAssertFalse(ContentBlockerManager.shouldReuseCompiledList(recordedFormat: nil),
                        "a list compiled before the format was recorded")

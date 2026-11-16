@@ -95,13 +95,12 @@ app-wide switch in Settings > Content Blocking (TASK-337: off, it is neither
 fetched nor used, by any of the three paths; see
 [Tracking parameters](tracking-parameters.md#turning-it-off-task-337)), the test host never
 downloads it, and a Debug build takes its address from
-`DETOUR_TRACKING_FILTER_URL`. `EasyListParser` has no `$removeparam`
-handling of its own (TASK-329's description says it drops them; the code
-does not): a bare `$removeparam` is not a known option, so the line stays a
-pattern that matches nothing, while `$removeparam=name` passes as an unknown
-`=` option and the line compiles as a block rule for its pattern. Read from
-the code, not checked against the shipped lists; measuring the lists and
-fixing the parser are planned in TASK-351.[^task-351]
+`DETOUR_TRACKING_FILTER_URL`. `EasyListParser` leaves out a `$removeparam`
+rule, and any other rule with an option it does not support, block or `@@`
+(TASK-351; before, `$removeparam=name` compiled as a block rule for its
+pattern). None of the four lists above had a `$removeparam` line on
+2026-11-15; see
+[unsupported options](./content-blocking-filter-conversion.md#options-the-parser-does-not-support-task-351).[^task-351]
 
 ## Fetch, parse, compile
 
@@ -195,7 +194,7 @@ once per page.
 
 # Pages
 
-- [Filter-list conversion](./content-blocking-filter-conversion.md) — `EasyListParser`: what it emits and skips, regex rewriting, `$removeparam` (no handling found; TASK-351), and recompiling installed lists after a parser change (`rulesFormatVersion`).
+- [Filter-list conversion](./content-blocking-filter-conversion.md) — `EasyListParser`: what it emits and skips, regex rewriting, rules with unsupported options such as `$removeparam` left out (TASK-351), and recompiling installed lists after a parser change (`rulesFormatVersion`).
 - [Domain lists](./content-blocking-domain-lists.md) — one page condition per trigger: the most-specific-domain rule, `if-top-url` label-complement patterns, punycode, bad-rule counts per list (TASK-201).
 - [Exceptions and element hiding](./content-blocking-exceptions.md) — what WebKit does with `ignore-previous-rules`, the parser's section order, each `@@` option, the file-order bug, options rejected, size and compile time (TASK-199, TASK-162).
 - [Rule-list compilation](./content-blocking-rule-compilation.md) — `ContentRuleStore`'s compile and bad-rule bisection, which queue each step runs on, what WebKit requires on main, and the ordering rules (TASK-200, TASK-231.3).

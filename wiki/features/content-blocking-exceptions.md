@@ -106,6 +106,7 @@ lists has such a rule.
 | `$genericblock`, `$specifichide` | Left out (none in the shipped lists). Undoing only generic blocks, or only domain-specific hiding, needs an order that the other exceptions already use the other way round |
 | only `$popup`, `$websocket`, `$webrtc`, `$ping` or `$csp` | Left out. The parser compiles no block rule of those types and the options map to no resource type, so such an exception used to undo every block rule for its URLs: the shipped lists' 42 `$popup` exceptions included `@@||accounts.google.com^$popup` and `@@||ad.doubleclick.net/ddm/$popup,domain=...` |
 | `$redirect`, `$redirect=`, `$rewrite`, `$rewrite=`, `$csp=` | Left out: they lift a rule that rewrites a load, and the parser compiles none of those (the shared `isRewritingOption`), so the exception would only undo block rules it was never meant to |
+| an option the parser does not support (`$removeparam`, `$redirect-rule`, `$cookie`, `$stealth`, `$method=`, ...) | Left out, like the block rule with it (TASK-351): ignoring the option made `@@\|\|host^$removeparam=x` unblock every load from the host; see [unsupported options](./content-blocking-filter-conversion.md#options-the-parser-does-not-support-task-351) |
 | anything else | A network exception, after every block rule, so it applies wherever it stood in the file |
 | `$badfilter` (any rule) | Not an exception: the line and the rule it repeats without `$badfilter` are both dropped |
 

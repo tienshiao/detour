@@ -23,7 +23,11 @@ nonisolated final class EasyListParser: Sendable {
     /// one page condition (`DomainCondition`), not an `if-domain` plus an
     /// `unless-domain` WebKit rejects; internationalised domains are punycode,
     /// not percent-encoded.
-    static let rulesFormatVersion = 3
+    ///
+    /// 4 (TASK-351): a network rule with an option the parser does not
+    /// support (`$removeparam`, `$method=`, `$redirect-rule`, ...) is left
+    /// out, block rule and exception alike (`isSupportedOption`).
+    static let rulesFormatVersion = 4
 
     struct ParseResult {
         let rules: [ContentRule]
@@ -116,13 +120,20 @@ nonisolated final class EasyListParser: Sendable {
             return []
         }
 
+        // An option the parser does not support: the rule is left out, block
+        // rule and exception alike (see `isSupportedOption`).
+        let options = optionTokens(in: line)
+        if !options.allSatisfy(Self.isSupportedOption) {
+            return []
+        }
+
         // Exception rules: @@||domain
         if line.hasPrefix("@@") {
             return parseExceptionRules(String(line.dropFirst(2)))
         }
 
         // URL blocking rules
-        let section: Section = optionTokens(in: line).contains("important") ? .importantBlocking : .blocking
+        let section: Section = options.contains("important") ? .importantBlocking : .blocking
         return parseBlockingRules(line).map { (section, $0) }
     }
 
@@ -353,6 +364,8 @@ nonisolated final class EasyListParser: Sendable {
     ///   nothing for it to undo, and since those options map to no WebKit
     ///   resource type the exception would otherwise undo every block rule
     ///   for its URLs (`@@||accounts.google.com^$popup` did, TASK-199).
+    /// - With an option the parser does not support (`$removeparam`): never
+    ///   reaches here, `parseLine` leaves it out (TASK-351).
     /// - Anything else is a network exception.
     private func parseExceptionRules(_ line: String) -> [(Section, ContentRule)] {
         let options = Set(optionTokens(in: line))
@@ -541,30 +554,92 @@ nonisolated final class EasyListParser: Sendable {
         // Find $ that separates pattern from ABP options
         for i in line.indices {
             guard line[i] == "$" else { continue }
-            let remaining = String(line[line.index(after: i)...])
-            if remaining.isEmpty { return i }
-            let tokens = remaining.split(separator: ",").map {
-                $0.trimmingCharacters(in: .whitespaces).lowercased()
-            }
-            if tokens.allSatisfy({ isKnownOption($0) }) {
-                return i
-            }
+            let remaining = line[line.index(after: i)...]
+            if remaining.isEmpty || Self.isOptionList(remaining) { return i }
         }
         return nil
     }
 
-    private func isKnownOption(_ token: String) -> Bool {
-        let t = token.hasPrefix("~") ? String(token.dropFirst()) : token
-        if t.contains("=") { return true }
-        return Self.knownOptions.contains(t)
+    /// Whether the text after a `$` reads as a rule's options: every
+    /// comma-separated token is a supported option, a `name=value` with an
+    /// option-shaped name, or a bare name from `unsupportedModifiers`. Commas
+    /// escaped with a backslash belong to a value (`$removeparam=/^(a|b)\,c/`),
+    /// as uBlock Origin and AdGuard write them. Any other token means the `$`
+    /// is part of the pattern (`example.com/hit$value`, `/a$|b=c{1,3}/$script`,
+    /// `||site.example/banner$id=1,2$image`).
+    private static func isOptionList(_ text: Substring) -> Bool {
+        splitAtUnescapedCommas(text).allSatisfy { token in
+            let option = token.trimmingCharacters(in: .whitespaces).lowercased()
+            if isSupportedOption(option) { return true }
+            let name = option.hasPrefix("~") ? option.dropFirst() : Substring(option)
+            if let equals = name.firstIndex(of: "=") {
+                return isOptionName(name[..<equals])
+            }
+            return unsupportedModifiers.contains(String(name))
+        }
     }
 
+    /// `text` split at each comma not preceded by a backslash; empty pieces dropped.
+    private static func splitAtUnescapedCommas(_ text: Substring) -> [Substring] {
+        var pieces: [Substring] = []
+        var start = text.startIndex
+        var previous: Character?
+        for i in text.indices {
+            if text[i] == ",", previous != "\\" {
+                if start < i { pieces.append(text[start..<i]) }
+                start = text.index(after: i)
+            }
+            previous = text[i]
+        }
+        if start < text.endIndex { pieces.append(text[start...]) }
+        return pieces
+    }
+
+    /// Letters, digits, `-` and `_`, as option names are written.
+    private static func isOptionName(_ name: Substring) -> Bool {
+        !name.isEmpty && name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
+    }
+
+    /// Whether a rule may carry this option (trimmed, lower-cased) and still
+    /// compile (TASK-351). The parser implements it (resource types,
+    /// `third-party`, `domain=`, `important`, the `@@` options, `badfilter`),
+    /// ignores it without much change to what the rule matches (`match-case`,
+    /// `all`), or skips the rule for it on purpose (`popup`, `ping`, `csp`,
+    /// `redirect=`, ...). Any other option changes what a rule does or
+    /// narrows what it matches (`$removeparam` strips a parameter,
+    /// `$method=POST` blocks one method, `$denyallow=` exempts hosts), so a
+    /// rule that ignored it would block, or with `@@` unblock, every load its
+    /// pattern matches: `parseLine` leaves such a rule out. Adblock Plus,
+    /// uBlock Origin and AdGuard also discard a rule with an option they do
+    /// not know.
+    private static func isSupportedOption(_ option: String) -> Bool {
+        let name = option.hasPrefix("~") ? option.dropFirst() : Substring(option)
+        if let equals = name.firstIndex(of: "=") {
+            return valueOptions.contains(String(name[..<equals]))
+        }
+        return knownOptions.contains(String(name))
+    }
+
+    /// The supported options written without a value.
     private static let knownOptions: Set<String> = [
         "third-party", "script", "image", "stylesheet", "font", "media",
         "xmlhttprequest", "subdocument", "object", "object-subrequest", "other",
         "document", "popup", "ping", "all", "important", "match-case",
         "elemhide", "generichide", "genericblock", "specifichide", "ehide", "ghide", "shide", "badfilter",
         "websocket", "webrtc", "csp", "rewrite", "redirect",
+    ]
+
+    /// The supported options written with a value (`name=value`).
+    private static let valueOptions: Set<String> = ["domain", "rewrite", "redirect", "csp"]
+
+    /// uBlock Origin and AdGuard modifiers that never block a load, as written
+    /// without a value (`$removeparam` strips every parameter, `@@...$cookie`).
+    /// Listed so the `$` before one is read as the option separator and the
+    /// rule is left out; with a value (`$removeparam=x`) every unsupported
+    /// option is recognised already.
+    private static let unsupportedModifiers: Set<String> = [
+        "removeparam", "removeheader", "permissions", "header", "replace", "jsonprune",
+        "urltransform", "cookie", "hls", "stealth", "redirect-rule",
     ]
 
     /// Returns one or more regex strings (multiple when disjunctions are expanded).
