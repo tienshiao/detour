@@ -81,6 +81,26 @@ nonisolated final class MenuKeyEquivalentMatcherTests: XCTestCase {
         XCTAssertEqual(match?.title, "Previous Space")
     }
 
+    /// TASK-375: AppKit does not fire an item without Fn on a press of a key
+    /// with a character holding Fn, and the recorders let a binding take ⌃F
+    /// beside macOS's ⌃fn-F (Window > Fill), so fn-⌃F must be a miss here.
+    @MainActor func testFnOnAKeyWithACharacterIsNotIgnored() {
+        let manage = NSMenuItem(title: "Manage Spaces…",
+                                action: #selector(BrowserWindowController.openSpacesSettings(_:)),
+                                keyEquivalent: "f")
+        manage.keyEquivalentModifierMask = [.control]
+        XCTAssertNil(MenuKeyEquivalentMatcher.item(matching: keyEvent("f", [.control, .function]), in: [manage]))
+        XCTAssertEqual(MenuKeyEquivalentMatcher.item(matching: keyEvent("f", [.control]), in: [manage])?.title,
+                       "Manage Spaces…")
+        // An arrow's press carries Fn and the numeric-pad bit every time
+        // (measured, docs/harness/task375): still a match.
+        let next = NSMenuItem(title: "Next Space", action: #selector(BrowserWindowController.nextSpace(_:)),
+                              keyEquivalent: "\u{F703}")
+        next.keyEquivalentModifierMask = [.command, .option]
+        XCTAssertEqual(MenuKeyEquivalentMatcher.item(matching: keyEvent("\u{F703}", [.command, .option, .function, .numericPad]),
+                                                     in: [next])?.title, "Next Space")
+    }
+
     @MainActor func testAPlainCommandLetterItemWithTheDefaultMaskMatchesACommandPress() {
         // `addItem(withTitle:action:keyEquivalent:)` leaves the mask at its
         // default of [.command].

@@ -124,6 +124,9 @@ sources:
   - id: task-315
     resource: backlog:TASK-315
     title: "Windows: find what keeps a closed browser window's controller in memory"
+  - id: task-375
+    resource: backlog:TASK-375
+    title: "Shortcuts: Fn menu items are compared with Fn dropped, and AppKit's one-item rule can hide a fixed command's key"
   - id: task-350
     resource: backlog:TASK-350
     title: "Shortcuts: Reset and saved-pair checks also compare against the Quick Detour hotkey's item and AppKit's own menu items"
@@ -238,7 +241,8 @@ Related.
 
 | Behavior | Where it bit | Do instead |
 |---|---|---|
-| AppKit keeps a key equivalent on **one item of the menu bar**. Installing a bar where two items share one (File > New Window and Edit > Copy both ⌘C) leaves the later item with an empty `keyEquivalent`; setting an item to a key another item of the installed bar holds leaves the item set with none. Measured on macOS 26 with a standalone program (`docs/harness/task350/dup-key-equivalents.swift`).[^task-350] | A binding saved on Copy's ⌘C (written into the defaults) took the key from Edit > Copy at launch, so Settings > Shortcuts, which read the live items, did not see Copy holding it (TASK-350) | Read a command's intended shortcut from the registry or the binding store, not from the live item ([Keyboard shortcuts](../features/keyboard-shortcuts.md#holders-outside-the-commands)) |
+| AppKit keeps a key equivalent on **one item of the menu bar**. Installing a bar where two items share one (File > New Window and Edit > Copy both ⌘C) leaves the later item with an empty `keyEquivalent`; setting an item to a key another item of the installed bar holds leaves the item set with none. Measured on macOS 26 with a standalone program (`docs/harness/task350/dup-key-equivalents.swift`).[^task-350] The emptied item's key is kept underneath: it reads it again once the other item lets go of it. Seen with Edit > Copy on AppKit's `copy:` with no target; two items on an app's own action and target both kept the key (`docs/harness/task375/dup-released.swift`).[^task-375] | A binding saved on Copy's ⌘C (written into the defaults) took the key from Edit > Copy at launch, so Settings > Shortcuts, which read the live items, did not see Copy holding it (TASK-350), and its recorder let the binding's own row record ⌘C again (TASK-375) | Read a command's intended shortcut from the registry or the binding store, not from the live item (`HotKeyShortcutValidation.heldKeyEquivalent`, [Keyboard shortcuts](../features/keyboard-shortcuts.md#holders-outside-the-commands)) |
+| **Fn is part of an item's key equivalent** on a key with a character: AppKit fires an item whose mask holds Fn (its own Emoji & Symbols fn-E, Start Dictation fn-D) only on a press holding Fn, and an item without Fn not on such a press (fn⌘E did not fire ⌘E). Arrow and function keys carry Fn on every press, so there it decides nothing. An app cannot give its own item Fn: `setKeyEquivalentModifierMask:` logs that it is "only supported for system-provided menu items" and drops it. Measured on macOS 26 (`docs/harness/task375/fn-items.swift`).[^task-375] | Settings > Shortcuts compared items with Fn dropped, so a ⌃fn-F item could be named against a binding ⌃F (TASK-375) | Compare Fn on keys with a character (`KeyEquivalent.holdsFn`); a test cannot build a Fn item, so inject the held key |
 
 # Windows
 
@@ -307,4 +311,5 @@ from a probe or a measurement.
 [^task-228-12]: Automation: endpoint clicks select rows in the other table views (Archived Tabs list, Settings lists)
 [^task-338]: Settings: System Settings–style grouped rows
 [^task-349]: "Undo: ⌘Z in Settings text fields and extension popups reaches the browser window's closed-tab undo"
+[^task-375]: "Shortcuts: Fn menu items are compared with Fn dropped, and AppKit's one-item rule can hide a fixed command's key"
 [^task-350]: "Shortcuts: Reset and saved-pair checks also compare against the Quick Detour hotkey's item and AppKit's own menu items"

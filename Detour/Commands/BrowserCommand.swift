@@ -48,15 +48,34 @@ nonisolated struct KeyEquivalent: Equatable, Sendable {
     var displayString: String? { Self.displayString(key: key, modifiers: modifiers) }
 
     /// The modifiers a shortcut can hold; Caps Lock, Fn and the numeric-pad
-    /// bit are state.
+    /// bit are state. (Fn is part of a menu item's shortcut on a key with a
+    /// character, `holdsFn`, but only macOS's own items have one.)
     static let significantModifiers: NSEvent.ModifierFlags = [.control, .option, .shift, .command]
+
+    /// Whether Fn (the Globe key) is part of this shortcut (TASK-375): held
+    /// on a key with a character. AppKit matches an item whose mask holds Fn
+    /// (macOS's own: Emoji & Symbols' fn-E, Start Dictation's fn-D, the
+    /// Window menu's tiling items) only on a press holding Fn, and an item
+    /// without Fn not on such a press; a key AppKit names with a
+    /// function-key character (an arrow, F1–F35, Home…) carries Fn on every
+    /// press, so it tells nothing there (measured, docs/harness/task375).
+    /// AppKit drops Fn from an app's own items, so no binding has it.
+    var holdsFn: Bool { modifiers.contains(.function) && !Self.isFunctionKey(key) }
+
+    /// Whether `key` is one of AppKit's function-key characters
+    /// (`NSUpArrowFunctionKey`…, U+F700–U+F8FF).
+    static func isFunctionKey(_ key: String) -> Bool {
+        key.unicodeScalars.count == 1 && key.unicodeScalars.allSatisfy { (0xF700...0xF8FF).contains($0.value) }
+    }
 
     /// The same shortcut spelled one way (TASK-327): the key lowercased and
     /// Shift in the mask, so "Z" with ⌘ and "z" with ⇧⌘ compare equal, as
-    /// AppKit reads both.
+    /// AppKit reads both; Fn kept where it is part of it (`holdsFn`,
+    /// TASK-375), so macOS's fn⌃F is not ⌃F.
     var normalized: KeyEquivalent {
         var mask = modifiers.intersection(Self.significantModifiers)
         if key.contains(where: \.isUppercase) { mask.insert(.shift) }
+        if holdsFn { mask.insert(.function) }
         return KeyEquivalent(key.lowercased(), mask)
     }
 

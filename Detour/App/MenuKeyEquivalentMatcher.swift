@@ -20,13 +20,16 @@ import AppKit
 /// try to model layout-dependent cases such as Shift+`=` producing `+` or a
 /// non-Latin layout's Command mapping, which AppKit handles on the miss path.
 /// (The shortcut recorders' conflict check does model the shifted
-/// character, with the current layout, on top of this matcher: TASK-335,
-/// `HotKeyShortcut.shiftedKeyEquivalent`.)
+/// character, with the current layout: TASK-335,
+/// `HotKeyShortcut.shiftedKeyEquivalent`; it compares `KeyEquivalent`s
+/// rather than calling this matcher since TASK-375.)
 enum MenuKeyEquivalentMatcher {
 
     /// The modifiers a key equivalent can require. AppKit events also carry
-    /// state bits (caps lock, numeric pad, function) that no key equivalent
-    /// asks for, so both sides of the comparison are narrowed to these.
+    /// state bits (caps lock, numeric pad, and Fn on every arrow or function
+    /// key) that no key equivalent of Detour's asks for, so both sides of
+    /// the comparison are narrowed to these; Fn on a key with a character is
+    /// compared apart (`KeyEquivalent.holdsFn`, TASK-375).
     static let significantModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
 
     /// The first item in `items` that answers `event`, or nil when none does.
@@ -42,16 +45,24 @@ enum MenuKeyEquivalentMatcher {
     }
 
     /// The first item in `items` whose key equivalent is `characters` with
-    /// `modifiers` (narrowed to ``significantModifiers`` here). Also how the
-    /// Quick Detour hotkey's recorder finds a shortcut a menu already uses
-    /// (TASK-193.2).
+    /// `modifiers` (narrowed to ``significantModifiers`` here, with Fn
+    /// compared apart where it is part of a shortcut, `KeyEquivalent.holdsFn`:
+    /// AppKit does not fire an item without Fn on a press of a key with a
+    /// character holding Fn, measured in TASK-375, and since the recorders
+    /// allow a binding on ⌃F beside macOS's ⌃fn-F, a hit here would fire
+    /// it on fn-⌃F instead). Also the automation endpoint's
+    /// `run_menu_item key=`. The shortcut recorders compare the items' held
+    /// shortcuts instead (`HotKeyShortcutValidation.heldKeyEquivalent`,
+    /// TASK-375).
     static func item(matchingCharacters characters: String, modifiers: NSEvent.ModifierFlags,
                      in items: [NSMenuItem]) -> NSMenuItem? {
         guard !characters.isEmpty else { return nil }
         let eventModifiers = modifiers.intersection(significantModifiers)
+        let pressHoldsFn = KeyEquivalent(characters, modifiers).holdsFn
 
         return items.first { item in
             canFire(item) && matches(item, characters: characters, modifiers: eventModifiers)
+                && KeyEquivalent(item.keyEquivalent, item.keyEquivalentModifierMask).holdsFn == pressHoldsFn
         }
     }
 

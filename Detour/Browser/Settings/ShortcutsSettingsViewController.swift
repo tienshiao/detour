@@ -465,20 +465,8 @@ final class ShortcutsSettingsViewController: SettingsPaneViewController, NSTable
             isExcluded: { [store] item in
                 store.isCommandItem(item) || item.identifier?.rawValue == BrowserCommands.newQuickDetourWindow.id.rawValue
             },
-            key: { item in
-                // A command's item the store does not write (the fixed Edit
-                // commands) holds its registry key, though AppKit may have
-                // cleared it on the item: it gives a key equivalent to one
-                // item of the bar only, and a binding saved on Copy's ⌘C took
-                // it at launch (measured, TASK-350). An App Shortcut on the
-                // item wins.
-                if let raw = item.identifier?.rawValue,
-                   let command = BrowserCommands.command(withID: CommandID(rawValue: raw)),
-                   item.userKeyEquivalent.isEmpty {
-                    return command.keyEquivalent
-                }
-                return HotKeyShortcutValidation.liveKeyEquivalent(of: item)
-            },
+            // Each item's held key (`heldKeyEquivalent`): a fixed command's
+            // registry key, as the recorder reads it (TASK-375).
             quickDetourShortcut: quickDetourShortcut())
     }
 

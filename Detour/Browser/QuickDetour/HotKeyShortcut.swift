@@ -172,7 +172,9 @@ extension KeyEquivalent {
     func shiftedKeyEquivalents(on layout: KeyboardLayout?) -> [KeyEquivalent] {
         guard let layout else { return [] }
         let spelled = normalized
-        guard spelled.modifiers.contains(.shift) else { return [] }
+        // Held with Fn (macOS's own items, TASK-375), every keystroke it
+        // shares holds Fn too, which no shortcut checked here has.
+        guard spelled.modifiers.contains(.shift), !spelled.holdsFn else { return [] }
         var result: [KeyEquivalent] = []
         for keyCode in layout.keyCodes(typing: spelled.key) {
             let pressed = HotKeyShortcut(keyCode: keyCode, modifiers: spelled.modifiers, character: spelled.key)
@@ -350,10 +352,13 @@ enum HotKeyShortcutValidation {
     ///   - shiftedCharacter: the character a key code types with Shift, for
     ///     the item a shifted key also fires (TASK-335); by default the
     ///     current keyboard layout's.
+    ///   - itemKey: the shortcut an item holds (`heldKeyEquivalent`, by
+    ///     default: a fixed command's registry key, TASK-375).
     static func problem(for shortcut: HotKeyShortcut, rules: HotKeyShortcutRules, menu: NSMenu?,
                         isOwnItem: (NSMenuItem) -> Bool, quickDetourShortcut: HotKeyShortcut?,
                         systemHotKeys: [SystemHotKey],
-                        shiftedCharacter: (UInt16) -> String = { KeyboardLayout.currentShiftedCharacter(forKeyCode: $0) })
+                        shiftedCharacter: (UInt16) -> String = { KeyboardLayout.currentShiftedCharacter(forKeyCode: $0) },
+                        itemKey: (NSMenuItem) -> KeyEquivalent? = { heldKeyEquivalent(of: $0) })
         -> HotKeyShortcutProblem? {
         switch rules {
         case .globalHotKey:
@@ -365,12 +370,13 @@ enum HotKeyShortcutValidation {
         }
         guard shortcut.hasKeyName else { return .unnamedKey }
         if let menu {
-            if let path = menuItemPath(matching: shortcut.menuKeyEquivalent, in: menu, isOwnItem: isOwnItem, parents: []) {
+            if let path = menuItemPath(matching: shortcut.menuKeyEquivalent, in: menu, isOwnItem: isOwnItem,
+                                       itemKey: itemKey, parents: []) {
                 return .usedByMenu(path.joined(separator: " > "))
             }
             // After the whole menu: AppKit fires an exact item first (measured).
             if let shifted = shortcut.shiftedKeyEquivalent(shiftedCharacter: shiftedCharacter(shortcut.keyCode)),
-               let path = menuItemPath(matching: shifted, in: menu, isOwnItem: isOwnItem, parents: []) {
+               let path = menuItemPath(matching: shifted, in: menu, isOwnItem: isOwnItem, itemKey: itemKey, parents: []) {
                 return .usedByMenuAsShifted(path: path.joined(separator: " > "), shortcut: shifted.displayString ?? "")
             }
         }
@@ -434,18 +440,23 @@ enum HotKeyShortcutValidation {
         HeldShortcut(character: "q", modifiers: [.option, .shift, .command], name: "Log Out"),
     ]
 
-    /// The titles from the menu bar down to the item that answers `key`,
-    /// matched as AppKit matches a key equivalent (`MenuKeyEquivalentMatcher`).
-    private static func menuItemPath(matching key: KeyEquivalent, in menu: NSMenu,
-                                     isOwnItem: (NSMenuItem) -> Bool, parents: [String]) -> [String]? {
-        let candidates = menu.items.filter { !isOwnItem($0) }
-        if let item = MenuKeyEquivalentMatcher.item(matchingCharacters: key.key, modifiers: key.modifiers,
-                                                    in: candidates) {
+    /// The titles from the menu bar down to the item that answers `key`: an
+    /// item AppKit could fire (`MenuKeyEquivalentMatcher.canDispatch`) whose
+    /// held shortcut (`itemKey`) is `key` (`KeyEquivalent.isSameShortcut`,
+    /// as AppKit reads a key equivalent: an uppercase key implies Shift, Fn
+    /// counts on a key with a character), each menu's own items before its
+    /// submenus'.
+    private static func menuItemPath(matching key: KeyEquivalent, in menu: NSMenu, isOwnItem: (NSMenuItem) -> Bool,
+                                     itemKey: (NSMenuItem) -> KeyEquivalent?, parents: [String]) -> [String]? {
+        if let item = menu.items.first(where: { item in
+            !isOwnItem(item) && MenuKeyEquivalentMatcher.canDispatch(item)
+                && itemKey(item)?.isSameShortcut(as: key) == true
+        }) {
             return parents + [item.title]
         }
         for item in menu.items {
             guard let submenu = item.submenu else { continue }
-            if let path = menuItemPath(matching: key, in: submenu, isOwnItem: isOwnItem,
+            if let path = menuItemPath(matching: key, in: submenu, isOwnItem: isOwnItem, itemKey: itemKey,
                                        parents: parents + [title(of: submenu, item: item, in: menu)]) {
                 return path
             }
@@ -456,6 +467,23 @@ enum HotKeyShortcutValidation {
     /// An item's key equivalent as it is now; nil for none.
     static func liveKeyEquivalent(of item: NSMenuItem) -> KeyEquivalent? {
         item.keyEquivalent.isEmpty ? nil : KeyEquivalent(item.keyEquivalent, item.keyEquivalentModifierMask)
+    }
+
+    /// The shortcut `item` holds for the conflict checks (TASK-350,
+    /// TASK-375): a fixed command's item (Undo, Redo, Cut, Copy, Paste,
+    /// Select All; nothing here writes their shortcuts) holds its registry
+    /// key, unless an App Shortcut applies to it; any other item what it
+    /// holds now. AppKit gives a key equivalent to one item of the bar only,
+    /// so a binding on Copy's ⌘C seeded before launch took it from Copy's
+    /// item, which kept none after that binding moved (measured, TASK-350).
+    static func heldKeyEquivalent(of item: NSMenuItem) -> KeyEquivalent? {
+        // The identifier first: the App Shortcut getter is the costlier read.
+        if let raw = item.identifier?.rawValue,
+           let command = BrowserCommands.command(withID: CommandID(rawValue: raw)),
+           case .fixed = command.bindability, item.userKeyEquivalent.isEmpty {
+            return command.keyEquivalent
+        }
+        return liveKeyEquivalent(of: item)
     }
 
     /// What the bar shows for `item`'s `submenu`: the submenu's title.
@@ -481,13 +509,11 @@ enum HotKeyShortcutValidation {
     /// (Emoji & Symbols, Start Dictation…), the fixed Edit commands, and the
     /// App Shortcuts System Settings gives them.
     ///
-    /// - Parameter key: the shortcut an item holds; by default its key
-    ///   equivalent, none when empty. AppKit gives a key equivalent to one
-    ///   item of the menu bar only, so an item can have lost its own to
-    ///   another (measured, TASK-350): the pane passes the registry's key
-    ///   for a command's item.
+    /// - Parameter key: the shortcut an item holds; by default
+    ///   `heldKeyEquivalent` (a fixed command's registry key, as AppKit can
+    ///   have cleared its item: TASK-350), as the recorders read it.
     static func keystrokeHolders(in menu: NSMenu?, isExcluded: (NSMenuItem) -> Bool,
-                                 key: (NSMenuItem) -> KeyEquivalent? = { liveKeyEquivalent(of: $0) },
+                                 key: (NSMenuItem) -> KeyEquivalent? = { heldKeyEquivalent(of: $0) },
                                  quickDetourShortcut: HotKeyShortcut?) -> [KeystrokeHolder] {
         var holders: [KeystrokeHolder] = []
         func walk(_ menu: NSMenu, parents: [String]) {

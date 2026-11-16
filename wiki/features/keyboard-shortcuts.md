@@ -59,6 +59,12 @@ sources:
   - id: task-350
     resource: backlog:TASK-350
     title: "Shortcuts: Reset and saved-pair checks also compare against the Quick Detour hotkey's item and AppKit's own menu items"
+  - id: task-375
+    resource: backlog:TASK-375
+    title: "Shortcuts: Fn menu items are compared with Fn dropped, and AppKit's one-item rule can hide a fixed command's key"
+  - id: spike-375
+    resource: ../../docs/harness/task375
+    title: "TASK-375 spikes: AppKit's matching of Fn items, and an emptied key equivalent given back (macOS 26, 2026-11-16)"
   - id: task-374
     resource: backlog:TASK-374
     title: "Shortcuts: Restore Defaults can put a default onto the Quick Detour hotkey's key without a warning"
@@ -247,7 +253,9 @@ unchanged) and `.appShortcut` (a command). In order:
 2. **A key with no name**.
 3. **The live main menu** (with its submenus, matched as AppKit matches):
    any item holding it, the row's own item and the Quick Detour item
-   excepted. Because the items carry the user's bindings and any App
+   excepted; a fixed command's item by its registry key
+   ([below](#holders-outside-the-commands), TASK-375), and Fn counts on a
+   key with a character. Because the items carry the user's bindings and any App
    Shortcut, this covers other commands, AppKit's own items (Emoji &
    Symbols, Start Dictation…) and System Settings' overrides. The message
    names the path: "⌘T is the shortcut of File > New Tab." (the application
@@ -365,11 +373,18 @@ also compare with what the store does not resolve:[^task-350]
   fn-E; Start Dictation on fn-D), and an App Shortcut System Settings gives
   any of them. Hide, Quit, Minimize and Zoom are bindable commands, already
   compared.
-- A command's item is read with its **registry** key, unless an App
-  Shortcut applies: AppKit keeps a key equivalent on one item of the bar
-  only (measured, [AppKit gotchas](../platform/appkit-gotchas.md#menus)), so
-  a binding saved on ⌘C took it from Edit > Copy at launch and the live Copy
-  item had none.[^spike-350]
+- A fixed command's item is read with its **registry** key, unless an App
+  Shortcut applies (`HotKeyShortcutValidation.heldKeyEquivalent`): AppKit
+  keeps a key equivalent on one item of the bar only (measured,
+  [AppKit gotchas](../platform/appkit-gotchas.md#menus)), so a binding
+  saved on ⌘C took it from Edit > Copy at launch and the live Copy item had
+  none.[^spike-350] Since TASK-375 both recorders (rule 3) read the items
+  the same way: recording ⌘C again on the row of a binding seeded on it
+  (its own item left out, Copy's empty) found no holder before and is now
+  refused for Copy, checked at runtime. AppKit gives the key back to the
+  emptied item once the other lets go of it (measured, TASK-375), so that
+  own-row case, and a check made while the duplicate holds, is where the
+  live menu misled.[^spike-375]
 - `ShortcutResolution.outsideHolderConflicts` (pure) asks, for each
   shortcut, a holder on the very same shortcut first, then one on the same
   keystroke through a shifted character in either direction (TASK-343's
@@ -394,8 +409,7 @@ also compare with what the store does not resolve:[^task-350]
   compared with each other: a fresh install has them all. Before, the
   restore put the default back and the "Same key as" mark (below) was the
   only sign; with the hotkey on, the default then did nothing (the Carbon
-  hotkey takes the key first, and AppKit leaves the later of two items on
-  one key with none). Keeping the row rather than restoring it and warning
+  hotkey takes the key first). Keeping the row rather than restoring it and warning
   is Claude's choice (2026-11-16, not yet confirmed by the user), so a
   restore never leaves a command on a taken key, as a row's Reset never
   does.
@@ -411,11 +425,28 @@ also compare with what the store does not resolve:[^task-350]
   for a menu item that only one of them can have it.
 - Not logged at launch (the store's pair log knows only commands).
 
-Limits: items whose mask has Fn (fn-D, fn-E, the Window menu's tiling
-items when AppKit adds them) are compared without it, as the recorder's
-matcher narrows modifiers; a binding never holds Fn, so such an item can be
-named for a binding on the same key without Fn (none of the defaults is
-one).
+**Fn** (TASK-375). An item whose mask holds Fn (the Globe key) is
+compared with Fn on a key with a character (`KeyEquivalent.holdsFn`, kept
+by `normalized`): AppKit fires such an item only on a press holding Fn,
+and an item without Fn not on such a press (fn-E opened the character
+palette and E alone did nothing; fn⌘E did not fire a ⌘E item). On an arrow
+or a function key every press carries Fn, so there it is ignored, and a
+tiling item on ⌃fn-← is still the shortcut ⌃←. Only macOS's own items can
+hold Fn (AppKit drops it from an app's, with a log line), and no binding,
+recorded key or Quick Detour shortcut holds it, so such an item is never
+named for one; before, a binding ⌃F could be named against a ⌃fn-F item.
+The test host's bar has Start Dictation (fn-D) and Emoji & Symbols (fn-E),
+neither with ⌘ or ⌃, which no binding could equal anyway; the Window
+menu's tiling items (⌃fn-F and the like) did not appear in the test host or
+the spike, so that case is covered by tests with an injected key, not
+measured.[^spike-375] The TASK-56 fast path follows
+(`MenuKeyEquivalentMatcher` requires the item and the press to agree on
+`holdsFn`; from the code review): with a binding now allowed on ⌃F beside a
+⌃fn-F item, a fn-⌃F press matched in a delegate-driven menu would otherwise
+have fired the binding instead of AppKit's item; it is now a miss and
+AppKit decides. `run_menu_item key=e` no longer finds Emoji & Symbols' fn-E.
+Not changed: the recorder still records a press made with Fn as the
+shortcut without it.
 
 ## The pane
 
@@ -621,7 +652,11 @@ for the app. To try one at runtime, pass it as a launch argument; never
   French) and an item no command is (exact, French-only ⇧⌘à), either
   direction, saved shortcuts marked (⇧⌘/ against ⌘? on US only, ⌘+ against
   ⇧⌘=, a French-only ⌥⇧⌘à, the Quick Detour shortcut and keystroke), a
-  pair of commands named first; Restore Defaults (TASK-374): a command left
+  pair of commands named first; Fn and fixed commands (TASK-375): Fn part
+  of a shortcut on a key with a character but not on an arrow or F-key, a
+  Fn holder not named for a binding without Fn (pure, the recorder, the
+  real bar's fn-D and fn-E), both recorders refusing ⌘C for a Copy item
+  AppKit cleared, and on the seeded duplicate's own row; Restore Defaults (TASK-374): a command left
   as it is for the Quick Detour shortcut and for its keystroke (US and
   French), for an item no command is (French only), a command left because
   a kept one holds its default (exactly, and on the keystroke), a swap
@@ -637,7 +672,8 @@ for the app. To try one at runtime, pass it as a launch argument; never
   answering a binding in the Extensions and Spaces menus, the registry's
   menus equal to the bar's.
 - `MenuKeyEquivalentMatcherTests` (TASK-56): the matcher, and the
-  fast-path invariants against the real `NSApp.mainMenu`.
+  fast-path invariants against the real `NSApp.mainMenu`; a press holding
+  Fn on a key with a character not matching an item without it (TASK-375).
 - `SpaceJumpTests` (TASK-295): a rebinding of a position command reaches
   its item and the Spaces menu's matching, and reset gives ⌃N back.
 - `ShortcutsSettingsPaneTests`: grouping, parameterised commands left out,
@@ -663,6 +699,7 @@ for the app. To try one at runtime, pass it as a launch argument; never
 [^task-350]: TASK-350
 [^spike-350]: TASK-350 spike
 [^task-374]: TASK-374
+[^spike-375]: TASK-375 spikes
 [^task-343]: TASK-343
 [^spike]: NSUserKeyEquivalents spikes
 [^task-56]: Implement menuHasKeyEquivalent so key presses stop rebuilding the Spaces and Extensions menus

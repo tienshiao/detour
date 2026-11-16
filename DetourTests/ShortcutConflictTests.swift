@@ -828,4 +828,131 @@ nonisolated final class ShortcutConflictTests: XCTestCase {
         XCTAssertFalse(store.hasOverrides)
         XCTAssertTrue(pane.warningLabel.isHidden, "the refusal shown before goes")
     }
+
+    // MARK: - Fn, and a fixed command's key (TASK-375)
+
+    /// AppKit matches an item whose mask holds Fn (its own fn-E, fn-D) only
+    /// on a press holding Fn, and an item without Fn not on such a press;
+    /// an arrow's or a function key's press always carries Fn, so there it
+    /// tells nothing (measured, docs/harness/task375).
+    @MainActor func testFnIsPartOfAShortcutOnAKeyWithACharacter() {
+        XCTAssertFalse(KeyEquivalent("f", [.control, .function]).isSameShortcut(as: KeyEquivalent("f", [.control])))
+        XCTAssertFalse(KeyEquivalent("e", [.function]).isSameShortcut(as: KeyEquivalent("e", [])))
+        XCTAssertTrue(KeyEquivalent("e", [.function]).isSameShortcut(as: KeyEquivalent("e", [.function])))
+        XCTAssertTrue(KeyEquivalent("\u{F702}", [.control, .function]).isSameShortcut(as: KeyEquivalent("\u{F702}", [.control])),
+                      "an arrow's press always carries Fn")
+        XCTAssertTrue(KeyEquivalent("\u{F709}", [.function]).isSameShortcut(as: KeyEquivalent("\u{F709}", [])), "F6")
+        for layout in [Self.us, Self.french] {
+            XCTAssertEqual(KeyEquivalent("=", [.shift, .command, .function]).shiftedKeyEquivalents(on: layout), [],
+                           "no shortcut checked here holds Fn")
+            XCTAssertFalse(KeyEquivalent("=", [.shift, .command]).shiftedKeyEquivalents(on: layout).isEmpty,
+                           "without Fn, ⌘+ on both layouts")
+        }
+        XCTAssertEqual(KeyEquivalent("f", [.control, .function]).propertyList["modifiers"] as? Int,
+                       Int(NSEvent.ModifierFlags.control.rawValue), "never stored")
+    }
+
+    /// A holder on Fn and a key with a character (the Window menu's Fill,
+    /// ⌃fn-F) is not the binding on that key without Fn; one on an arrow
+    /// (Left, ⌃fn-←) is.
+    @MainActor func testAHolderHoldingFnIsComparedWithFn() {
+        let reload = BrowserCommands.reload.id
+        let fill = KeystrokeHolder(kind: .menuItem(path: "Window > Move & Resize > Fill"), title: "Fill",
+                                   key: KeyEquivalent("f", [.control, .function]))
+        let left = KeystrokeHolder(kind: .menuItem(path: "Window > Move & Resize > Left"), title: "Left",
+                                   key: KeyEquivalent("\u{F702}", [.control, .function]))
+        for layout in [Self.us, Self.french] {
+            let equivalents = Self.shiftedEquivalents(on: layout)
+            XCTAssertEqual(ShortcutResolution.outsideHolderConflicts(of: [(id: reload, key: KeyEquivalent("f", [.control]))],
+                                                                     holders: [fill, left], shiftedEquivalents: equivalents),
+                           [:])
+            XCTAssertEqual(ShortcutResolution.outsideHolderConflicts(
+                of: [(id: reload, key: KeyEquivalent("\u{F702}", [.control]))], holders: [fill, left],
+                shiftedEquivalents: equivalents), [reload: left])
+            XCTAssertNil(ShortcutResolution.resetConflict(of: reload, builtIn: KeyEquivalent("f", [.control]), others: [],
+                                                          holders: [fill], shiftedEquivalents: equivalents))
+            // A Fn holder on a shifted character is not reached through the
+            // shifted path either: ⇧⌘= is ⌘+'s keystroke, not fn⌘+'s.
+            let fnPlus = KeystrokeHolder(kind: .menuItem(path: "Extra > Thing"), title: "Thing",
+                                         key: KeyEquivalent("+", [.command, .function]))
+            XCTAssertEqual(ShortcutResolution.outsideHolderConflicts(
+                of: [(id: reload, key: KeyEquivalent("=", [.shift, .command]))], holders: [fnPlus],
+                shiftedEquivalents: equivalents), [:])
+        }
+        // The recorder: AppKit drops Fn from an app's own item (measured), so
+        // the item's held key gives it back here.
+        let fillItem = item("Fill", "f", [.control])
+        let menu = outsideMenu([fillItem])
+        func problem(_ pressed: HotKeyShortcut, fn: Bool, layout: KeyboardLayout?) -> HotKeyShortcutProblem? {
+            HotKeyShortcutValidation.problem(
+                for: pressed, rules: .appShortcut, menu: menu, isOwnItem: { _ in false }, quickDetourShortcut: nil,
+                systemHotKeys: [], shiftedCharacter: Self.shifted(on: layout),
+                itemKey: { item in
+                    item === fillItem && fn ? KeyEquivalent("f", [.control, .function])
+                        : HotKeyShortcutValidation.heldKeyEquivalent(of: item)
+                })
+        }
+        for layout in [Self.us, Self.french] {
+            XCTAssertNil(problem(shortcut(kVK_ANSI_F, [.control], "f"), fn: true, layout: layout))
+            XCTAssertEqual(problem(shortcut(kVK_ANSI_F, [.control], "f"), fn: false, layout: layout),
+                           .usedByMenu("Extra > Fill"))
+        }
+    }
+
+    /// The menu bar that ships: AppKit's items holding Fn on a key with a
+    /// character (Emoji & Symbols' fn-E, Start Dictation's fn-D, the Window
+    /// menu's tiling items if it adds them) are never named for a shortcut on
+    /// that key without Fn.
+    @MainActor func testTheRealMenuBarsFnItemsAreNotNamedForAShortcutWithoutFn() throws {
+        let menu = try XCTUnwrap(NSApp.mainMenu)
+        let store = try throwawayStore()
+        let holders = HotKeyShortcutValidation.keystrokeHolders(in: menu, isExcluded: { store.isCommandItem($0) },
+                                                                quickDetourShortcut: nil)
+        let fnHolders = holders.filter(\.key.holdsFn)
+        XCTAssertFalse(fnHolders.isEmpty, "AppKit's fn-E and fn-D")
+        for holder in fnHolders {
+            let withoutFn = KeyEquivalent(holder.key.key, holder.key.modifiers.subtracting(.function))
+            XCTAssertEqual(ShortcutResolution.outsideHolderConflicts(
+                of: [(id: BrowserCommands.reload.id, key: withoutFn)], holders: fnHolders,
+                shiftedEquivalents: Self.shiftedEquivalents(on: Self.us)), [:], holder.title)
+        }
+    }
+
+    /// AppKit gives a key equivalent to one item of the bar only: a binding
+    /// on ⌘C seeded before launch leaves Edit > Copy's item with none, and
+    /// once that binding moves the live menu holds ⌘C nowhere. Both
+    /// recorders still refuse ⌘C for Copy, from its registry key.
+    @MainActor func testTheRecordersCheckAFixedCommandByItsRegistryKey() throws {
+        let copy = NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "")
+        copy.identifier = NSUserInterfaceItemIdentifier(BrowserCommands.copy.id.rawValue)
+        let thing = item("Thing", "")
+        let menu = outsideMenu([copy, thing])
+        // The C key is in the same place on US and French.
+        for layout in [Self.us, Self.french] {
+            let pane = pane(try throwawayStore(), layout: layout, menu: menu)
+            let commandC = shortcut(kVK_ANSI_C, [.command], "c")
+            XCTAssertEqual(pane.problem(for: commandC, command: BrowserCommands.reload.id), .usedByMenu("Extra > Copy"))
+            XCTAssertEqual(HotKeyShortcutValidation.problem(for: commandC, menu: menu,
+                                                            ownAction: #selector(AppDelegate.newQuickDetourWindow(_:)),
+                                                            systemHotKeys: [], shiftedCharacter: Self.shifted(on: layout)),
+                           .usedByMenu("Extra > Copy"), "the Quick Detour recorder too")
+            XCTAssertNil(pane.problem(for: shortcut(kVK_ANSI_K, [.command], "k"), command: BrowserCommands.reload.id),
+                         "an item no command is holds only what it holds now")
+        }
+    }
+
+    /// The case the live menu hid (seen at runtime): New Window's binding on
+    /// ⌘C, seeded before launch, holds the key and Copy's item is empty, so
+    /// recording ⌘C again on New Window's own row (its item left out) found
+    /// no holder. It is refused for Copy.
+    @MainActor func testRecordingASeededDuplicateAgainOnItsOwnRowIsRefused() throws {
+        let copy = NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "")
+        copy.identifier = NSUserInterfaceItemIdentifier(BrowserCommands.copy.id.rawValue)
+        let newWindow = item("New Window", "c", id: BrowserCommands.newWindow.id)
+        let store = try throwawayStore()
+        store.setKeyEquivalent(KeyEquivalent("c"), for: BrowserCommands.newWindow.id)
+        let pane = pane(store, layout: Self.us, menu: outsideMenu([newWindow, copy]))
+        XCTAssertEqual(pane.problem(for: shortcut(kVK_ANSI_C, [.command], "c"), command: BrowserCommands.newWindow.id),
+                       .usedByMenu("Extra > Copy"))
+    }
 }
