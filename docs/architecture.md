@@ -69,7 +69,7 @@ Used sparingly for cross-cutting concerns:
 | Notification | Purpose |
 |--------------|---------|
 | `webViewOwnershipChanged` | Posted by a window after it takes a tab's WebView; other windows showing that tab switch to a snapshot |
-| `contentBlockerRulesDidChange` | Signals windows to reapply content blocking rules to the WebViews they own |
+| `contentBlockerRulesDidChange` | Signals `TabStore` to reapply content blocking rules to every live WebView of the spaces and favourites, and each Quick Detour window to its page |
 | `contentBlockerStatusDidChange` | Updates settings UI with current rule compilation status |
 | `UserAgentDidChange` | Reapplies user agent string to all tabs in affected profile |
 

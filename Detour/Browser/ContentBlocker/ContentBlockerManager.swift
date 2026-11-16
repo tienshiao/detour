@@ -214,11 +214,12 @@ class ContentBlockerManager {
     }
 
     /// A rules change reaching a web view that already exists: every rule list
-    /// it has is removed and `profile`'s current ones are added. What a
-    /// window does on `.contentBlockerRulesDidChange` for the pages it hosts
-    /// (a browser window's selected panes, a Quick Detour's or quarantine's
-    /// page, TASK-359); a list toggled off, recompiled or cleared leaves
-    /// nothing behind.
+    /// it has is removed and `profile`'s current ones are added. What
+    /// `.contentBlockerRulesDidChange` does to every live web view: the
+    /// spaces' and favourites' through `TabStore.replaceContentRuleListsOnLivePages`
+    /// (TASK-368), a Quick Detour's or quarantine's through its window
+    /// (TASK-359); a list toggled off, recompiled or cleared leaves nothing
+    /// behind.
     static func replaceRuleLists(on userContentController: WKUserContentController, profile: Profile,
                                  from ruleStore: ContentRuleStore) {
         userContentController.removeAllContentRuleLists()

@@ -102,8 +102,8 @@ web view's navigation and UI delegate for its whole life.
 
 The window also follows content-blocking changes: on
 `.contentBlockerRulesDidChange` it replaces the page's rule lists with what
-its current profile has on (`ContentBlockerManager.replaceRuleLists`), as a
-browser window does for its selected panes. Before TASK-359 nothing did, and
+its current profile has on (`ContentBlockerManager.replaceRuleLists`), as
+`TabStore` does for every live page of the spaces (TASK-368). Before TASK-359 nothing did, and
 an open page kept the lists it was created with
 ([attaching lists to web views](./content-blocking.md#attaching-lists-to-web-views)).[^task-359]
 

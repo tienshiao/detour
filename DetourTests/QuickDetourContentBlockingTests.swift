@@ -4,8 +4,8 @@ import WebKit
 
 /// An open Quick Detour or quarantine page follows content-blocking changes
 /// (TASK-359): on `.contentBlockerRulesDidChange` its window replaces the
-/// page's rule lists with what its profile has on now, as a browser window
-/// does for its selected panes.
+/// page's rule lists with what its profile has on now, as `TabStore` does for
+/// every live page of the spaces (TASK-368).
 ///
 /// A real `QuickDetourWindowController` whose `contentRuleStore` is a private
 /// temporary store holding tiny lists under the real list identifiers; the

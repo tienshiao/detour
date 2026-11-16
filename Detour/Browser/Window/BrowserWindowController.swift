@@ -426,12 +426,6 @@ class BrowserWindowController: NSWindowController {
                                                name: NSPopover.didShowNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(popoverDidClose(_:)),
                                                name: NSPopover.didCloseNotification, object: nil)
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleContentBlockerRulesChanged),
-            name: .contentBlockerRulesDidChange,
-            object: nil
-        )
 
         NotificationCenter.default.addObserver(
             self,
@@ -2396,18 +2390,6 @@ class BrowserWindowController: NSWindowController {
     }
 
     // MARK: - Window Events
-
-    @objc private func handleContentBlockerRulesChanged() {
-        guard let tab = selectedTab, ownsWebView,
-              let profile = activeSpace?.profile else { return }
-
-        // Remove old rule lists and re-add current ones — on every owned pane
-        for member in splitMembers(of: tab) {
-            guard let webView = member.webView else { continue }
-            ContentBlockerManager.replaceRuleLists(on: webView.configuration.userContentController, profile: profile,
-                                                   from: ContentBlockerManager.shared.ruleStore)
-        }
-    }
 
     @objc private func handleWebViewOwnershipChanged(_ notification: Notification) {
         guard let sender = notification.object as? BrowserWindowController, sender !== self,

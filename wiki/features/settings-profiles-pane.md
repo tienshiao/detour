@@ -5,7 +5,7 @@ description: "The Profiles pane of the Settings window: the profile list, the se
 resource: ../../Detour/Browser/Settings/ProfilesSettingsViewController.swift
 tags: [settings, profiles]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T04:58:14Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T17:10:00Z }
 sources:
   - id: profiles
     resource: ../../Detour/Browser/Settings/ProfilesSettingsViewController.swift
@@ -101,7 +101,8 @@ For the Private profile it is the same opt-in as "Allow in Private" on the
   profile edit, whatever the field, saves the profile row and posts that
   notification with the profile's id; each `BrowserTab` observes it. The
   content-blocker toggles additionally call `reapplyRuleLists()`, which
-  reaches only the selected tab's panes (see
+  replaces the lists on every live page of the profile, background tabs
+  included since TASK-368 (see
   [content blocking](./content-blocking.md#attaching-lists-to-web-views)).
 - **Text that does not fit must truncate.** With the window's width
   locked, a label at compression 750 squeezes its neighbours instead of

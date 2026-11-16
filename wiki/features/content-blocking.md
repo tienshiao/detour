@@ -4,7 +4,7 @@ title: Content blocking
 description: "The built-in blocker: EasyList-family filter lists compiled to WKContentRuleLists, per-profile list toggles, how lists reach web views, the blocked-resource counter and where state lives; this hub links the pages on conversion, compilation, chunks, Clear Cache & Redownload and the per-site switch."
 tags: [content-blocker, webkit, profiles, spi, privacy]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T07:22:00Z }
+generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T17:10:00Z }
 sources:
   - id: task-329
     resource: backlog:TASK-329
@@ -21,9 +21,9 @@ sources:
   - id: navigation
     resource: ../../Detour/Browser/Window/BrowserWindowController+Navigation.swift
     title: BrowserWindowController+Navigation.swift (the blocked-load callback)
-  - id: window-controller
-    resource: ../../Detour/Browser/Window/BrowserWindowController.swift
-    title: BrowserWindowController.swift (handleContentBlockerRulesChanged)
+  - id: live-pages
+    resource: ../../Detour/Browser/ContentBlocker/TabStore+ContentBlocking.swift
+    title: TabStore+ContentBlocking.swift (contentBlockingPages, replaceContentRuleListsOnLivePages)
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
     title: TabStore.swift (Space.makeWebViewConfiguration, makeUserContentController)
@@ -57,6 +57,12 @@ sources:
   - id: task-359
     resource: backlog:TASK-359
     title: "Content blocking: an open Quick Detour window keeps the rule lists it was created with"
+  - id: task-368
+    resource: backlog:TASK-368
+    title: "Content blocking: a rules change reaches only the selected tab's panes; background tabs keep their old lists"
+  - id: live-page-tests
+    resource: ../../DetourTests/LivePageContentBlockingTests.swift
+    title: LivePageContentBlockingTests.swift
 ---
 
 # What it does
@@ -153,10 +159,23 @@ recompiled (a refresh) or cleared and compiled again (Clear Cache &
 Redownload) leaves nothing behind. Who calls it on
 `.contentBlockerRulesDidChange`:
 
-| Window | Pages it replaces the lists on |
+| Observer | Pages it replaces the lists on |
 |---|---|
-| `BrowserWindowController.handleContentBlockerRulesChanged` | **only the selected tab's panes, and only when this window owns the web view**. Each tab has its own configuration, so other tabs keep the lists they were created with until their web view is rebuilt (a wake) or they are the selected tab when a later change is posted. |
+| `TabStore.replaceContentRuleListsOnLivePages` (the shared store only, `TabStore+ContentBlocking.swift`) | every page of `contentBlockingPages`, once each: each space's tabs and pinned backing tabs with the space's profile, each profile's favourites' backing tabs with that profile, and the Peek of any of them with its host's profile. Selected or not, in whichever window shows it: a web view exists once, so there is no ownership to check. Left out: a sleeping tab (its next web view is built with the current lists), a page built from an extension context's configuration (`servedExtensionOriginHost`: it never got lists, and that controller is the extension's), a space without a usable profile, and Quick Detour pages (next row). |
 | `QuickDetourWindowController.contentBlockerRulesDidChange` | its one page, a [Quick Detour](./quick-detour.md)'s or a [quarantine](./quarantine.md)'s, with the lists of the window's current profile (the Private profile for a quarantine). The window is the page's only host, so there is no ownership to check. |
+
+Until TASK-368 a browser window replaced the lists only on its selected
+tab's panes, and only when it owned their web view: a background tab, a
+background split pair, a Peek or a pinned tab kept the lists it was created
+with until its web view was rebuilt (a wake) or it was the selected tab when
+a later change was posted. Tests switched a list off and recompiled one
+with every kind of page open and only the selected tab followed. Since,
+a background tab polling a loopback server asks for EasyPrivacy's
+`/1pixel.php` from its first poll after the list is switched off in
+Settings > Profiles and stops once it is back on, without being selected
+(seen at runtime).[^task-368] The
+pass moved to the store rather than going over every tab in each window:
+two windows showing one space would each touch the same web views.
 
 Until TASK-359 no Quick Detour window observed the notification, and an
 open Quick Detour or quarantine page kept the lists it was created with: a
@@ -256,6 +275,15 @@ part's page.
   one path per list from a loopback server, so loaded and blocked are both
   reported, and the window's blocked count must match. All three failed
   before the fix (TASK-359).
+- `LivePageContentBlockingTests` - the browser window's pages after a
+  rules change, with `TabStore.shared.contentRuleStore` swapped for a private
+  store and the same two-path fetch: the selected tab, a background tab, its
+  Peek, a background split pair and a pinned tab all stop blocking with a
+  list switched off and block with a recompiled list's new rule only, none
+  of them selected meanwhile; another profile's tab keeps its own lists; and
+  which pages `contentBlockingPages` reaches (a favourite too; not a sleeping
+  tab, a Quick Detour or an extension page). The first two failed for every
+  page but the selected one before the fix (TASK-368).
 - `ContentBlockerWhitelistTests` - the per-site switch, and two
   real-`WKWebView` tests: one `blockedLoad` callback with blocking on, none
   when the navigation's preferences disable content blockers; the counter's
@@ -282,3 +310,4 @@ part's page.
 [^task-69]: The "Block content on this site" switch does not take effect
 [^task-351]: Content blocking: a filter list's $removeparam line compiles into a block rule for the whole host
 [^task-359]: Content blocking: an open Quick Detour window keeps the rule lists it was created with
+[^task-368]: Content blocking: a rules change reaches only the selected tab's panes; background tabs keep their old lists

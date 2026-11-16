@@ -261,8 +261,9 @@ final class QuickDetourWindowController: NSWindowController {
         NotificationCenter.default.addObserver(self, selector: #selector(extensionActionDidChange(_:)),
                                                name: ExtensionManager.extensionActionDidChangeNotification, object: nil)
         // A list refreshed, cleared and compiled again, or switched on or
-        // off: the page takes the profile's current lists, as a browser
-        // window's selected panes do (TASK-359).
+        // off: the page takes the profile's current lists, as every live
+        // page of the spaces does through TabStore, which leaves this one to
+        // its window (TASK-359, TASK-368).
         NotificationCenter.default.addObserver(self, selector: #selector(contentBlockerRulesDidChange),
                                                name: .contentBlockerRulesDidChange, object: nil)
         // `TabStore.updateProfile`'s only signal: a profile's settings (its

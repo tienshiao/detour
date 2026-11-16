@@ -493,6 +493,7 @@ class TabStore {
         store.siteSettings = .shared
         store.linkRoutes = .shared
         store.siteSearchDiscoverer = .shared
+        store.observeContentBlockerRuleChanges()
         return store
     }()
     nonisolated static let incognitoProfileID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
@@ -531,6 +532,14 @@ class TabStore {
     /// (`archiveOpenQuickDetours`), so a window AppKit closes afterwards writes
     /// no second record (TASK-193.5).
     var quickDetourTabIDsArchivedAtQuit: Set<UUID> = []
+
+    /// The compiled filter lists a rules change attaches to the live web
+    /// views (`replaceContentRuleListsOnLivePages`, TASK-368): the shared
+    /// manager's, or a test's private store.
+    lazy var contentRuleStore: ContentRuleStore = ContentBlockerManager.shared.ruleStore
+    /// The shared store's `.contentBlockerRulesDidChange` observer
+    /// (`observeContentBlockerRuleChanges`); a test store has none.
+    var contentBlockerRulesObserver: (any NSObjectProtocol)?
 
     /// What the Link Routes resolver needs to know about the spaces: the
     /// normal ones, the only ones a route may name.

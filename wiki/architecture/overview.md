@@ -128,7 +128,7 @@ Notifications in the browser core:
 | `spaceTabsNeedRehost` | `TabStore.updateSpace` (profile swap), `Profile.retargetExtensionPages`, `ExtensionManager.closeExtensionPages` (a favourite showing a page of the extension) | Windows on the space re-select their displayed tab so it wakes from the new configuration. |
 | `tabRestoredByUndo` | Undo of Close Tab | The window on that space selects the restored tab. |
 | `"UserAgentDidChange"` (string literal) | `TabStore.updateProfile` | Every `BrowserTab` of the profile re-applies its user agent. |
-| `contentBlockerRulesDidChange` | `ContentBlockerManager` | Windows re-apply rule lists to the web views they own. |
+| `contentBlockerRulesDidChange` | `ContentBlockerManager` | `TabStore` re-applies rule lists to every live web view of the spaces and favourites (TASK-368); a Quick Detour window to its page. |
 
 `ExtensionManager` posts several more (`extensionsDidChangeNotification`,
 `tabShouldSelectNotification` and others); those belong to the
