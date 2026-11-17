@@ -52,3 +52,45 @@ enum PaletteTabScope {
         HistoryPageBridge.scope(forProfile: profile, in: store) ?? []
     }
 }
+
+/// Every normal profile's history at once, for a palette that suggests across
+/// profiles and names each row's profile: the Quick Detour launcher, the
+/// user's decision in TASK-409 (2026-11-17). The launcher is not tied to a
+/// browser window, so it lifts TASK-209's one-profile rule; in-window palettes
+/// keep it. The Private profile is never part of it.
+nonisolated struct PaletteHistoryProfiles: Equatable, Sendable {
+    struct Entry: Equatable, Sendable {
+        let id: UUID
+        let name: String
+        /// The profile's history scope (`PaletteTabScope.historySpaceIDs`).
+        let spaceIDs: [String]
+    }
+
+    /// In the store's profile order.
+    let profiles: [Entry]
+
+    /// The union of the profiles' scopes: what the palette suggests from.
+    var spaceIDs: [String] { profiles.flatMap(\.spaceIDs) }
+
+    /// A row is labelled only when there is more than one profile to tell
+    /// apart; then every row is, its own profile's too (the user, TASK-409:
+    /// someone switching often may not remember which profile is in front).
+    var labelsRows: Bool { profiles.count > 1 }
+
+    func profileID(forSpaceID spaceID: String) -> UUID? {
+        profiles.first { $0.spaceIDs.contains(spaceID) }?.id
+    }
+
+    func name(of profileID: UUID) -> String? {
+        profiles.first { $0.id == profileID }?.name
+    }
+
+    /// Every profile that is neither Private nor deleted.
+    @MainActor static func normalProfiles(in store: TabStore) -> PaletteHistoryProfiles {
+        PaletteHistoryProfiles(profiles: store.profiles.compactMap { profile in
+            guard let spaceIDs = HistoryPageBridge.scope(forProfile: profile, in: store) else { return nil }
+            return Entry(id: profile.id, name: profile.name, spaceIDs: spaceIDs)
+        })
+    }
+}
+

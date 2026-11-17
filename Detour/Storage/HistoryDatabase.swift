@@ -1766,6 +1766,59 @@ nonisolated struct HistoryDatabase: Sendable {
         faviconURL(for: pageURL, scope: nil)
     }
 
+    /// For each of `urls` visited in `spaceIDs`, the `historyVisit.spaceID`
+    /// of its newest visit there (ties: the later visit id). A URL the scope
+    /// never visited itself — a host row's root, built from the host's best
+    /// page (`bestHostCompletions`) — takes the newest visit in the scope of
+    /// any page on its host; URLs with neither are left out. Lets a palette
+    /// that suggests from several profiles name the profile a row belongs to
+    /// (TASK-409).
+    func latestVisitSpaceIDs(forURLs urls: [String], spaceIDs: [String]) -> [String: String] {
+        let urls = Array(Set(urls))
+        guard !urls.isEmpty, !spaceIDs.isEmpty else { return [:] }
+        let sql = """
+            SELECT h.url,
+                   (SELECT v.spaceID FROM historyVisit v
+                    WHERE v.urlID = h.id AND v.spaceID IN (\(databaseQuestionMarks(count: spaceIDs.count)))
+                    ORDER BY v.visitTime DESC, v.id DESC LIMIT 1) AS spaceID
+            FROM historyURL h
+            WHERE h.url IN (\(databaseQuestionMarks(count: urls.count)))
+            """
+        do {
+            return try dbQueue.read { db in
+                var result: [String: String] = [:]
+                for row in try Row.fetchAll(db, sql: sql, arguments: StatementArguments(spaceIDs + urls)) {
+                    let url: String = row[0]
+                    if let spaceID: String = row[1] { result[url] = spaceID }
+                }
+                // Only host roots get here, so this scan of the host's pages
+                // runs at most for the few host rows a prefix shows.
+                let hostSQL = """
+                    WITH \(Self.scopeCTE(count: spaceIDs.count))
+                    SELECT v.spaceID FROM historyURL h
+                    JOIN historyVisit v ON v.urlID = h.id
+                    WHERE +v.spaceID IN (SELECT spaceID FROM scope)
+                      AND \(Self.urlPrefixCondition)
+                      AND history_display_host(h.url) = ?
+                    ORDER BY v.visitTime DESC, v.id DESC LIMIT 1
+                    """
+                for url in urls where result[url] == nil {
+                    let host = SuggestionProvider.displayHost(url)
+                    guard !host.isEmpty else { continue }
+                    var args: [DatabaseValueConvertible] = spaceIDs
+                    args.append(contentsOf: Self.urlPrefixPatterns(host + "/"))
+                    args.append(host)
+                    if let spaceID = try String.fetchOne(db, sql: hostSQL, arguments: StatementArguments(args)) {
+                        result[url] = spaceID
+                    }
+                }
+                return result
+            }
+        } catch {
+            return [:]
+        }
+    }
+
     /// The favicon URL recorded for a page, for a caller that may only learn
     /// about the visits of `spaceIDs` (a profile's spaces; TASK-152): the exact
     /// URL when one of those spaces visited it, else the page of the same host

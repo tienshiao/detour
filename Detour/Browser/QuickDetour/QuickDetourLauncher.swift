@@ -65,8 +65,17 @@ final class QuickDetourLauncher: NSObject {
         // instead of opening a Quick Detour.
         palette.tabStore = nil
         palette.profile = profile
-        // The profile's whole history (TASK-209), whichever window asked.
-        palette.historySpaceIDs = PaletteTabScope.historySpaceIDs(profile: profile, in: .shared)
+        if profile.isIncognito {
+            // A Private launcher reads no history (TASK-209, unchanged).
+            palette.historySpaceIDs = PaletteTabScope.historySpaceIDs(profile: profile, in: .shared)
+        } else {
+            // Every normal profile's history, each row naming its profile; a
+            // row opens in its own (the user, TASK-409). Searches and typed
+            // addresses still open in `profile`.
+            let profiles = PaletteHistoryProfiles.normalProfiles(in: .shared)
+            palette.historyProfiles = profiles
+            palette.historySpaceIDs = profiles.spaceIDs
+        }
         palette.glassTint = QuickDetourPalettePanel.glassTint
         panel.palette = palette
         // Close Tab (⌘W) in the launcher closes it (TASK-348).
@@ -113,9 +122,19 @@ final class QuickDetourLauncher: NSObject {
         return NSScreen.screens.first { NSMouseInRect(pointer, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens[0]
     }
 
-    private func submit(_ url: URL, typed: Bool) {
-        guard let profile else { return close() }
+    /// `rowProfileID`: the profile a history row (or the field its top hit
+    /// completed) belongs to (TASK-409); the launcher's own profile otherwise,
+    /// or when that profile has gone. The source space is passed on only in
+    /// the profile the window opens in, as an archived Quick Detour's restore
+    /// does.
+    private func submit(_ url: URL, typed: Bool, rowProfileID: UUID? = nil) {
+        guard let launcherProfile = profile else { return close() }
+        let rowProfile = rowProfileID.flatMap { id in
+            TabStore.shared.profiles.first { $0.id == id && !$0.isDeleted && !$0.isIncognito }
+        }
+        let profile = rowProfile ?? launcherProfile
         let sourceSpace = sourceSpaceID.flatMap { TabStore.shared.space(withID: $0) }
+            .flatMap { $0.profileID == profile.id ? $0 : nil }
         close()
         openWindow(profile, sourceSpace, url, typed)
     }
@@ -124,7 +143,7 @@ final class QuickDetourLauncher: NSObject {
 extension QuickDetourLauncher: CommandPaletteDelegate {
     func commandPalette(_ palette: CommandPaletteView, didSubmitInput input: String) {
         if let url = AddressInputClassifier.directURL(from: input) {
-            submit(url, typed: true)
+            submit(url, typed: true, rowProfileID: palette.historyProfileID(forSubmittedInput: input))
         } else if let url = profile?.searchEngine.searchURL(for: input) {
             submit(url, typed: false)
         }

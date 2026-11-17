@@ -43,6 +43,9 @@ sources:
   - id: harness-2
     resource: ../../docs/harness/task193-2-harness.patch
     title: TASK-193.2 runtime harness, its scratch tools and results
+  - id: task-409
+    resource: backlog:TASK-409
+    title: "Quick Detour launcher: suggestions from every profile, labelled"
 ---
 
 File > New Quick Detour Window, or the [global hotkey](./quick-detour-hotkey.md), shows the **launcher panel**: the command palette alone, centred on the screen, like Spotlight, with no web view and no title bar. Submitting opens the [Quick Detour window](./quick-detour-window.md) on that page; Escape or clicking away opens nothing, so no Quick Detour window ever has an empty page (the user's change of 2026-10-25; the first build opened the window showing the palette).
@@ -59,14 +62,17 @@ File > New Quick Detour Window, or the [global hotkey](./quick-detour-hotkey.md)
 | size, place | the palette's box with its full list plus a margin (560 × 321), centred on the key window's screen while Detour is active, else the screen under the pointer (`QuickDetour.panelFrame`) | |
 | background | clear, no window shadow; the palette's glass tinted to the appearance (`QuickDetourPalettePanel.glassTint`, `CommandPaletteView.glassTint`) | only the palette's own glass shows. Liquid Glass takes its brightness from what is on screen behind it, and the panel has no window content of its own, so untinted it read mid grey over a light window in dark mode; Spotlight stays dark there, and so does the panel with the tint (seen 2026-10-25)[^harness] |
 
-- **Suggestions** come from the profile the Quick Detour will use (the same
-  `profileForNewWindow` rule, chosen when the panel opens): history from the
-  profile's whole history, its spaces and its [Quick Detour
-  scope](./quick-detour-history.md), whichever window asked
-  (`PaletteTabScope.historySpaceIDs`, TASK-209; nothing for the Private
-  profile); search suggestions from its engine. (Before TASK-209 the panel
-  read the space it was asked from when that was the same profile's, else
-  only the Quick Detour scope.)
+- **Suggestions** come from **every** normal profile's history (TASK-409,
+  the user's decision of 2026-11-17): each profile's spaces and its [Quick
+  Detour scope](./quick-detour-history.md), whichever window asked. Every row
+  names its profile (the one that visited the address last) while there is
+  more than one, and a row opens the Quick Detour in its own profile; the
+  source space goes along only into its own profile. Searches, search
+  suggestions and typed addresses use the profile the panel opened on (the
+  `profileForNewWindow` rule). A Private launcher has no history. Details on
+  [suggestion pipeline](./suggestion-pipeline.md#history-is-profile-scoped).
+  (TASK-209 had limited the panel to the opening profile; before that it read
+  the space it was asked from.)[^task-409]
 - **No open-tab rows.** Switching to an existing tab from the panel would
   bring a browser window forward instead of opening a Quick Detour, so the
   panel's palette gets no `tabStore`.
@@ -179,3 +185,4 @@ Suites, counts and the runtime passes are on [Quick Detour tests and runtime che
 [^harness]: TASK-193.1 runtime harness and its results
 [^harness-2]: TASK-193.2 runtime harness, its scratch tools and results
 [^harness-348]: TASK-348 runtime check (real keys in the launcher)
+[^task-409]: Quick Detour launcher: suggestions from every profile, labelled

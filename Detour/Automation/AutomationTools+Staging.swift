@@ -402,16 +402,21 @@ extension AutomationTools {
                 + "as docs/capture/make_fake_arc.py makes, inside the data directory or a temporary folder; never "
                 + "Arc's own). what arc_import: the Import from Arc window, reading arc_folder. Both arc ones "
                 + "point this process's Arc reading at arc_folder until it quits. what "
-                + "settings: the Settings window on pane, with row selected in the pane's list. Returns the "
+                + "settings: the Settings window on pane, with row selected in the pane's list. what "
+                + "quick_detour_launcher: the Quick Detour launcher panel for profile_id (default: the one the "
+                + "menu item would use) with text typed into its field, and its rows in suggestions (each "
+                + "row's kind, title, url and the profile it names, TASK-409). Returns the "
                 + "window_number and frame of the window the UI is in, for set_window_frame and screencapture.",
             inputSchema: MCPSchema.input([
-                ("what", .enumeration(["space_editor", "arc_offer", "arc_import", "settings"], "The UI to open")),
+                ("what", .enumeration(["space_editor", "arc_offer", "arc_import", "settings", "quick_detour_launcher"],
+                                      "The UI to open")),
                 ("window_id", .integer("space_editor, arc_offer: the browser window")),
                 ("space_id", .string("space_editor: edit this space instead of creating one")),
                 ("name", .string("space_editor: the draft's name")),
                 ("emoji", .string("space_editor: the draft's emoji")),
                 ("color", .string("space_editor: the draft's colour, six hex digits")),
-                ("profile_id", .string("space_editor: the draft's profile")),
+                ("profile_id", .string("space_editor: the draft's profile; quick_detour_launcher: its profile")),
+                ("text", .string("quick_detour_launcher: what to type into its field")),
                 ("arc_folder", .string("arc_offer, arc_import: an absolute path to a fake Arc data folder")),
                 ("pane", .enumeration(SettingsWindowController.paneNames, "settings: the pane")),
                 ("row", .integer("settings: the row to select in the pane's list, from 0")),
@@ -420,6 +425,7 @@ extension AutomationTools {
                 "what": MCPSchema.stringType,
                 "draft": ["type": ["object", "null"]],
                 "rows": ["type": ["integer", "null"]],
+                "suggestions": ["type": ["array", "null"], "items": MCPSchema.objectType],
             ]) { $1 }),
             annotations: ["readOnlyHint": false, "destructiveHint": false],
             handler: { [self] arguments in
@@ -431,7 +437,9 @@ extension AutomationTools {
                 case "arc_offer": accepted = ["what", "window_id", "arc_folder"]
                 case "arc_import": accepted = ["what", "arc_folder"]
                 case "settings": accepted = ["what", "pane", "row"]
-                default: throw AutomationToolError(.invalidArguments, "what is space_editor, arc_offer, arc_import or settings")
+                case "quick_detour_launcher": accepted = ["what", "profile_id", "text"]
+                default: throw AutomationToolError(.invalidArguments,
+                                                   "what is space_editor, arc_offer, arc_import, settings or quick_detour_launcher")
                 }
                 if let extra = arguments.values.keys.sorted().first(where: { !accepted.contains($0) }) {
                     throw AutomationToolError(.invalidArguments, "\(extra) does not apply to \(what)")
@@ -441,11 +449,71 @@ extension AutomationTools {
                 case "space_editor": result = try openSpaceEditor(arguments)
                 case "arc_offer": result = try await openArcOffer(arguments)
                 case "arc_import": result = try await openArcImport(arguments)
+                case "quick_detour_launcher": result = try await openQuickDetourLauncher(arguments)
                 default: result = try await openSettings(arguments)
                 }
                 result["what"] = .string(what)
                 return .object(result)
             })
+    }
+
+    /// The launcher panel, typed into, with its rows (TASK-409): what the
+    /// hotkey shows, for a check or a capture without the global hotkey.
+    private func openQuickDetourLauncher(_ arguments: ToolArguments) async throws -> [String: JSONValue] {
+        let profile: Profile
+        if let id = try arguments.uuid("profile_id") {
+            guard let found = store.profile(withID: id) else {
+                throw AutomationToolError(.unknownProfile, "No profile \(id.uuidString)")
+            }
+            guard !found.isIncognito || privateAllowed else {
+                throw AutomationToolError(.privateUnreachable, "The Private profile is not reachable" + Self.privateHint)
+            }
+            profile = found
+        } else {
+            // The menu item's rule: the frontmost browser window, in window
+            // order (not the controllers' creation order), and only one the
+            // client may reach.
+            let reachable = reachableWindows
+            let frontmost = NSApp.orderedWindows.lazy
+                .compactMap { $0.windowController as? BrowserWindowController }
+                .first { controller in reachable.contains { $0 === controller } }?
+                .activeSpace?.profile
+            guard let chosen = QuickDetour.profileForNewWindow(frontmostSpaceProfile: frontmost,
+                                                               profiles: store.profiles) else {
+                throw AutomationToolError(.internalError, "No profile for a Quick Detour")
+            }
+            profile = chosen
+        }
+        let launcher = QuickDetourLauncher.shared
+        // Fresh each time: showing again on the same profile keeps the panel
+        // and its field, and the text would be typed after the old.
+        launcher.close()
+        launcher.show(profile: profile, sourceSpace: nil)
+        guard let panel = launcher.panel, let palette = launcher.palette else {
+            throw AutomationToolError(.internalError, "The launcher did not open")
+        }
+        if let text = try arguments.string("text"), !text.isEmpty {
+            guard let editor = panel.firstResponder as? NSTextView else {
+                throw AutomationToolError(.internalError, "The launcher's field is not being edited")
+            }
+            for character in text {
+                editor.insertText(String(character), replacementRange: editor.selectedRange())
+            }
+            // The history pass runs off the main thread; let it land.
+            try? await Task.sleep(for: .milliseconds(600))
+        }
+        var result = placement(of: panel)
+        result["suggestions"] = .array(palette.suggestions.map { item in
+            switch item {
+            case .historyResult(let url, let title, _):
+                return ["kind": "history", "title": .string(title), "url": .string(url),
+                        "profile": .nullable(palette.historyRowProfileName(for: url))]
+            case .searchInput(let text): return ["kind": "input", "title": .string(text)]
+            case .searchSuggestion(let text): return ["kind": "search_suggestion", "title": .string(text)]
+            default: return ["kind": "other"]
+            }
+        })
+        return result
     }
 
     private func openSpaceEditor(_ arguments: ToolArguments) throws -> [String: JSONValue] {

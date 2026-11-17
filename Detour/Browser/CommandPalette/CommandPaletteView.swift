@@ -48,6 +48,15 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     /// TASK-209), set by whoever shows it. Empty, the default, is no history:
     /// a Private window's palette, a quarantine's.
     var historySpaceIDs: [String] = []
+    /// Set by a palette that suggests across profiles (the Quick Detour
+    /// launcher, TASK-409): `historySpaceIDs` is then their union, every
+    /// history row is labelled with the profile it belongs to (the profile of
+    /// its newest visit) while there is more than one, and the owner asks
+    /// `historyProfileID(forSubmittedInput:)` which profile to open a row in.
+    var historyProfiles: PaletteHistoryProfiles?
+    /// The profile of each history URL the palette has shown, from
+    /// `historyProfiles`. Only grows while the palette is up.
+    private(set) var historyRowProfileIDs: [String: UUID] = [:]
     /// A tint for the palette's glass, for a palette with no window content
     /// behind it (the Quick Detour launcher panel, TASK-193.1).
     var glassTint: NSColor? {
@@ -426,6 +435,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         // overwrite the default list when it lands.
         localSuggestionGeneration &+= 1
         let items = suggestionProvider.defaultSuggestions(historySpaceIDs: historySpaceIDs, tabs: gatherTabInfos())
+        noteHistoryProfiles(suggestionProvider.historyProfileIDs(for: items, profiles: historyProfiles))
         suggestionsQuery = nil
         siteSearchOffer = nil
         commandRows = []
@@ -848,6 +858,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         let historySpaceIDs = historySpaceIDs
         let capturedTabID = currentTabID
         let completedFromTab = appliedTabCompletion
+        let historyProfiles = historyProfiles
         historyQueryQueue.async { [weak self] in
             // localSuggestions recomputes the open-tab matches too, but its two
             // SQLite reads are what we moved off the main thread. It is
@@ -856,6 +867,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             let local = provider.localSuggestions(
                 for: query, historySpaceIDs: historySpaceIDs, tabs: tabs,
                 allowAutocomplete: allowAutocomplete, currentTabID: capturedTabID)
+            let owners = provider.historyProfileIDs(for: local.items, profiles: historyProfiles)
             DispatchQueue.main.async {
                 guard let self else { return }
                 // Drop stale results: a newer rebuild started, or the field text
@@ -871,6 +883,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
                 if !completedFromTab, self.inlineCompletionSuffix == nil, !self.selectionMovedByUser {
                     self.applyInlineCompletion(local.inlineCompletion, for: query)
                 }
+                self.noteHistoryProfiles(owners)
                 self.matchRows = local.items
                 self.showQueryRows(isLatePass: true)
             }
@@ -1208,17 +1221,63 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         let generation = localSuggestionGeneration
         let provider = suggestionProvider
         let historySpaceIDs = historySpaceIDs
+        let historyProfiles = historyProfiles
         historyQueryQueue.async { [weak self] in
             let history = provider.siteSearchHistory(for: query, host: host, historySpaceIDs: historySpaceIDs,
                                                      excludingURL: url.absoluteString)
+            let owners = provider.historyProfileIDs(for: history, profiles: historyProfiles)
             DispatchQueue.main.async {
                 guard let self, generation == self.localSuggestionGeneration,
                       self.activeSiteSearch?.id == entry.id,
                       self.userTypedText.trimmingCharacters(in: .whitespaces) == query else { return }
+                self.noteHistoryProfiles(owners)
                 self.matchRows = [siteRow] + history
                 self.showQueryRows(isLatePass: true)
             }
         }
+    }
+
+    /// Internal for tests, which seed the rows' profiles directly.
+    func noteHistoryProfiles(_ owners: [String: UUID]) {
+        guard !owners.isEmpty else { return }
+        historyRowProfileIDs.merge(owners) { _, new in new }
+    }
+
+    /// The profile label a history row shows: only while the palette suggests
+    /// across more than one profile (TASK-409).
+    func historyRowProfileName(for url: String) -> String? {
+        guard let historyProfiles, historyProfiles.labelsRows,
+              let id = historyRowProfileIDs[url] else { return nil }
+        return historyProfiles.name(of: id)
+    }
+
+    /// The profile a submitted history row, or a field the top hit completed
+    /// to its address, belongs to (TASK-409); nil for anything else, and for a
+    /// palette that suggests from one profile.
+    /// A field matches a row by its display address. Several rows can share
+    /// one (`http`/`https`, `www.`), owned by different profiles: the rows on
+    /// screen decide first, top hit first, so the answer is the row the field
+    /// completed to, never a dictionary's order; then the rows seen earlier,
+    /// in a fixed order. Paths compare exactly; only the host ignores case.
+    func historyProfileID(forSubmittedInput input: String) -> UUID? {
+        guard historyProfiles != nil else { return nil }
+        if let id = historyRowProfileIDs[input] { return id }
+        let typed = Self.addressKey(input)
+        let shown = suggestions.compactMap { item -> String? in
+            if case .historyResult(let url, _, _) = item { return url }
+            return nil
+        }
+        let candidates = shown + historyRowProfileIDs.keys.sorted()
+        return candidates.lazy.compactMap { url -> UUID? in
+            guard Self.addressKey(SuggestionProvider.displayURL(url)) == typed else { return nil }
+            return self.historyRowProfileIDs[url]
+        }.first
+    }
+
+    /// A display address with its host lowercased and its path as it is.
+    private static func addressKey(_ display: String) -> String {
+        let end = display.firstIndex { $0 == "/" || $0 == "?" || $0 == "#" } ?? display.endIndex
+        return display[..<end].lowercased() + display[end...]
     }
 
     private func activateSuggestion(at index: Int) {
@@ -1348,7 +1407,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             let looksLikeURL = AddressInputClassifier.directURL(from: text) != nil
             cell.configure(title: text, url: nil, icon: nil, isSearch: !looksLikeURL, isGoTo: looksLikeURL)
         case .historyResult(let url, let title, let faviconURL):
-            cell.configure(title: title, url: url, icon: nil, isSearch: false)
+            cell.configure(title: title, url: url, icon: nil, isSearch: false,
+                           profileName: historyRowProfileName(for: url))
             if let faviconURL {
                 cell.expectedFaviconURL = faviconURL
                 suggestionProvider.loadFavicon(for: faviconURL) { [weak cell] image in
@@ -1528,14 +1588,40 @@ private class SuggestionCellView: NSTableCellView {
     /// `badge` (text, SF Symbol name) is the trailing hint: "Switch to Tab"
     /// for an open tab, "Tab" for a site search's keyword row (TASK-287).
     /// `symbol` (an SF Symbol name) is a command row's icon (TASK-320).
+    /// `profileName` leads the address of a row that names its profile (the
+    /// Quick Detour launcher across profiles, TASK-409); the address truncates
+    /// first, so the name stays readable.
     func configure(title: String, url: String?, icon: NSImage?, isSearch: Bool, switchToTab: Bool = false,
-                   isGoTo: Bool = false, badge: (text: String, symbol: String)? = nil, symbol: String? = nil) {
+                   isGoTo: Bool = false, badge: (text: String, symbol: String)? = nil, symbol: String? = nil,
+                   profileName: String? = nil) {
         expectedFaviconURL = nil
         titleLabel.stringValue = title.isEmpty ? (url ?? "") : title
 
         let badge = badge ?? (switchToTab ? ("Switch to Tab", "arrow.right.arrow.left") : nil)
-        let showURL = badge == nil && url != nil
-        urlLabel.stringValue = url ?? ""
+        let showURL = badge == nil && (url != nil || profileName != nil)
+        if let profileName {
+            let text = NSMutableAttributedString(string: profileName, attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ])
+            if let url, !url.isEmpty {
+                text.append(NSAttributedString(string: " · " + url, attributes: [
+                    .font: NSFont.systemFont(ofSize: 11),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ]))
+            }
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = .right
+            paragraph.lineBreakMode = .byTruncatingTail
+            text.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: text.length))
+            urlLabel.attributedStringValue = text
+        } else {
+            // A reused cell may have shown a labelled row: plain text again,
+            // in the label's own font, not the attributed run's.
+            urlLabel.font = .systemFont(ofSize: 11)
+            urlLabel.textColor = .secondaryLabelColor
+            urlLabel.stringValue = url ?? ""
+        }
         urlLabel.isHidden = !showURL
         badgeIcon.isHidden = badge == nil
         badgeLabel.isHidden = badge == nil

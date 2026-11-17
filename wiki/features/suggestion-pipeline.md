@@ -63,6 +63,9 @@ sources:
   - id: classifier-tests
     resource: ../../DetourTests/AddressInputClassifierTests.swift
     title: AddressInputClassifierTests.swift
+  - id: task-409
+    resource: backlog:TASK-409
+    title: "Quick Detour launcher: suggestions from every profile, labelled"
 ---
 
 # Role
@@ -233,7 +236,7 @@ profile's history is.
 |---|---|---|
 | Cmd+T, Cmd+L, the faux address bar, the sidebar's New Tab row, the empty state (all `BrowserWindowController.showCommandPalette`) | the active space's | that profile's spaces and Quick Detour scope |
 | Quick Detour window's palette (the host in its bar) | the window's | the same, whichever window it was opened from |
-| Quick Detour launcher | the one it was asked for | the same |
+| Quick Detour launcher | the one it was asked for | **every** normal profile's (their union), each row labelled with its profile (TASK-409; see below) |
 | Private window, Private Quick Detour, quarantine | the Private profile | none: nothing is recorded there, and no profile's history may be read |
 
 The empty list is fail-closed: a palette nobody gave a scope, a deleted
@@ -241,6 +244,25 @@ profile and a missing one get no history. Every history-derived row goes
 through the scope: the history rows, the history top hit and its inline
 completion, the host rows, the empty-field list and the default-list filler
 under a typed query (TASK-184).
+
+**The launcher crosses profiles (the user, 2026-11-17, TASK-409).** The
+Quick Detour launcher is not tied to a browser window, so it suggests from
+every profile that is neither Private nor deleted
+(`PaletteHistoryProfiles.normalProfiles`, set as the palette's
+`historyProfiles` and, as their union, its `historySpaceIDs`). Each history
+row belongs to the profile of its newest visit among them
+(`HistoryDatabase.latestVisitSpaceIDs`, resolved off the main thread with
+each pass by `SuggestionProvider.historyProfileIDs`; a host row whose root
+address was never visited takes the newest visit to any page of its host),
+and while there is more
+than one profile **every** row shows its profile's name before its address,
+the frontmost profile's too: someone switching often may not remember which
+one is in front. Picking a row, or submitting the field its top hit completed
+to that row's address, opens the Quick Detour in that row's profile
+(`CommandPaletteView.historyProfileID(forSubmittedInput:)`); typed addresses
+and searches open in the launcher's profile. A Private launcher still reads
+no history. Arc's own command bar, checked by the user, follows the
+frontmost window's profile as Detour's in-window palettes do.[^task-409]
 
 **Decision (the user, 2026-10-26, TASK-209): the whole profile.** History
 widened from the window's active space to the profile, like the History page
@@ -485,3 +507,4 @@ it. Errors yield an empty list silently.
 [^task-182]: Complete a typed host prefix to the site (youtube.com), not to one deep URL
 [^bench]: HistoryBenchmarkTests.swift (completion legs)
 [^task-209]: Command palette: scope suggestions to the palette's profile
+[^task-409]: Quick Detour launcher: suggestions from every profile, labelled

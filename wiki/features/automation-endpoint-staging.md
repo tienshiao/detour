@@ -103,6 +103,13 @@ from those bounds, not from the frame asked for (see Traps).
 
 # UI on demand and Arc's folder
 
+`open_ui quick_detour_launcher` (TASK-409) shows the launcher panel for
+`profile_id` (default: the frontmost window's, as the menu item picks),
+types `text` into its field, waits for the history pass, and returns its rows
+(kind, title, url and the profile each names) with the panel's
+`window_number` for `screencapture -l`. The global hotkey and the panel are
+otherwise out of the endpoint's reach.
+
 `open_ui` (Debug builds and test runs only; absent from Release) replaces
 DemoStage's `spaceeditor`, `arcoffer` and `settings*` commands and returns
 the window the UI is in. `space_editor` calls

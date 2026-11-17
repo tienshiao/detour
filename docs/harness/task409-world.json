@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "profiles": [{"name": "Home"}, {"name": "Work"}],
+  "spaces": [
+    {"name": "Home", "emoji": "🏠", "color": "34C759", "profile": "Home"},
+    {"name": "Work", "emoji": "💼", "color": "007AFF", "profile": "Work"}
+  ],
+  "history": [
+    {"url": "https://jira.example.com/browse/DET-42", "title": "DET-42 Example ticket", "space": "Work", "ago": ["1h"]},
+    {"url": "https://news.example.org/today", "title": "Example News — Today", "space": "Home", "ago": ["2h"]},
+    {"url": "https://shared.example.net/", "title": "Example Shared Docs", "space": "Home", "ago": ["5h"]},
+    {"url": "https://shared.example.net/", "title": "Example Shared Docs", "space": "Work", "ago": ["30m"]}
+  ],
+  "active_space": "Home"
+}

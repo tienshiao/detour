@@ -461,6 +461,28 @@ nonisolated final class AutomationStagingTests: XCTestCase {
     }
 
     #if DEBUG
+    /// TASK-409: the launcher panel, typed into, with its rows.
+    @MainActor func testTheQuickDetourLauncherOpensTypedIntoWithItsRows() async throws {
+        let stage = try makeStage()
+        defer { QuickDetourLauncher.shared.close() }
+        let profile = try XCTUnwrap(TabStore.shared.profiles.first { !$0.isIncognito })
+        let (content, isError) = try await call(stage.server, "open_ui", [
+            "what": "quick_detour_launcher", "profile_id": .string(profile.id.uuidString), "text": "zqxj",
+        ])
+        XCTAssertFalse(isError, content.jsonString)
+        XCTAssertTrue(QuickDetourLauncher.shared.isShowing)
+        XCTAssertTrue(QuickDetourLauncher.shared.profile === profile)
+        let first = try XCTUnwrap(content["suggestions"]?.arrayValue?.first)
+        XCTAssertEqual(first["kind"], "input")
+        XCTAssertEqual(first["title"], "zqxj", "the typed text is the verbatim row")
+        XCTAssertEqual(content["window_number"]?.intValue, QuickDetourLauncher.shared.panel?.windowNumber)
+
+        let (wrong, wrongError) = try await call(stage.server, "open_ui", ["what": "quick_detour_launcher",
+                                                                          "pane": "general"])
+        XCTAssertTrue(wrongError, "pane does not apply to the launcher")
+        XCTAssertEqual(wrong["error"]?["code"], "invalid_arguments")
+    }
+
     @MainActor func testTheSpaceEditorOpensWithADraftAndTakesPacedTyping() async throws {
         let stage = try makeStage()
         let profile = try XCTUnwrap(TabStore.shared.profiles.first { !$0.isIncognito })

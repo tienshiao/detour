@@ -62,15 +62,16 @@ nonisolated final class QuickDetourLauncherTests: XCTestCase {
         XCTAssertTrue(palette.isDescendant(of: try XCTUnwrap(panel.contentView)))
         XCTAssertTrue(palette.profile === profile)
         XCTAssertNil(palette.tabStore, "no open tabs: switching to one would open no Quick Detour")
-        XCTAssertEqual(palette.historySpaceIDs, PaletteTabScope.historySpaceIDs(profile: profile, in: .shared),
-                       "the profile's history, as its History page has it (TASK-209)")
+        XCTAssertEqual(palette.historySpaceIDs, PaletteHistoryProfiles.normalProfiles(in: .shared).spaceIDs,
+                       "every normal profile's history, each as its History page has it (TASK-409)")
         XCTAssertEqual(QuickDetourWindowController.openControllers.count, windowsBefore, "no window yet")
         XCTAssertEqual(TabStore.shared.quickDetourTabs.count, tabsBefore, "no page yet")
     }
 
-    /// TASK-209: the whole profile's history, whichever window it was asked
-    /// from; never the source window's profile's when that is another one.
-    @MainActor func testThePaletteSuggestsFromTheWholeProfile() throws {
+    /// TASK-409 (replacing TASK-209's one-profile rule for the launcher):
+    /// every normal profile's whole history, whichever window it was asked
+    /// from.
+    @MainActor func testThePaletteSuggestsFromEveryProfilesWholeHistory() throws {
         let profile = makeProfile()
         let other = makeProfile()
         let space = TabStore.shared.addSpace(name: "Launcher Source", emoji: "L", colorHex: "007AFF",
@@ -82,18 +83,17 @@ nonisolated final class QuickDetourLauncherTests: XCTestCase {
         defer {
             for id in [space.id, sibling.id, otherSpace.id] { TabStore.shared.forceRemoveSpace(id: id) }
         }
+        let expected: Set<String> = [space.id.uuidString, sibling.id.uuidString, otherSpace.id.uuidString,
+                                     QuickDetour.historySpaceIDString(forProfileID: profile.id),
+                                     QuickDetour.historySpaceIDString(forProfileID: other.id)]
 
         launcher.show(profile: profile, sourceSpace: space)
-        XCTAssertEqual(Set(launcher.palette?.historySpaceIDs ?? []),
-                       [space.id.uuidString, sibling.id.uuidString,
-                        QuickDetour.historySpaceIDString(forProfileID: profile.id)])
+        XCTAssertTrue(expected.isSubset(of: Set(launcher.palette?.historySpaceIDs ?? [])))
         launcher.close()
 
         launcher.show(profile: profile, sourceSpace: otherSpace)
-        XCTAssertEqual(Set(launcher.palette?.historySpaceIDs ?? []),
-                       [space.id.uuidString, sibling.id.uuidString,
-                        QuickDetour.historySpaceIDString(forProfileID: profile.id)],
-                       "asked from another profile's window: still this profile's history only")
+        XCTAssertTrue(expected.isSubset(of: Set(launcher.palette?.historySpaceIDs ?? [])),
+                      "asked from another profile's window: the same history")
     }
 
     @MainActor func testAPrivateLauncherHasNoHistory() throws {

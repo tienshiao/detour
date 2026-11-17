@@ -25,6 +25,20 @@ nonisolated final class SuggestionProvider: Sendable {
         }
     }
 
+    /// Which profile each history row of `items` belongs to, for a palette
+    /// suggesting across `profiles` (TASK-409): the profile of the URL's newest
+    /// visit among them. Empty without `profiles`, or with only one.
+    func historyProfileIDs(for items: [SuggestionItem], profiles: PaletteHistoryProfiles?) -> [String: UUID] {
+        guard let profiles, profiles.profiles.count > 1 else { return [:] }
+        let urls = items.compactMap { item -> String? in
+            if case .historyResult(let url, _, _) = item { return url }
+            return nil
+        }
+        guard !urls.isEmpty else { return [:] }
+        return db.latestVisitSpaceIDs(forURLs: urls, spaceIDs: profiles.spaceIDs)
+            .compactMapValues(profiles.profileID(forSpaceID:))
+    }
+
     struct LocalSuggestions {
         let items: [SuggestionItem]
         /// Scheme-stripped URL whose prefix matches the query; drives the
