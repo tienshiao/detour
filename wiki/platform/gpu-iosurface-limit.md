@@ -408,7 +408,8 @@ YouTube, GitHub, two apple.com, developer.apple.com). Raw samples are in
   processes. Clearing their back/forward caches (`_clearBackForwardCache`)
   brought that to 1,521 regions and 7 processes within 30 s, freeing 846 (36%).
   The frozen back pages lived in separate suspended processes, each with its
-  own surfaces. This is what TASK-408's 15-minute trim acts on.
+  own surfaces. TASK-408 now trims the cache of every tab hidden 15 minutes
+  (see [Sleeping and archiving](../tabs/sleeping-and-archiving.md)).
 - **Process pools.** Every tab gets its own `WKProcessPool`, because each
   configuration is fresh (six tabs: seven pools; the 13 pools that logged
   `gpuProcessDidExit` on 2026-11-17 were the open tabs). WebKit's web process

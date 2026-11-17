@@ -6,6 +6,9 @@ tags: [tabs, sleep, archive, memory, policy]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:12:56Z }
 sources:
+  - id: task-408
+    resource: backlog:TASK-408
+    title: Trim the back/forward cache of tabs hidden for a while
   - id: tabstore
     resource: ../../Detour/Browser/TabStore.swift
     title: TabStore.swift (sleepStaleTabs, archiveStaleTabs)
@@ -233,6 +236,35 @@ or `navigationPending`, and a failure leaves the restored session in place.
 `reload()` after that *is* a request, and a failing retry earns the
 [error page](../features/error-pages.md).
 
+## Trimming back/forward caches
+
+A tab hidden for 15 minutes keeps its page live but has its back/forward
+cache cleared (`TabStore.trimStaleBackForwardCaches`, run by the same
+5-minute `archiveTimer`, so trims land 15–20 minutes after the tab was
+hidden).[^task-408] WebKit keeps recent back/forward entries as frozen pages,
+after a cross-site navigation often in a suspended web process of their own,
+and those hold GPU-process IOSurfaces: TASK-405 measured six such tabs going
+from 14 web processes and 2,367 IOSurface regions to 7 and 1,521 within 30 s
+of a trim (see [GPU process IOSurface limit](../platform/gpu-iosurface-limit.md)).
+
+- What it changes for the user: Back and Forward still work, and history,
+  scroll position and form state come from the back/forward list as usual; a
+  trimmed entry loads again instead of resuming with its in-memory state.
+- Once per hidden stretch: `BrowserTab.backForwardCacheTrimmedForDeselection`
+  remembers the `lastDeselectedAt` it trimmed for, so a tab is trimmed again
+  only after it is shown and hidden again.
+- Skipped: a tab some window hosts, an audible or capturing tab (retried once
+  it is quiet), a sleeping tab. Pinned entries' and favourites' backing tabs
+  are included; Peeks and Quick Detour pages are not, since nothing stamps
+  their `lastDeselectedAt`. A tab that sleeps and wakes again within one
+  hidden stretch is due again (`releaseWebView` clears the marker). A profile set to never sleep tabs
+  is trimmed too (Claude's choice, to confirm): trimming keeps the page.
+- The delay was the user's choice (2026-11-17) over Nook's 5 minutes, which
+  keeps "click a link, go back" instant on tabs in use.
+  `DETOUR_BACK_FORWARD_TRIM_SECONDS` overrides it for harness runs. The
+  private `-[WKWebView _clearBackForwardCache]` is called only if WebKit has
+  it.
+
 ## Archiving
 
 `archiveStaleTabs` closes normal tabs whose archive clock is older than the
@@ -278,6 +310,8 @@ The archive clock is `BrowserTab.archiveClockStart(now:)`:[^task-305]
 - [TabStore.swift](../../Detour/Browser/TabStore.swift): `startArchiveTimer`,
   `sleepStaleTabs(now:pressure:)`, `archiveStaleTabs(now:)`, `sleepShowBudget`,
   `sleepShowBudgetGrace`, `memoryPressureSleeper`.
+- [TabStore+BackForwardTrim.swift](../../Detour/Browser/TabStore+BackForwardTrim.swift):
+  `trimStaleBackForwardCaches(now:delay:)`, `isDueBackForwardTrim`.
 - [MemoryPressureSleep.swift](../../Detour/Browser/MemoryPressureSleep.swift):
   `MemoryPressureSleepPolicy`, `MemoryPressureSleeper`.
 - [BrowserTab.swift](../../Detour/Browser/BrowserTab.swift): `sleep(force:)`,
@@ -300,7 +334,9 @@ keeps session, title and favicon; reload after a failed wake; a commit ends the
 protection), `TabStoreTests` ("Archive vs close records"), `ArchiveMediaTests`
 (playing, muted and paused tabs, the countdown restarting from a stop or a mute,
 an audible Peek, a split with one playing member, the saved clock; TASK-305),
-`SplitTabTests`.
+`SplitTabTests`, `BackForwardCacheTrimTests` (the delay, once per stretch,
+pinned and favourite backing tabs, sound, capture, sleep and hosting, the
+override).
 
 Checked at runtime (TASK-305, Nov 8 2026): a deselected tab playing a looped
 WAV survived a sweep at now + 13 h while a silent and a muted-playing tab were
@@ -321,3 +357,4 @@ archived 13 h after it.
 [^task-305]: Tab archiving: a tab playing audio or video is archived (closed) like any idle tab
 [^task-115]: Sidebar Archive Tab / Archive Tabs Below record the tab as archived
 [^task-407]: Sleep tabs on memory pressure: a warning shortens the idle threshold, critical sleeps every eligible hidden tab
+[^task-408]: Trim the back/forward cache of tabs hidden for a while

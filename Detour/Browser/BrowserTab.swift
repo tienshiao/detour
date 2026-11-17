@@ -1132,7 +1132,15 @@ class BrowserTab: NSObject {
         servedExtensionOriginHost = nil
         // Scoped to the web view being released, like `awaitingFirstURL`.
         provisionalURL = nil
+        // A woken web view builds a back/forward cache of its own (TASK-408).
+        backForwardCacheTrimmedForDeselection = nil
     }
+
+    /// The `lastDeselectedAt` of the hidden stretch whose back/forward cache
+    /// was last trimmed (TASK-408), so a tab is trimmed once per stretch: a
+    /// new deselection starts a new one, and so does a new web view
+    /// (`releaseWebView` clears it).
+    var backForwardCacheTrimmedForDeselection: Date?
 
     /// Drops the frozen pages WebKit keeps for this tab's back/forward entries
     /// (the back/forward cache), keeping the entries themselves: Back and

@@ -5581,6 +5581,7 @@ class TabStore {
         archiveTimer?.invalidate()
         archiveTimer = Timer.scheduledMainTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             self?.sleepStaleTabs()
+            self?.trimStaleBackForwardCaches()
             self?.archiveStaleTabs()
         }
     }
