@@ -113,7 +113,7 @@ Why a protocol and not a Combine publisher:
 | Pinned | `pinTab`, `pinURL`, `unpinTab`, `closePinnedTab`, `deletePinnedEntry`, `activatePinnedEntry`, folder add/delete/rename/move |
 | Favorites | `addFavorite`, `moveTabToFavorites`, `activateFavorite`, `deactivateFavorite`, `removeFavorite`, `restoreFavoriteAsTab`, `restoreFavoriteAsPinned`, `reorderFavorite` |
 | Closed tabs | `reopenClosedTab`, `restoreClosedTab`, `deleteClosedTabRecord`, `clearClosedTabRecords`, `archiveEntries` |
-| Timers | `startArchiveTimer`, `sleepStaleTabs`, `archiveStaleTabs` |
+| Timers | `startArchiveTimer`, `sleepStaleTabs(now:pressure:)`, `staleTabCandidates`, `sleepTabs`, `archiveStaleTabs`, `memoryPressureSleeper` (TASK-407) |
 | History | `recordHistoryVisit`, `updateHistoryTitle`, `historyDidDelete`, `sweepHistoryOfDeletedSpaces` |
 
 The rules behind each family are on the tab pages:

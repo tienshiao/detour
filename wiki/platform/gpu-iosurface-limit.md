@@ -204,6 +204,12 @@ Harness overrides, read once at launch: `DETOUR_SLEEP_SHOW_BUDGET`,
 [sleeping and archiving](../tabs/sleeping-and-archiving.md) for the rest of
 the sleep policy.
 
+Since TASK-407 memory pressure also sleeps tabs: a warning caps the idle
+threshold at 5 min for 2 min, and a critical event sleeps every eligible
+hidden tab, pinned and favourite ones included (see
+[sleeping and archiving](../tabs/sleeping-and-archiving.md#memory-pressure)).
+Fewer live web processes means fewer IOSurface pools here.
+
 This slows the growth but does not cap it: the visible tab's occlusion churn
 is out of its reach, and the limit was hit again after 2.5 days with the
 budget in place.[^task-105] On 2026-11-17 it took 20.5 h, roughly the

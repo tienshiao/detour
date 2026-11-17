@@ -245,9 +245,7 @@ final class GPUProcessRecycler {
         // back. A muted tab left looping would otherwise keep the GPU process
         // alive until its IOSurfaces run out (TASK-104), which is worse than
         // freezing a video nobody is listening to while the user is idle.
-        if tab.isAudible { return true }
-        guard let webView = tab.webView else { return false }
-        return webView.cameraCaptureState != .none || webView.microphoneCaptureState != .none
+        tab.isAudible || tab.isCapturingMedia
     }
 
     /// What WebKit says its GPU process is. The process is one per app, shared

@@ -161,7 +161,8 @@ page's own (each `BrowserWebView` has one). Cmd+Z reaches the page first
    `ExtensionUpdater.shared.startPeriodicChecks()`.
 7. Create and show the first `BrowserWindowController`.
 8. `TabStore.shared.restoreSession()`, then `ensureDefaultSpace()`.
-9. `startArchiveTimer()`, `QuickDetourIdleMonitor.shared.start()`,
+9. `startArchiveTimer()`, `memoryPressureSleeper.start()` (TASK-407; not in the
+   unit-test host), `QuickDetourIdleMonitor.shared.start()`,
    `GPUProcessRecycler.shared.start()` and `GPUProcessOrphanReaper.shared.start()`.
 10. Set the window's active space and selected tab from the restored session.
 11. Open the links that arrived before launch finished, start the

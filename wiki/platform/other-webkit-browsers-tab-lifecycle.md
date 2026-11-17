@@ -45,7 +45,7 @@ Every claim below is from code reading at each repository's HEAD on
 
 | | Default idle discard | Memory pressure | Live-view cap | Lighter tier | Restore |
 |---|---|---|---|---|---|
-| **Detour** | 1 h (profile setting), plus the TASK-104 show budget | none | none | none | lazy |
+| **Detour** | 1 h (profile setting), plus the TASK-104 show budget | since TASK-407: warning → 5 min for 2 min (normal tabs); critical → every hidden tab incl. pinned and favourites; at most once per 30 s | none | none | lazy |
 | Search | 30 min (on by default) | `DispatchSource`: warning → 5 min, critical → 0 | none | — | lazy |
 | Zigzag | 1 h; 15 min when more than 20 tabs are awake | warning or critical → 5 min for 2 min; favourites only on critical | soft (20) | sleeps background tabs whose process uses > 0.7 core for 3 min | lazy |
 | Nook | 30 min (Standard) | clears every hidden tab's back/forward cache, then unloads 1 tab (warning) or up to half (critical), at most once per 30 s | 8, in Power Saving only | back/forward cache cleared after 5 min hidden | warms the current space one tab at a time |
@@ -91,8 +91,9 @@ Every claim below is from code reading at each repository's HEAD on
   IOSurface limit (show budget, recycler, abandoned-process reaper,
   `gpu-surfaces` telemetry).[^task-404] Its multi-window snapshot is also more
   polished than the placeholders.
-- **Behind:** it is one of two (with Ora) with no memory-pressure reaction, and
-  it ties Ora and Zigzag for the longest default idle threshold. It has no live
+- **Behind:** until TASK-407 it was one of two (with Ora) with no
+  memory-pressure reaction; it now follows Zigzag's shape, with pinned and
+  favourite tabs reached on critical. It ties Ora and Zigzag for the longest default idle threshold. It has no live
   view budget and no suspend tier. Each live web process gets its own IOSurface
   pool in the GPU process, so these memory measures also slow the limit.
   Follow-ups: TASK-407 (memory pressure)[^task-407], TASK-408 (back/forward

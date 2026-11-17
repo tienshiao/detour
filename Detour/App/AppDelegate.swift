@@ -186,6 +186,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Start periodic tab archival
         TabStore.shared.startArchiveTimer()
 
+        // Sleep hidden tabs on macOS memory pressure (TASK-407). Not in the test
+        // host, whose tests deliver pressure events themselves.
+        if !Self.isRunningUnitTests { TabStore.shared.memoryPressureSleeper.start() }
+
         // Close Quick Detours left unused into the archive (TASK-193.5). Not in
         // the test host, whose tests drive the monitor on their own clock.
         if !Self.isRunningUnitTests { QuickDetourIdleMonitor.shared.start() }

@@ -1,7 +1,7 @@
 ---
 type: Concept
 title: Sleeping and archiving
-description: The two rules that put a tab to sleep, the rule that archives one, everything that keeps a tab awake, and how a wake that fails keeps the restored session instead of showing an error page.
+description: The rules that put a tab to sleep (idle, show budget, memory pressure), the rule that archives one, everything that keeps a tab awake, and how a wake that fails keeps the restored session instead of showing an error page.
 tags: [tabs, sleep, archive, memory, policy]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T05:12:56Z }
@@ -36,6 +36,15 @@ sources:
   - id: task-115
     resource: backlog:TASK-115
     title: Sidebar Archive Tab / Archive Tabs Below record the tab as archived
+  - id: pressure
+    resource: ../../Detour/Browser/MemoryPressureSleep.swift
+    title: MemoryPressureSleep.swift (MemoryPressureSleepPolicy, MemoryPressureSleeper)
+  - id: pressure-tests
+    resource: ../../DetourTests/MemoryPressureSleepTests.swift
+    title: MemoryPressureSleepTests.swift
+  - id: task-407
+    resource: backlog:TASK-407
+    title: "Sleep tabs on memory pressure: a warning shortens the idle threshold, critical sleeps every eligible hidden tab"
 ---
 
 # Summary
@@ -46,7 +55,8 @@ process. An archived tab is a *closed* tab whose
 [closed-tab record](./closed-tabs-and-archive.md) carries `archivedAt`. One
 timer, `TabStore.startArchiveTimer`, fires every 300 s and runs
 `sleepStaleTabs()` then `archiveStaleTabs()`. Both take an injectable `now`, so
-tests drive them with a clock.
+tests drive them with a clock. macOS memory pressure also runs the sleep sweep,
+through `MemoryPressureSleeper` (below).
 
 # Rules
 
@@ -69,7 +79,7 @@ from both sweeps.**
   deselects stamps it while the other may still be showing the tab, which is
   why the sleep sweep also checks the view hierarchy (below).
 
-## Sleeping: two rules
+## Sleeping: two rules, and memory pressure
 
 `sleepStaleTabs` sleeps a tab when either rule says so.
 
@@ -99,12 +109,60 @@ In a harness run with the budget at 20 and the grace at 30 s, the sweep slept
 the three hidden tabs and the GPU process's IOSurface count fell from 1649 to
 1317 within 5 s.[^task-104]
 
+### Memory pressure
+
+`MemoryPressureSleeper` (owned by `TabStore`, started by `AppDelegate` but not
+in the unit-test host) listens to `DispatchSource.makeMemoryPressureSource` for
+warning and critical events. Its rule is the user's "shorten, then sweep"
+decision of 2026-11-17:[^task-407]
+
+| Level | What sleeps |
+|---|---|
+| Warning | for 2 min after the last warning, hidden **normal** tabs once out of sight 5 min. The profile's threshold is capped, never lengthened, and applies again when the window closes. |
+| Critical | every hidden tab the shared guards allow, **including** pinned entries' and favourites' backing tabs, however briefly hidden. One sweep per event. |
+
+- The pure `MemoryPressureSleepPolicy` holds the state. The cap is applied by
+  *every* sleep sweep while the window is open, the periodic one included.
+- Pressure sweeps run at most once per 30 s. An event within 30 s of the last
+  sweep is **deferred** to the 30 s mark, never dropped; a critical deferred
+  behind a warning sweep still runs as critical. The warning window is
+  rescanned every 30 s while it lasts (at +0, 30, 60, 90 and 120 s), because
+  the 300 s timer would miss a tab that crosses 5 min inside it. Only the
+  latest armed check may run, so a burst of events cannot stack sweeps. A
+  check runs as of the time it was armed for, not when its timer fired:
+  timers fire late, and judged at the real time the +120 s rescan would fall
+  just outside the window and never run.
+- A return to normal changes nothing: the window runs out on its own clock.
+- Why pinned and favourite tabs wait for critical: the first warning is common
+  in everyday use (Zigzag's reasoning in the
+  [survey](../platform/other-webkit-browsers-tab-lifecycle.md)). Fewer live web
+  processes also means fewer IOSurface pools in the GPU process, so this helps
+  the [GPU IOSurface limit](../platform/gpu-iosurface-limit.md) as a side
+  effect.
+- A pressure sweep is **staggered**: four tabs per main-loop turn
+  (`tabsPerTurn`), with `staleTabCandidates(now:pressure:)` asked again before
+  each batch, so a tab selected (or started playing) mid-sweep is spared, and
+  a tab already tried is not retried. Why: a sleep costs about 4.5 ms of main
+  thread. Forty hidden tabs with loaded pages took 181 ms in one go in the
+  test host (which has no sidebar observing them), plus 54 ms on the next
+  turn (`MemoryPressureSleepTests.testMeasureCriticalSweepCost`, behind
+  `TEST_RUNNER_DETOUR_MEASURE_PRESSURE_SWEEP=1`). The periodic sweep still
+  sleeps in one go: it usually finds a few tabs at a time.
+- Each pressure sweep logs one notice line when its last batch is done,
+  subsystem `com.detourbrowser.mac`, category `memory-pressure`:
+  `Memory pressure critical: slept N tabs`. The event itself is logged at
+  info (not persisted).
+
 ## What keeps a tab awake
 
-A tab is not slept by the sweep when any of these holds:
+A tab is not slept by the sweep (any rule, memory pressure included) when any
+of these holds:
 
 - it is audible (`isAudible`: playing and not page-muted; a muted playing tab
   can sleep);
+- it captures the camera or microphone (`isCapturingMedia`, the same state the
+  GPU recycler's media gate reads). Added with TASK-407; before it, a silent
+  tab on a call could sleep on the idle rule;[^task-407]
 - `lastDeselectedAt == nil` (selected in some window);
 - its `webViewContainer` has a superview, i.e. some window is hosting it right
   now. "Has a superview" means "hosted somewhere" throughout the window code,
@@ -113,7 +171,8 @@ A tab is not slept by the sweep when any of these holds:
   split renders both panes at once, so sleeping one blanks a visible pane. For a
   [pinned split](./split-tabs.md) the partner is resolved through the entries,
   not through `splitGroupID` on the tabs;
-- its profile's `sleepThreshold` is `.never`. Both rules honour this.
+- its profile's `sleepThreshold` is `.never`. Every rule honours this,
+  memory pressure included.
 
 Pinned and favourite backing tabs that sleep stay **live but asleep**: the
 entry or favourite keeps its `tab`, so selecting it wakes into the cached
@@ -217,8 +276,10 @@ The archive clock is `BrowserTab.archiveClockStart(now:)`:[^task-305]
 # Where it lives
 
 - [TabStore.swift](../../Detour/Browser/TabStore.swift): `startArchiveTimer`,
-  `sleepStaleTabs(now:)`, `archiveStaleTabs(now:)`, `sleepShowBudget`,
-  `sleepShowBudgetGrace`.
+  `sleepStaleTabs(now:pressure:)`, `archiveStaleTabs(now:)`, `sleepShowBudget`,
+  `sleepShowBudgetGrace`, `memoryPressureSleeper`.
+- [MemoryPressureSleep.swift](../../Detour/Browser/MemoryPressureSleep.swift):
+  `MemoryPressureSleepPolicy`, `MemoryPressureSleeper`.
 - [BrowserTab.swift](../../Detour/Browser/BrowserTab.swift): `sleep(force:)`,
   `wake(supersededByLoad:)`, `retarget(to:)`, `parkPeek(force:)`, `noteShown()`,
   `loadIfStalled()`.
@@ -231,7 +292,10 @@ The archive clock is `BrowserTab.archiveClockStart(now:)`:[^task-305]
 # Tests
 
 `SleepShowBudgetTests` (both rules, the audio, selected, hosted and split
-exemptions, the environment overrides), `BrowserTabWakeTests` (failed wake
+exemptions, the environment overrides), `MemoryPressureSleepTests` (both
+levels, the window and its rescans, the guards including capture and pinned
+splits, the never-sleep profile, the 30 s rate limit with deferral; injected
+clock and scheduler, no real dispatch source), `BrowserTabWakeTests` (failed wake
 keeps session, title and favicon; reload after a failed wake; a commit ends the
 protection), `TabStoreTests` ("Archive vs close records"), `ArchiveMediaTests`
 (playing, muted and paused tabs, the countdown restarting from a stop or a mute,
@@ -256,3 +320,4 @@ archived 13 h after it.
 [^task-45]: A failed wake of a restored ordinary tab replaces its restored session with an error page
 [^task-305]: Tab archiving: a tab playing audio or video is archived (closed) like any idle tab
 [^task-115]: Sidebar Archive Tab / Archive Tabs Below record the tab as archived
+[^task-407]: Sleep tabs on memory pressure: a warning shortens the idle threshold, critical sleeps every eligible hidden tab

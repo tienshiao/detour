@@ -5573,6 +5573,10 @@ class TabStore {
 
     private var archiveTimer: Timer?
 
+    /// Sleeps tabs on macOS memory pressure (TASK-407). Its warning window also
+    /// shortens the idle threshold of the periodic sweep.
+    private(set) lazy var memoryPressureSleeper = MemoryPressureSleeper(store: self)
+
     func startArchiveTimer() {
         archiveTimer?.invalidate()
         archiveTimer = Timer.scheduledMainTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
@@ -5636,11 +5640,44 @@ class TabStore {
     /// shown constantly and never idle long enough to sleep on time alone
     /// (TASK-104).
     ///
-    /// A profile set to never sleep tabs is honoured by both rules.
+    /// Memory pressure (TASK-407, `MemoryPressureSleeper`) adds to both: for
+    /// two minutes after a warning the idle threshold is at most five minutes
+    /// (on every sweep, the periodic one too), and a `.critical` sweep sleeps
+    /// every hidden tab the shared preconditions allow — pinned entries' and
+    /// favourites' backing tabs included — however briefly it has been hidden.
+    ///
+    /// A profile set to never sleep tabs is honoured by every rule.
     ///
     /// `now` is injectable for tests; production drives this from `archiveTimer`.
-    func sleepStaleTabs(now: Date = Date()) {
+    /// `memoryPressureSleeper` sleeps the same candidates a few per main-loop
+    /// turn instead. Returns how many tabs it put to sleep.
+    @discardableResult
+    func sleepStaleTabs(now: Date = Date(), pressure: MemoryPressureSleepPolicy.Level? = nil) -> Int {
+        sleepTabs(staleTabCandidates(now: now, pressure: pressure))
+    }
+
+    /// Sleeps `tabs` and returns how many actually went to sleep (`sleep()`
+    /// does nothing to a tab without a web view, or to an audible or
+    /// capturing one).
+    @discardableResult
+    func sleepTabs(_ tabs: [BrowserTab]) -> Int {
+        var slept = 0
+        for tab in tabs where !tab.isSleeping {
+            tab.sleep()
+            if tab.isSleeping { slept += 1 }
+        }
+        if slept > 0 { scheduleSave() }
+        return slept
+    }
+
+    /// The tabs `sleepStaleTabs` would sleep at `now`, in list order. Pure
+    /// apart from reading the tabs, so a staggered sweep can ask again before
+    /// each batch and so spare a tab the user selected in the meantime.
+    func staleTabCandidates(now: Date, pressure: MemoryPressureSleepPolicy.Level? = nil) -> [BrowserTab] {
         let budgetCutoff = now.addingTimeInterval(-Self.sleepShowBudgetGrace)
+        let idleThresholdCap = memoryPressureSleeper.policy.idleThresholdCap(at: now)
+        let sleepsEveryHiddenTab = pressure == .critical
+        var candidates: [BrowserTab] = []
 
         /// When the tab went out of sight, or nil when it must not sleep at all
         /// — the preconditions both rules share. A nil `lastDeselectedAt` means
@@ -5651,8 +5688,11 @@ class TabStore {
         /// two windows on one space share a single `lastDeselectedAt`, so the
         /// one that deselects the tab stamps it while the other still shows it,
         /// and releasing the web view would blank that window's content area.
+        ///
+        /// Camera or microphone capture keeps a tab awake like audible sound
+        /// does: sleeping it would end a call the user is still on.
         func offScreenSince(_ tab: BrowserTab) -> Date? {
-            guard !tab.isAudible, tab.webViewContainer?.superview == nil else { return nil }
+            guard !tab.isAudible, !tab.isCapturingMedia, tab.webViewContainer?.superview == nil else { return nil }
             return tab.lastDeselectedAt
         }
 
@@ -5664,10 +5704,18 @@ class TabStore {
             return since < budgetCutoff
         }
 
+        /// Pinned entries' and favourites' backing tabs: only the budget rule
+        /// or a critical sweep reaches them.
+        func shouldSleepPinnedOrFavorite(_ tab: BrowserTab) -> Bool {
+            sleepsEveryHiddenTab ? offScreenSince(tab) != nil : isOverShowBudget(tab)
+        }
+
         for space in spaces {
             let threshold = space.profile?.sleepThreshold ?? .oneHour
             guard threshold != .never else { continue }
-            let cutoff = now.addingTimeInterval(-threshold.rawValue)
+            // A warning only ever shortens the profile's threshold.
+            let idleThreshold = min(threshold.rawValue, idleThresholdCap ?? .infinity)
+            let cutoff = now.addingTimeInterval(-idleThreshold)
             let pinnedTabIDs = Set(space.pinnedEntries.compactMap { $0.tab?.id })
 
             func isStale(_ tab: BrowserTab) -> Bool {
@@ -5676,7 +5724,8 @@ class TabStore {
             }
 
             func shouldSleep(_ tab: BrowserTab) -> Bool {
-                isStale(tab) || isOverShowBudget(tab)
+                if sleepsEveryHiddenTab { return offScreenSince(tab) != nil }
+                return isStale(tab) || isOverShowBudget(tab)
             }
 
             for tab in space.tabs {
@@ -5687,36 +5736,37 @@ class TabStore {
                     let partners = space.tabs.filter { $0.splitGroupID == groupID && $0.id != tab.id }
                     guard partners.allSatisfy({ $0.isSleeping || shouldSleep($0) }) else { continue }
                 }
-                tab.sleep()
+                candidates.append(tab)
             }
 
             // Pinned entries stay *live but asleep*: the entry keeps its tab, so
             // selecting it wakes back into the cached interaction state instead
             // of reloading a dormant tile.
             for entry in space.pinnedEntries {
-                guard let tab = entry.tab, !tab.isSleeping, isOverShowBudget(tab) else { continue }
+                guard let tab = entry.tab, !tab.isSleeping, shouldSleepPinnedOrFavorite(tab) else { continue }
                 // A pinned split's group lives on the entries (§12), so its
                 // partners are resolved there rather than through `splitGroupID`
                 // on the tabs — same rule, same reason.
                 if let groupID = entry.splitGroupID {
                     let partners = pinnedSplitEntries(groupID: groupID, in: space)
                         .compactMap(\.tab).filter { $0 !== tab }
-                    guard partners.allSatisfy({ $0.isSleeping || isOverShowBudget($0) }) else { continue }
+                    guard partners.allSatisfy({ $0.isSleeping || shouldSleepPinnedOrFavorite($0) }) else { continue }
                 }
-                tab.sleep()
+                candidates.append(tab)
             }
         }
 
         // Favourites hang off the profile, not off any space, and are never
-        // split — their backing tabs only ever sleep on the budget rule.
+        // split — their backing tabs sleep only on the budget rule or a
+        // critical sweep.
         for profile in profiles where profile.sleepThreshold != .never {
             for favorite in profile.favorites {
-                guard let tab = favorite.tab, !tab.isSleeping, isOverShowBudget(tab) else { continue }
-                tab.sleep()
+                guard let tab = favorite.tab, !tab.isSleeping, shouldSleepPinnedOrFavorite(tab) else { continue }
+                candidates.append(tab)
             }
         }
 
-        scheduleSave()
+        return candidates
     }
 
     func archiveStaleTabs(now: Date = Date()) {

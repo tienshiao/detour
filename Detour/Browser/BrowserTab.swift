@@ -232,6 +232,15 @@ class BrowserTab: NSObject {
     /// `isPlayingAudio`.
     var isAudible: Bool { isPlayingAudio && !isMuted }
 
+    /// The page is capturing the camera or the microphone. Sleeping or
+    /// recycling would cut the capture off, so a non-forced `sleep()` (and so
+    /// every sleep sweep) and the GPU recycler spare it like audible sound. Overridable so tests can
+    /// stand in for a capture WebKit will not start without a device.
+    var isCapturingMedia: Bool {
+        guard let webView else { return false }
+        return webView.cameraCaptureState != .none || webView.microphoneCaptureState != .none
+    }
+
     /// When the tab last stopped being audible: playback paused or ended,
     /// the tab was muted, or its web view went away (TASK-305). The archive
     /// sweep counts "Archive tabs after" from the later of this and
@@ -1191,7 +1200,11 @@ class BrowserTab: NSObject {
     /// first). Used when the tab must release its webView regardless of playback,
     /// e.g. a profile swap rebinding the tab to a different data store.
     func sleep(force: Bool = false) {
-        guard let webView, !isSleeping, force || !isAudible else { return }
+        // A non-forced sleep spares audible sound and camera/microphone
+        // capture: it would end a call the user is still on. Checked here, not
+        // only by the sweep's candidates, so `parkPeek` spares a capturing
+        // peek too.
+        guard let webView, !isSleeping, force || !(isAudible || isCapturingMedia) else { return }
         // A muted tab still plays: stop it as a forced sleep does.
         if force || isPlayingAudio {
             webView.pauseAllMediaPlayback(completionHandler: nil)

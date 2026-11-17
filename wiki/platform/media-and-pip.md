@@ -115,8 +115,9 @@ treats it like a cancellation.[^task-121]
   reason).[^task-192]
 - Camera and microphone capture run in WebKit's GPU process, not the page's
   web process.[^task-105] `WKWebView.cameraCaptureState` and
-  `microphoneCaptureState` are public; screen-share capture has no public
-  state.
+  `microphoneCaptureState` are public (read through
+  `BrowserTab.isCapturingMedia`, which also keeps a tab from sleeping since
+  TASK-407); screen-share capture has no public state.
 
 # Why it matters here
 
