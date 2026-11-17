@@ -4,6 +4,7 @@ title: Trim the back/forward cache of tabs hidden for a while, keeping their his
 status: To Do
 assignee: []
 created_date: '2026-11-17T20:36:00Z'
+updated_date: '2026-11-17T20:40:00Z'
 labels:
   - sleeping
   - memory
@@ -30,3 +31,9 @@ Clearing keeps the back/forward list itself: Back and Forward still work, but th
 - [ ] #3 Back/Forward still work on a trimmed tab, including the back swipe and its pictures (TASK-376), checked at runtime
 - [ ] #4 The private selector is called only after respondsToSelector, and a missing selector disables the feature quietly
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+User decision 2026-11-17: if the TASK-405 measurement shows that trimming frees memory or GPU IOSurfaces, clear a tab's back/forward cache once it has been hidden 15 minutes.
+<!-- SECTION:NOTES:END -->

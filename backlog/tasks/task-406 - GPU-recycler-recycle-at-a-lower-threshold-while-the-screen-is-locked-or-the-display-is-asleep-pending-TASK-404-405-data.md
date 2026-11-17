@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-17T19:47:00Z'
+updated_date: '2026-11-17T20:40:00Z'
 labels:
   - gpu
   - webkit
@@ -27,3 +28,9 @@ On 2026-11-17 the display was off 03:05-08:01 and the GPU process was recycled o
 - [ ] #1 The threshold and gate are confirmed by the user
 - [ ] #2 GPUProcessRecyclePolicyTests cover the locked/asleep gate, including media and the rate limit still blocking
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+User decision 2026-11-17: recycle at >= 6,000 IOSurfaces while the screen is locked or the display is asleep. The existing guards still apply (no media in use, minimumInterval 1 h). The other tiers are unchanged (12k background >= 5 min, 14k idle >= 60 s, 16,384 exhausted).
+<!-- SECTION:NOTES:END -->

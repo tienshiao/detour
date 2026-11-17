@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-17T20:35:00Z'
+updated_date: '2026-11-17T20:40:00Z'
 labels:
   - sleeping
   - memory
@@ -36,3 +37,9 @@ Fewer live web processes also means fewer per-connection IOSurface pools in the 
 - [ ] #4 Policy tests in the existing sleep suites cover both levels, the guards and the rate limit, with an injected clock and a fake pressure source
 - [ ] #5 Each pressure-driven sleep is logged at notice so a run can be reviewed
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+User decision 2026-11-17: 'Shorten, then sweep'. Warning: hidden normal tabs sleep once they've been hidden 5 min, for 2 min after the last warning (the profile threshold is shortened, not replaced; a profile set to never sleep is honoured). Critical: every eligible hidden tab sleeps now, including pinned entries' and favourites' backing tabs. Rescan at most once per 30 s. The usual guards still apply: hosted/on screen, audible, capturing, split partners.
+<!-- SECTION:NOTES:END -->
