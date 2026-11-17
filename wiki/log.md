@@ -1,6 +1,7 @@
 # Wiki Update Log
 
 ## 2026-11-17
+* **Update**: TASK-404 — [GPU process IOSurface limit](platform/gpu-iosurface-limit.md) (new section "The surface telemetry": `gpu-surfaces` sample and per-event lines, how to read them, `nonResident` against `PURGE=E`; open question on whether closing a tab frees its surfaces, with the 2026-11-17 observation; tests).
 * **Update**: TASK-403 — [GPU process IOSurface limit](platform/gpu-iosurface-limit.md) (recycler table: `hardLimit` 14,000, new `exhaustedLimit` 16,384 tier that recycles while the user is busy; why: the 2026-11-17 recurrence after 20.5 h, recycled 100 s after the cap at 16,697; the gate-closed line is now notice and rate-limited, with its fields), [App shell](architecture/app-shell.md) and [Debug harness](playbooks/debug-harness.md) (`DETOUR_GPU_RECYCLE_EXHAUSTED_LIMIT`, new defaults).
 
 ## 2026-11-16

@@ -114,7 +114,6 @@ final class GPUProcessRecycler {
         let raw = ProcessInfo.processInfo.environment["DETOUR_GPU_RECYCLE_CHECK_SECONDS"]
         return raw.flatMap(TimeInterval.init).flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 120
     }()
-    private let sampleQueue = DispatchQueue(label: "com.detourbrowser.gpu-recycle", qos: .utility)
 
     private var timer: Timer?
     private var inactiveSince: Date?
@@ -150,20 +149,17 @@ final class GPUProcessRecycler {
             return
         }
         sampling = true
-        // Walking ~30k regions takes ~50 ms at the limit; keep it off the main thread.
-        sampleQueue.async { [weak self] in
-            let count = Self.ioSurfaceCount(pid: pid)
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    self.sampling = false
-                    guard let count else {
-                        log.debug("GPU process \(pid) could not be inspected")
-                        return
-                    }
-                    self.evaluate(pid: pid, surfaceCount: count)
-                }
+        // Walking ~30k regions takes ~50 ms at the limit; the telemetry runs it
+        // off the main thread, on the one queue every walk shares (TASK-404).
+        GPUSurfaceTelemetry.shared.takeSample(pid: pid) { [weak self] sample in
+            guard let self else { return }
+            self.sampling = false
+            guard let sample else {
+                log.debug("GPU process \(pid) could not be inspected")
+                return
             }
+            GPUSurfaceTelemetry.shared.recordPeriodic(sample)
+            self.evaluate(pid: pid, surfaceCount: sample.counts.total)
         }
     }
 
@@ -280,20 +276,29 @@ final class GPUProcessRecycler {
     /// `vmmap --summary` reports. Works without privileges for a same-user
     /// process; nil when the process cannot be inspected.
     nonisolated static func ioSurfaceCount(pid: pid_t) -> Int? {
+        ioSurfaceRegionCounts(pid: pid)?.total
+    }
+
+    /// The IOSurface regions of `pid`, and how many of them have no resident
+    /// page (purged volatile buffers, `PURGE=E` in `vmmap`) (TASK-404).
+    nonisolated static func ioSurfaceRegionCounts(pid: pid_t) -> IOSurfaceRegionCounts? {
         let ioSurfaceTag: UInt32 = 88  // VM_MEMORY_IOSURFACE (mach/vm_statistics.h)
         let size = Int32(MemoryLayout<proc_regioninfo>.size)
         var address: UInt64 = 0
         var regions = 0
-        var surfaces = 0
+        var counts = IOSurfaceRegionCounts(total: 0, nonResident: 0)
         while true {
             var info = proc_regioninfo()
             guard proc_pidinfo(pid, PROC_PIDREGIONINFO, address, &info, size) == size else { break }
             regions += 1
-            if info.pri_user_tag == ioSurfaceTag { surfaces += 1 }
+            if info.pri_user_tag == ioSurfaceTag {
+                counts.total += 1
+                if info.pri_pages_resident == 0 { counts.nonResident += 1 }
+            }
             let next = info.pri_address + info.pri_size
             guard next > address else { break }
             address = next
         }
-        return regions > 0 ? surfaces : nil
+        return regions > 0 ? counts : nil
     }
 }

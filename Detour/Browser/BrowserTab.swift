@@ -1089,6 +1089,7 @@ class BrowserTab: NSObject {
         // TabStore remove notification.
         // No-op (and idempotent) when the tab was never reported open.
         ExtensionTabLifecycle.didClose(self)
+        if webView != nil { GPUSurfaceTelemetry.shared.note(.close, tab: self) }
         webView?.pauseAllMediaPlayback(completionHandler: nil)
         releaseWebView()
     }
@@ -1129,6 +1130,7 @@ class BrowserTab: NSObject {
     /// meaningful while `webView != nil`; the count is reset by the next wake.
     func noteShown() {
         showsSinceWake += 1
+        GPUSurfaceTelemetry.shared.note(.show, tab: self)
         // A load that stalled while hidden is on screen again: draw its bar
         // without waiting for the next progress step, which may never come
         // (a hung request, a slow first byte) (TASK-124).
@@ -1187,6 +1189,7 @@ class BrowserTab: NSObject {
             cachedInteractionState = try? NSKeyedArchiver.archivedData(withRootObject: state, requiringSecureCoding: false)
         }
 
+        GPUSurfaceTelemetry.shared.note(.sleep, tab: self)
         releaseWebView()
 
         isSleeping = true
@@ -1284,6 +1287,7 @@ class BrowserTab: NSObject {
         // A fresh web view means a fresh WebContent process and a fresh slice of
         // the GPU process's IOSurface pool: the show budget starts over (TASK-104).
         showsSinceWake = 0
+        GPUSurfaceTelemetry.shared.note(.wake, tab: self)
 
         // The URL observer installed below replaces `url` with the fresh web
         // view's nil URL on its very first emission, which would lose:
@@ -1573,7 +1577,7 @@ class BrowserTab: NSObject {
     }
 
     /// 0 when there is no web view, no process yet, or no SPI.
-    private var webProcessIdentifier: pid_t {
+    var webProcessIdentifier: pid_t {
         let selector = NSSelectorFromString("_webProcessIdentifier")
         guard let webView, webView.responds(to: selector) else { return 0 }
         typealias Getter = @convention(c) (AnyObject, Selector) -> pid_t

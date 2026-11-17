@@ -3,10 +3,11 @@ id: TASK-404
 title: >-
   GPU process: persist the IOSurface growth curve and per-event deltas (show,
   wake, sleep, close) so a recurrence can be attributed
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-17T19:47:00Z'
+updated_date: '2026-11-17T19:54:00Z'
 labels:
   - gpu
   - webkit
@@ -28,10 +29,38 @@ TASK-104's show budget assumes closing or sleeping a tab frees its surfaces; thi
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The recycler's periodic sample is logged at notice (persisted) when the total moved by at least 50 since the last logged sample, at least every 10 minutes, and whenever the GPU process changed; the line carries total, non-resident regions, the number of distinct tab web processes and the GPU pid
-- [ ] #2 Showing, waking, sleeping and closing a tab queue an event (kind, host, web process pid); a sample a few seconds after the first queued event logs the change in total and non-resident since the previous sample with the coalesced events, at notice
-- [ ] #3 Counting stays off the main thread, and one sample is in flight at a time
-- [ ] #4 Pure decision and formatting logic (when to log a periodic sample, how events coalesce) has unit tests
-- [ ] #5 Non-resident region counts from the in-app walk are checked against vmmap's PURGE=E count on a real GPU process
-- [ ] #6 The wiki's GPU IOSurface page documents the log lines and how to read them
+- [x] #1 The recycler's periodic sample is logged at notice (persisted) when the total moved by at least 50 since the last logged sample, at least every 10 minutes, and whenever the GPU process changed; the line carries total, non-resident regions, the number of distinct tab web processes and the GPU pid
+- [x] #2 Showing, waking, sleeping and closing a tab queue an event (kind, host, web process pid); a sample a few seconds after the first queued event logs the change in total and non-resident since the previous sample with the coalesced events, at notice
+- [x] #3 Counting stays off the main thread, and one sample is in flight at a time
+- [x] #4 Pure decision and formatting logic (when to log a periodic sample, how events coalesce) has unit tests
+- [x] #5 Non-resident region counts from the in-app walk are checked against vmmap's PURGE=E count on a real GPU process
+- [x] #6 The wiki's GPU IOSurface page documents the log lines and how to read them
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. GPUSurfaceTelemetry (new file): pure rules (periodic log decision, line format, event folding) + a MainActor recorder with one serial sampling queue shared with the recycler.
+2. GPUProcessRecycler.check samples through the telemetry and passes the sample to recordPeriodic; ioSurfaceRegionCounts adds a non-resident count (pri_pages_resident == 0).
+3. BrowserTab hooks: show (noteShown), wake, sleep, close (teardown with a live web view); webProcessIdentifier made internal.
+4. Tests, runtime check, vmmap comparison, wiki.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Review (/code-review medium --fix): 7 findings, 3 fixed. Incognito/ephemeral-store hosts are logged as 'private'. The wiki section placement is corrected. The assumeIsolated comment is added. Not changed: the event delta is against the previous sample of any kind (intended, documented). ioSurfaceCount stays as a thin wrapper used by tests. The tab-process count runs on main (negligible). Peek teardowns are logged as close.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A running build now persists the GPU process's IOSurface curve and ties moves to tab events, all at notice in category gpu-surfaces. Periodic lines come from the recycler's 2-min sample: logged on a move of 50+, after 10 min of silence, or for a new GPU process. 'after <events>' lines come 3 s after a batch of show/wake/sleep/close events and carry host[web-process pid]; incognito hosts are logged as 'private'. Each line has total and non-resident regions with deltas, distinct tab processes and the GPU pid.
+
+Verification:
+- GPUSurfaceTelemetryTests (13) plus tab suites: 209/209 pass (BrowserTabUnclaimedNavigation, BrowserTabWake, FavoritePeekPersistence, FavoriteSpaceHandoff, PinnedTabMove, SplitOpening, SplitTab, TabStore, SleepShowBudget, GPUSurfaceTelemetry, GPUProcessRecyclePolicy).
+- Runtime, isolated Debug build: show lines for new tabs; then 'after show example.com[45502], close webglsamples.org[45384]: total=77 (-19) nonResident=0 (+0) tabProcesses=1'.
+- The walk's non-resident count on the production GPU process was 2,138-2,147 against vmmap PURGE=E 2,119, totals identical (2,574/2,575).
+
+Not verified: a long run of the signed build (the point of the task, once the user runs a build with it).
+<!-- SECTION:FINAL_SUMMARY:END -->

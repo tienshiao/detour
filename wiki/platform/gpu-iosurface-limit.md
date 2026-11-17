@@ -25,6 +25,12 @@ sources:
   - id: task-403
     resource: backlog:TASK-403
     title: "GPU recycler: waits past the IOSurface cap while the user is active"
+  - id: task-404
+    resource: backlog:TASK-404
+    title: Persist the IOSurface growth curve and per-event deltas
+  - id: telemetry
+    resource: ../../Detour/Browser/GPUSurfaceTelemetry.swift
+    title: GPUSurfaceTelemetry.swift
   - id: recycler
     resource: ../../Detour/Browser/GPUProcessRecycler.swift
     title: GPUProcessRecycler.swift
@@ -286,8 +292,46 @@ vmmap <gpu pid> | grep '^IOSurface' | grep -c PURGE=E
   `run_spike.sh`). The scripts contain absolute paths from the session that
   wrote them and need editing before reuse.
 
+## The surface telemetry (`gpu-surfaces`)
+
+Since TASK-404 a running build records its own curve[^telemetry], all at notice in
+category `gpu-surfaces`:[^task-404]
+
+```sh
+/usr/bin/log show --start '<time>' --predicate \
+  'process == "Detour" AND category == "gpu-surfaces"' --style compact
+```
+
+- `sample total=… (±Δ) nonResident=… (±Δ) tabProcesses=… gpu=<pid> over Ns`
+  is the recycler's 2-minute sample. It is logged when the total moved by 50
+  or more since the last logged line, after 10 minutes without one, and for
+  every new GPU process (no delta then, `(new GPU process)`).
+- `after <events>: total=… (±Δ) …` is a sample taken 3 s after the first
+  of a batch of tab events. The events are `show`, `wake`, `sleep` and
+  `close`, each with the host and the web-process pid
+  (`close www.youtube.com[7011]×2`); identical ones are folded. The delta is
+  against the previous sample of either kind, so it is what those events
+  (and anything else in the same seconds) did. Freeing is not instant: a
+  close's effect can show up in the next line too. A brand-new tab shows
+  before it has a URL, so its host is `-`.
+- `nonResident` counts IOSurface regions with no resident page. On a real
+  GPU process it was within about 1% of `vmmap`'s `PURGE=E` count (2,138
+  against 2,119, total 2,575 in both).
+- `tabProcesses` counts distinct web-content pids behind Detour's live tabs.
+  Extension and other non-tab web views are not in it.
+- Hosts are logged public, so `log show` prints them unredacted; a tab in an
+  incognito space or on a non-persistent data store is logged as `private`.
+
+Reading it: a `close`/`sleep` line with a small negative delta means the
+closed tab's surfaces were not freed with it (the 2026-11-17 observation that
+prompted TASK-404/405). A run of `show` lines with large positive deltas
+points at the site that grows the pool.
+
 # Tests
 
+- [GPUSurfaceTelemetryTests](../../DetourTests/GPUSurfaceTelemetryTests.swift):
+  when a periodic sample is logged, the line formats, event folding, region
+  counts on the test process.
 - [GPUProcessRecyclePolicyTests](../../DetourTests/GPUProcessRecyclePolicyTests.swift):
   the gate, the rate limit, environment parsing, region counting on the test
   process itself.
@@ -297,6 +341,12 @@ vmmap <gpu pid> | grep '^IOSurface' | grep -c PURGE=E
 
 # Open questions
 
+- Whether closing a tab frees its surfaces at all. On 2026-11-17, closing
+  every YouTube and Jira tab of a burst (all their web processes exited, the
+  GPU process logged `removeGPUConnectionToWebProcess` for each) freed about
+  450 of the burst's ~1,700, and purged regions were later reused. The
+  telemetry above and the TASK-405 experiment are meant to settle
+  it.[^task-404]
 - What exactly holds the bulk of the purged surfaces alive, given that the
   pool flush does not release them.[^task-109]
 - Whether WebKit ever suspends the GPU process on macOS, and why Safari on
@@ -322,5 +372,7 @@ vmmap <gpu pid> | grep '^IOSurface' | grep -c PURGE=E
 [^task-105]: GPU-process recycle valve
 [^task-109]: Does the GPU process ever get the memory-pressure pool flush
 [^notes-gpu]: GPU IOSurface limit diagnosis and measurement recipes
+[^task-404]: Persist the IOSurface growth curve and per-event deltas
+[^telemetry]: GPUSurfaceTelemetry.swift
 [^task-403]: GPU recycler: waits past the IOSurface cap while the user is active
 [^task-175]: A GPU process WebKit failed to kill stays alive and freezes every tab connected to it
