@@ -22,15 +22,24 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "gpu-recy
 ///
 /// A recycle interrupts media and loses WebGL contexts, so it waits until nobody
 /// is looking: at `softLimit`, only once Detour has been in the background for
-/// `inactiveGrace`; at `hardLimit` — about to break, or already broken — also
-/// while Detour is frontmost, once the user has not touched any input for
-/// `userIdleGrace`. Never while any tab plays audio or captures camera/mic,
-/// and never twice within `minimumInterval` (WebKit terminates every
-/// WebContent process when its GPU process "crashes" repeatedly in a short
-/// window).
+/// `inactiveGrace`; at `hardLimit` — close to breaking — also while Detour is
+/// frontmost, once the user has not touched any input for `userIdleGrace`; at
+/// `exhaustedLimit` — already broken, every allocation failing — on the next
+/// check even while the user is busy, since WebGL is dead anyway and a user
+/// retrying the broken page never goes idle (TASK-403: the 1,384 surfaces
+/// between 15k and the cap went in one morning of active use, and the
+/// recycler fired 100 s after the cap). Never while any tab plays audio or
+/// captures camera/mic, and never twice within `minimumInterval` (WebKit
+/// terminates every WebContent process when its GPU process "crashes"
+/// repeatedly in a short window).
 struct GPUProcessRecyclePolicy: Equatable {
     var softLimit = 12_000
-    var hardLimit = 15_000
+    var hardLimit = 14_000
+    /// The kernel's per-process IOSurface cap. The region count this policy
+    /// reads was 16,697 when the cap had been failing allocations for 100 s
+    /// (TASK-403), and 16.7k in TASK-104. Regions can run a little above live
+    /// surfaces, so this may fire shortly before the cap rather than after it.
+    var exhaustedLimit = 16_384
     var inactiveGrace: TimeInterval = 5 * 60
     var userIdleGrace: TimeInterval = 60
     var minimumInterval: TimeInterval = 60 * 60
@@ -67,6 +76,7 @@ struct GPUProcessRecyclePolicy: Equatable {
            inactiveFor != nil || inputs.userIdleSeconds >= userIdleGrace {
             return .recycle
         }
+        if inputs.surfaceCount >= exhaustedLimit { return .recycle }
         return .wait
     }
 
@@ -85,6 +95,7 @@ struct GPUProcessRecyclePolicy: Equatable {
         }
         if let v = int("DETOUR_GPU_RECYCLE_SOFT_LIMIT") { policy.softLimit = v }
         if let v = int("DETOUR_GPU_RECYCLE_HARD_LIMIT") { policy.hardLimit = v }
+        if let v = int("DETOUR_GPU_RECYCLE_EXHAUSTED_LIMIT") { policy.exhaustedLimit = v }
         if let v = seconds("DETOUR_GPU_RECYCLE_INACTIVE_GRACE_SECONDS") { policy.inactiveGrace = v }
         if let v = seconds("DETOUR_GPU_RECYCLE_USER_IDLE_SECONDS") { policy.userIdleGrace = v }
         if let v = seconds("DETOUR_GPU_RECYCLE_MIN_INTERVAL_SECONDS") { policy.minimumInterval = v }
@@ -109,6 +120,10 @@ final class GPUProcessRecycler {
     private var inactiveSince: Date?
     private var lastRecycleAt: Date?
     private var sampling = false
+    /// When a closed gate was last logged at notice; nil once the gate is not
+    /// closed. Keeps a long wait to one persisted line per `waitLogInterval`.
+    private var lastWaitLogAt: Date?
+    private let waitLogInterval: TimeInterval = 10 * 60
 
     func start() {
         guard timer == nil else { return }
@@ -161,11 +176,22 @@ final class GPUProcessRecycler {
             mediaInUse: Self.liveTabs().contains(where: Self.isUsingMedia),
             lastRecycleAt: lastRecycleAt,
             now: Date())
-        switch policy.decide(inputs) {
+        let decision = policy.decide(inputs)
+        if decision != .wait { lastWaitLogAt = nil }
+        switch decision {
         case .keep:
             return
         case .wait:
-            log.info("GPU process \(pid) holds \(surfaceCount) IOSurfaces; recycle gate closed (active=\(self.inactiveSince == nil), media=\(inputs.mediaInUse))")
+            // Notice, not info: info lines are not persisted, and without these
+            // a late recycle cannot be explained after the fact (TASK-403).
+            if let last = lastWaitLogAt, inputs.now.timeIntervalSince(last) < waitLogInterval {
+                log.info("GPU process \(pid) holds \(surfaceCount) IOSurfaces; recycle gate closed")
+            } else {
+                lastWaitLogAt = inputs.now
+                let inactiveFor = inputs.inactiveSince.map { inputs.now.timeIntervalSince($0) } ?? -1
+                let sinceRecycle = inputs.lastRecycleAt.map { inputs.now.timeIntervalSince($0) } ?? -1
+                log.notice("GPU process \(pid) holds \(surfaceCount) IOSurfaces; recycle gate closed (inactiveFor=\(inactiveFor, format: .fixed(precision: 0))s, userIdle=\(inputs.userIdleSeconds, format: .fixed(precision: 0))s, media=\(inputs.mediaInUse), sinceLastRecycle=\(sinceRecycle, format: .fixed(precision: 0))s)")
+            }
         case .recycle:
             // The pid was sampled a moment ago and is about to receive SIGKILL:
             // confirm it is still *our* GPU process (the name alone would also

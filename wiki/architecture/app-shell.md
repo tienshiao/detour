@@ -251,7 +251,7 @@ Everything that changes behaviour at launch, on `main`:
 | `DETOUR_GPU_ORPHAN_CHECK_SECONDS`, `DETOUR_GPU_ORPHAN_MIN_AGE_SECONDS` | Environment, seconds | `GPUProcessOrphanReaper` timings (check default 30). |
 | `DETOUR_SLEEP_SHOW_BUDGET` | Environment, positive integer | Shows before a tab qualifies for the short sleep rule (default 50). |
 | `DETOUR_SLEEP_SHOW_BUDGET_GRACE_SECONDS` | Environment, seconds | How long such a tab must be off screen (default 900). |
-| `DETOUR_GPU_RECYCLE_SOFT_LIMIT`, `…_HARD_LIMIT` | Environment, positive integer | IOSurface counts (defaults 12,000 and 15,000). |
+| `DETOUR_GPU_RECYCLE_SOFT_LIMIT`, `…_HARD_LIMIT`, `…_EXHAUSTED_LIMIT` | Environment, positive integer | IOSurface counts (defaults 12,000, 14,000 and 16,384). |
 | `DETOUR_GPU_RECYCLE_INACTIVE_GRACE_SECONDS`, `…_USER_IDLE_SECONDS`, `…_MIN_INTERVAL_SECONDS`, `…_CHECK_SECONDS` | Environment, seconds | Recycle policy timings (defaults 300, 60, 3600, 120). |
 | `DETOUR_NATIVE_MESSAGING_HOSTS_DIR` | Environment, **DEBUG builds only** | An extra native messaging manifest directory, searched first. |
 | `ExtensionConsoleLogPublic` | `UserDefaults` bool | Logs bridged extension console text publicly. Off by default because that output can contain secrets. |

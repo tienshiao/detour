@@ -40,21 +40,39 @@ nonisolated final class GPUProcessRecyclePolicyTests: XCTestCase {
     }
 
     @MainActor func testSoftLimitNeverRecyclesWhileActiveEvenIfUserIdle() {
-        XCTAssertEqual(policy.decide(inputs(surfaces: 14_999, inactiveFor: nil, userIdle: 3600)), .wait)
+        XCTAssertEqual(policy.decide(inputs(surfaces: 13_999, inactiveFor: nil, userIdle: 3600)), .wait)
     }
 
     // MARK: - Hard limit: also while active, once the user is idle
 
+    @MainActor func testLimitDefaults() {
+        XCTAssertEqual(policy.hardLimit, 14_000)
+        XCTAssertEqual(policy.exhaustedLimit, 16_384)
+    }
+
     @MainActor func testHardLimitRecyclesWhileActiveOnceUserIdle() {
-        XCTAssertEqual(policy.decide(inputs(surfaces: 15_000, inactiveFor: nil, userIdle: 60)), .recycle)
+        XCTAssertEqual(policy.decide(inputs(surfaces: 14_000, inactiveFor: nil, userIdle: 60)), .recycle)
     }
 
     @MainActor func testHardLimitWaitsWhileActiveAndUserBusy() {
-        XCTAssertEqual(policy.decide(inputs(surfaces: 16_384, inactiveFor: nil, userIdle: 59)), .wait)
+        XCTAssertEqual(policy.decide(inputs(surfaces: 16_383, inactiveFor: nil, userIdle: 59)), .wait)
     }
 
     @MainActor func testHardLimitRecyclesAsSoonAsAppIsInactive() {
-        XCTAssertEqual(policy.decide(inputs(surfaces: 15_500, inactiveFor: 1, userIdle: 0)), .recycle)
+        XCTAssertEqual(policy.decide(inputs(surfaces: 14_500, inactiveFor: 1, userIdle: 0)), .recycle)
+    }
+
+    // MARK: - Exhausted: already broken, recycle even while the user is busy (TASK-403)
+
+    @MainActor func testExhaustedRecyclesWhileActiveAndUserBusy() {
+        XCTAssertEqual(policy.decide(inputs(surfaces: 16_384, inactiveFor: nil, userIdle: 0)), .recycle)
+        XCTAssertEqual(policy.decide(inputs(surfaces: 16_697, inactiveFor: nil, userIdle: 0)), .recycle)
+    }
+
+    @MainActor func testExhaustedStillWaitsForMediaAndRateLimit() {
+        XCTAssertEqual(policy.decide(inputs(surfaces: 16_697, inactiveFor: nil, userIdle: 0, audio: true)), .wait)
+        XCTAssertEqual(policy.decide(inputs(surfaces: 16_697, inactiveFor: nil, userIdle: 0,
+                                            lastRecycleAgo: 60 * 60 - 1)), .wait)
     }
 
     // MARK: - Guards that apply at every limit
@@ -78,11 +96,12 @@ nonisolated final class GPUProcessRecyclePolicyTests: XCTestCase {
         let p = GPUProcessRecyclePolicy.fromEnvironment([
             "DETOUR_GPU_RECYCLE_SOFT_LIMIT": "100",
             "DETOUR_GPU_RECYCLE_HARD_LIMIT": "200",
+            "DETOUR_GPU_RECYCLE_EXHAUSTED_LIMIT": "300",
             "DETOUR_GPU_RECYCLE_INACTIVE_GRACE_SECONDS": "5",
             "DETOUR_GPU_RECYCLE_USER_IDLE_SECONDS": "0",
             "DETOUR_GPU_RECYCLE_MIN_INTERVAL_SECONDS": "30",
         ])
-        XCTAssertEqual(p, GPUProcessRecyclePolicy(softLimit: 100, hardLimit: 200, inactiveGrace: 5,
+        XCTAssertEqual(p, GPUProcessRecyclePolicy(softLimit: 100, hardLimit: 200, exhaustedLimit: 300, inactiveGrace: 5,
                                                   userIdleGrace: 0, minimumInterval: 30))
     }
 
@@ -90,6 +109,7 @@ nonisolated final class GPUProcessRecyclePolicyTests: XCTestCase {
         let p = GPUProcessRecyclePolicy.fromEnvironment([
             "DETOUR_GPU_RECYCLE_SOFT_LIMIT": "0",
             "DETOUR_GPU_RECYCLE_HARD_LIMIT": "lots",
+            "DETOUR_GPU_RECYCLE_EXHAUSTED_LIMIT": "-5",
             "DETOUR_GPU_RECYCLE_INACTIVE_GRACE_SECONDS": "-1",
             "DETOUR_GPU_RECYCLE_USER_IDLE_SECONDS": "nan",
             "DETOUR_GPU_RECYCLE_MIN_INTERVAL_SECONDS": "inf",

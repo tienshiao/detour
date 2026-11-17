@@ -22,6 +22,9 @@ sources:
   - id: notes-gpu
     resource: "Agent session notes, 2026-09-21 and 2026-09-28 (not in the repository)"
     title: GPU IOSurface limit diagnosis and measurement recipes
+  - id: task-403
+    resource: backlog:TASK-403
+    title: "GPU recycler: waits past the IOSurface cap while the user is active"
   - id: recycler
     resource: ../../Detour/Browser/GPUProcessRecycler.swift
     title: GPUProcessRecycler.swift
@@ -191,7 +194,8 @@ the sleep policy.
 
 This slows the growth but does not cap it: the visible tab's occlusion churn
 is out of its reach, and the limit was hit again after 2.5 days with the
-budget in place.[^task-105]
+budget in place.[^task-105] On 2026-11-17 it took 20.5 h, roughly the
+pre-budget rate.[^task-403]
 
 ## 2. GPU process recycler — the backstop
 
@@ -228,7 +232,8 @@ Every 120 s (`DETOUR_GPU_RECYCLE_CHECK_SECONDS`) it:
 |---|---|
 | < 12,000 (`softLimit`) | keep |
 | ≥ 12,000 | recycle once the app has been inactive ≥ 5 min (`inactiveGrace`) |
-| ≥ 15,000 (`hardLimit`) | also recycle as soon as the app is inactive, or while it is active once there has been no keyboard or pointer input for 60 s (`userIdleGrace`) |
+| ≥ 14,000 (`hardLimit`) | also recycle as soon as the app is inactive, or while it is active once there has been no keyboard or pointer input for 60 s (`userIdleGrace`) |
+| ≥ 16,384 (`exhaustedLimit`) | recycle on the next check even while the user is busy: allocations are already failing, so WebGL is already dead[^task-403] |
 | any | never while a tab plays audible audio (`BrowserTab.isAudible`: muted playback does not count, TASK-192) or captures camera or microphone; never within 1 h of the last recycle (`minimumInterval`) |
 
 Why each gate exists:
@@ -238,11 +243,18 @@ Why each gate exists:
 - Camera and microphone capture run in the GPU process.
 - WebKit terminates every WebContent process when its GPU process exits
   repeatedly in a short window, hence the one-hour floor.[^task-105]
+- The exhausted tier and the 14,000 hard limit come from a recurrence on
+  2026-11-17 after 20.5 h of uptime. With `hardLimit` at 15,000 the count
+  crossed the cap during a morning of active use, because the 60 s idle gap
+  never came. The recycler fired 100 s after the first failed allocation, at
+  16,697 regions. pmset showed the display off overnight and again until
+  09:46, which suggests (not measured) the climb past 15k happened during the 83 minutes of use after that.
+  The user chose to keep the media gate even past the cap.[^task-403]
 - A direct count replaced the planned WebGL canary: a canary only fires after
   pages have already broken.[^task-105]
 
 Overrides for harness runs: `DETOUR_GPU_RECYCLE_SOFT_LIMIT`,
-`_HARD_LIMIT`, `_INACTIVE_GRACE_SECONDS`, `_USER_IDLE_SECONDS`,
+`_HARD_LIMIT`, `_EXHAUSTED_LIMIT`, `_INACTIVE_GRACE_SECONDS`, `_USER_IDLE_SECONDS`,
 `_MIN_INTERVAL_SECONDS`. A non-positive or unparseable value is ignored
 rather than disabling a guard.
 
@@ -261,9 +273,12 @@ vmmap <gpu pid> | grep '^IOSurface' | grep -c PURGE=E
 
 - `vmmap` on a WebContent process prints nothing useful for this.[^notes-gpu]
 - The recycler logs under subsystem `com.detourbrowser.mac`, category
-  `gpu-recycle`. Only the recycle itself is logged at notice level; the
-  "gate closed" line is info, and info/debug lines are not persisted for
-  `log show`.[^notes-gpu]
+  `gpu-recycle`. The recycle and a closed gate are logged at notice level:
+  the gate line carries the count, `inactiveFor`, `userIdle`, `media` and
+  `sinceLastRecycle`, at most once every 10 minutes while the gate stays
+  closed, with info lines in between. Before TASK-403 the gate line was info
+  only, and info and debug lines are not persisted for `log show`, so a late
+  recycle could not be explained afterwards.[^task-403]
 - An unfocused app's timer still fired on schedule in a 10 s harness
   run.[^task-105]
 - The harness and samplers are in [docs/task-104](../../docs/task-104)
@@ -307,4 +322,5 @@ vmmap <gpu pid> | grep '^IOSurface' | grep -c PURGE=E
 [^task-105]: GPU-process recycle valve
 [^task-109]: Does the GPU process ever get the memory-pressure pool flush
 [^notes-gpu]: GPU IOSurface limit diagnosis and measurement recipes
+[^task-403]: GPU recycler: waits past the IOSurface cap while the user is active
 [^task-175]: A GPU process WebKit failed to kill stays alive and freezes every tab connected to it
