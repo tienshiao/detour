@@ -3,10 +3,10 @@ id: TASK-407
 title: >-
   Sleep tabs on memory pressure: a warning shortens the idle threshold, critical
   sleeps every eligible hidden tab
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-17T20:35:00Z'
-updated_date: '2026-11-17T20:58:00Z'
+updated_date: '2026-11-17T21:24:00Z'
 labels:
   - sleeping
   - memory
@@ -31,11 +31,11 @@ Fewer live web processes also means fewer per-connection IOSurface pools in the 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A memory-pressure source drives sleeping; warning and critical levels are handled distinctly, per a rule the user has confirmed
-- [ ] #2 The existing never-sleep guards still apply: the selected/hosted tab, audible or capturing tabs, split partners, and a profile set to never sleep
-- [ ] #3 A burst of pressure events cannot cause repeated full sweeps (rate-limited), and sleeps do not stall the main thread
-- [ ] #4 Policy tests in the existing sleep suites cover both levels, the guards and the rate limit, with an injected clock and a fake pressure source
-- [ ] #5 Each pressure-driven sleep is logged at notice so a run can be reviewed
+- [x] #1 A memory-pressure source drives sleeping; warning and critical levels are handled distinctly, per a rule the user has confirmed
+- [x] #2 The existing never-sleep guards still apply: the selected/hosted tab, audible or capturing tabs, split partners, and a profile set to never sleep
+- [x] #3 A burst of pressure events cannot cause repeated full sweeps (rate-limited), and sleeps do not stall the main thread
+- [x] #4 Policy tests in the existing sleep suites cover both levels, the guards and the rate limit, with an injected clock and a fake pressure source
+- [x] #5 Each pressure-driven sleep is logged at notice so a run can be reviewed
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -67,3 +67,27 @@ Not verified: a real memory-pressure event in the running app (no runtime check;
 Follow-up in the same commit: scheduled checks now run as of the time they were armed for (receive reads the clock once). Late timers had pushed the +120 s rescan just past the window, so it was never armed; testTheLastRescanRunsWhenTimersFireLate (checks 50 ms late) covers it. MemoryPressureSleepTests 22 (21 pass + 1 skipped leg), SleepShowBudgetTests 16: 0 failures.
 Claude's choice (5): a critical event within 30 s of a warning sweep waits for the 30 s mark (up to 30 s), because the 30 s rate limit and 'critical sleeps now' collide there; the rate limit won.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+MemoryPressureSleeper listens on a DispatchSource memory-pressure source, using the pure MemoryPressureSleepPolicy.
+- Warning: for 2 min the idle threshold is the shorter of 5 min and the profile's own (.never honoured). Rescans run at +0, 30, 60, 90 and 120 s.
+- Critical: one sweep of every eligible hidden tab, pinned entries' and favourites' backing tabs included.
+- Rate limit: pressure sweeps at most once per 30 s; a deferred event is never dropped.
+- Batching: sweeps sleep 4 tabs per main-loop turn, with candidates rechecked before each batch. Measured 4.5 ms per sleep in the test host.
+- Logging: one notice line per sweep (category memory-pressure).
+- New guard: a tab using the camera or microphone stays awake under every sleep rule. The review extended it to sleep() itself, so a capturing Peek is not parked.
+
+Tests: MemoryPressureSleepTests 22 plus the sleep, TabStore, split, favourites and pinned suites; 237 passed, 1 gated skip, on the rebased branch.
+
+Not verified at runtime: a real memory-pressure event. Simulating one would hit the user's other apps; the dispatch source wiring only ran through injected fakes.
+
+Claude's choices, for the user to confirm:
+1. The camera/microphone guard now applies to all sleep rules.
+2. A critical event within 30 s of a warning sweep waits for the 30 s mark.
+3. Critical is a single sweep and does not open the warning window.
+4. 4 tabs per batch.
+
+Review follow-ups left: the periodic 5-min sweep during a warning window sleeps unstaggered; candidates are rebuilt per batch (O(N²/4)); a check that fires hours late replays on its armed timeline (wasted scans only).
+<!-- SECTION:FINAL_SUMMARY:END -->

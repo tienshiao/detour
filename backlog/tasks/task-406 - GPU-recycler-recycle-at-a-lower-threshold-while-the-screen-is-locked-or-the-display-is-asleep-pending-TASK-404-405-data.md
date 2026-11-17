@@ -3,10 +3,10 @@ id: TASK-406
 title: >-
   GPU recycler: recycle at a lower threshold while the screen is locked or the
   display is asleep (pending TASK-404/405 data)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-17T19:47:00Z'
-updated_date: '2026-11-17T20:46:00Z'
+updated_date: '2026-11-17T21:24:00Z'
 labels:
   - gpu
   - webkit
@@ -25,8 +25,8 @@ On 2026-11-17 the display was off 03:05-08:01 and the GPU process was recycled o
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The threshold and gate are confirmed by the user
-- [ ] #2 GPUProcessRecyclePolicyTests cover the locked/asleep gate, including media and the rate limit still blocking
+- [x] #1 The threshold and gate are confirmed by the user
+- [x] #2 GPUProcessRecyclePolicyTests cover the locked/asleep gate, including media and the rate limit still blocking
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -50,3 +50,15 @@ Claude's choices: no grace once away (a recycle can fire on the first 2-minute c
 Tests: GPUProcessRecyclePolicyTests 23/0 (6 new: default, away recycles even active+busy, away below limit keeps, away + media waits, away + rate limit waits/reopens, not away 6k..12k keeps; env parsing extended), GPUSurfaceTelemetryTests 18/0.
 /code-review not run by the implementing agent (left to the lead).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Recycle from 6,000 IOSurfaces while away, keeping the media and 1-hour guards; the other tiers are unchanged. Away = the screen is locked, every online display is asleep, or the session is off the console (fast user switching, added in review). The state is read at each check via CGSessionCopyCurrentDictionary and CGDisplayIsAsleep. DETOUR_GPU_RECYCLE_AWAY_LIMIT override; away= is in the gate and recycle log lines.
+
+Tests: GPUProcessRecyclePolicyTests 23 (6 new), in a 237-test run on the rebased branch (0 failures, 1 gated skip).
+
+Runtime, isolated build at 13:23 with the user's screen genuinely locked (since 13:20:22): with the away limit overridden to 1, the app logged 'Recycling GPU process 14780 at 32 IOSurfaces (away=true)'. The relaunched process was then held by the rate limit ('away=true, sinceLastRecycle=9s').
+
+Claude's choices, for the user to confirm: no grace period after locking (fires on the first 2-minute check); no online display counts as not away.
+<!-- SECTION:FINAL_SUMMARY:END -->
