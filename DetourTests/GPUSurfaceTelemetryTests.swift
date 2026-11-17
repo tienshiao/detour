@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 @testable import Detour
 
@@ -79,6 +80,48 @@ nonisolated final class GPUSurfaceTelemetryTests: XCTestCase {
     @MainActor func testGroupsPastTheLimitAreCounted() {
         let events = (1...5).map { GPUSurfaceEvent(kind: .show, host: "h\($0)", webProcess: 0) }
         XCTAssertEqual(GPUSurfaceTelemetryRules.describe(events, limit: 2), "show h1, show h2, +3 more")
+    }
+
+    // MARK: - Host names in the log
+
+    @MainActor func testHostIsATokenByDefault() {
+        let salt = SymmetricKey(size: .bits256)
+        let token = GPUSurfaceTelemetryRules.loggedHost("www.youtube.com", isPrivateBrowsing: false,
+                                                        logPublic: false, salt: salt)
+        XCTAssertTrue(token.hasPrefix("site-"))
+        XCTAssertEqual(token.count, "site-".count + 8)
+        XCTAssertFalse(token.contains("youtube"))
+    }
+
+    @MainActor func testTokensMatchWithinALaunchOnly() {
+        let salt = SymmetricKey(size: .bits256)
+        func token(_ host: String, _ key: SymmetricKey) -> String {
+            GPUSurfaceTelemetryRules.loggedHost(host, isPrivateBrowsing: false, logPublic: false, salt: key)
+        }
+        XCTAssertEqual(token("jira.example.com", salt), token("jira.example.com", salt))
+        XCTAssertNotEqual(token("jira.example.com", salt), token("www.youtube.com", salt))
+        XCTAssertNotEqual(token("jira.example.com", salt), token("jira.example.com", SymmetricKey(size: .bits256)))
+        XCTAssertEqual(token("JIRA.Example.com.", salt), token("jira.example.com", salt))
+    }
+
+    @MainActor func testOptInLogsTheHost() {
+        XCTAssertEqual(GPUSurfaceTelemetryRules.loggedHost("www.youtube.com", isPrivateBrowsing: false,
+                                                           logPublic: true, salt: SymmetricKey(size: .bits256)),
+                       "www.youtube.com")
+    }
+
+    @MainActor func testPrivateBrowsingIsNeverNamed() {
+        for logPublic in [false, true] {
+            XCTAssertEqual(GPUSurfaceTelemetryRules.loggedHost("secret.example", isPrivateBrowsing: true,
+                                                               logPublic: logPublic, salt: SymmetricKey(size: .bits256)),
+                           "private")
+        }
+    }
+
+    @MainActor func testNoHostIsADash() {
+        let salt = SymmetricKey(size: .bits256)
+        XCTAssertEqual(GPUSurfaceTelemetryRules.loggedHost(nil, isPrivateBrowsing: false, logPublic: false, salt: salt), "-")
+        XCTAssertEqual(GPUSurfaceTelemetryRules.loggedHost("", isPrivateBrowsing: false, logPublic: true, salt: salt), "-")
     }
 
     // MARK: - Region counting

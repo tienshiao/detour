@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-17T19:47:00Z'
-updated_date: '2026-11-17T19:54:00Z'
+updated_date: '2026-11-17T20:02:00Z'
 labels:
   - gpu
   - webkit
@@ -50,6 +50,8 @@ TASK-104's show budget assumes closing or sleeping a tab frees its surfaces; thi
 
 <!-- SECTION:NOTES:BEGIN -->
 Review (/code-review medium --fix): 7 findings, 3 fixed. Incognito/ephemeral-store hosts are logged as 'private'. The wiki section placement is corrected. The assumeIsolated comment is added. Not changed: the event delta is against the previous sample of any kind (intended, documented). ioSurfaceCount stays as a thin wrapper used by tests. The tab-process count runs on main (negligible). Peek teardowns are logged as close.
+
+Privacy follow-up (user decision 2026-11-17): event lines no longer write host names by default. A host is logged as site-xxxxxxxx: HMAC-SHA256 of the lowercased host, trailing dot removed, under a random per-launch key that is never stored. The tokens match within a launch and are linkable once one line is tied to a known visit. The opt-in defaults key GPUSurfaceLogPublic logs real hosts, read at each event, and logs a one-time 'PUBLICLY' notice the first time a launch writes one. Incognito/ephemeral tabs are always 'private'. Review: 5 findings, 2 fixed (opt-in notice, host normalization), wording of the linkability claim corrected. Not done: a fixture test for the incognito/ephemeral wiring (pre-existing logic; only the pure function is tested). Tests: GPUSurfaceTelemetryTests 18/18, with GPUProcessRecyclePolicyTests 35/35 before the review fixes. Runtime: default run logged 'show site-0a9ea62e[52784], close site-8d9fd108[52862]'. A run with the launch argument -GPUSurfaceLogPublic YES logged 'show example.com[52971], close example.org[53004]'. The real defaults domain was left untouched.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

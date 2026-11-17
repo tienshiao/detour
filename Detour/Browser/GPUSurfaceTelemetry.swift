@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import os.log
 
 private let log = Logger(subsystem: "com.detourbrowser.mac", category: "gpu-surfaces")
@@ -89,6 +90,32 @@ enum GPUSurfaceTelemetryRules {
         }
         if groups.count > limit { parts.append("+\(groups.count - limit) more") }
         return parts.joined(separator: ", ")
+    }
+
+    /// What an event line names a tab's site as. Host names are browsing
+    /// history, and these lines are persisted in the unified log, which
+    /// `log show` reads and a sysdiagnose carries off the machine — outside
+    /// anything Clear History reaches. So by default a host is written as a
+    /// token: HMAC-SHA256 under `salt`, which is random per launch and never
+    /// stored, so equal hosts match within a run (enough to see one site keep
+    /// growing the pool) but a token cannot be computed from a host, so not
+    /// even a dictionary of popular sites reverses it. It is still linkable:
+    /// whoever can tie one line to a known visit (by its time) knows that
+    /// site's token for the rest of the launch. `logPublic` (the
+    /// `GPUSurfaceLogPublic` default, for diagnosing one's own machine) writes
+    /// the host itself. A private-browsing tab is never named either way.
+    /// (`Logger`'s own `.private(mask: .hash)` cannot be used: privacy is fixed
+    /// per interpolation, and a line folds a variable number of events into
+    /// one string.)
+    static func loggedHost(_ host: String?, isPrivateBrowsing: Bool, logPublic: Bool, salt: SymmetricKey) -> String {
+        if isPrivateBrowsing { return "private" }
+        guard let host, !host.isEmpty else { return "-" }
+        if logPublic { return host }
+        // One site, one token: `WWW.Example.com.` and `www.example.com` are the same host.
+        var normalized = host.lowercased()
+        if normalized.count > 1, normalized.hasSuffix(".") { normalized.removeLast() }
+        let mac = HMAC<SHA256>.authenticationCode(for: Data(normalized.utf8), using: salt)
+        return "site-" + mac.prefix(4).map { String(format: "%02x", $0) }.joined()
     }
 
     private static func signed(_ value: Int) -> String {
@@ -193,14 +220,31 @@ final class GPUSurfaceTelemetry {
         }
     }
 
-    /// The host logged for `tab`, public in the unified log. A private tab's
-    /// (an incognito space, or any web view on a non-persistent store) is
-    /// never written there: `private` stands in for it.
+    /// `defaults write com.detourbrowser.mac GPUSurfaceLogPublic -bool YES`
+    /// logs real host names instead of per-launch tokens (TASK-404); undo with
+    /// `defaults delete com.detourbrowser.mac GPUSurfaceLogPublic`.
+    static let logPublicDefaultsKey = "GPUSurfaceLogPublic"
+
+    /// Per launch, in memory only — see `GPUSurfaceTelemetryRules.loggedHost`.
+    private static let hostSalt = SymmetricKey(size: .bits256)
+
+    /// Whether this launch has already said, in the log itself, that host
+    /// names are being written in the clear.
+    private static var announcedPublicHosts = false
+
     private static func loggedHost(of tab: BrowserTab) -> String {
         let inIncognitoSpace = tab.spaceID.flatMap { TabStore.shared.space(withID: $0) }?.isIncognito ?? false
         let ephemeralStore = tab.webView.map { !$0.configuration.websiteDataStore.isPersistent } ?? false
-        if inIncognitoSpace || ephemeralStore { return "private" }
-        return tab.url?.host() ?? "-"
+        let logPublic = UserDefaults.standard.bool(forKey: logPublicDefaultsKey)
+        if logPublic, !announcedPublicHosts {
+            announcedPublicHosts = true
+            log.notice("Logging tab host names PUBLICLY (\(logPublicDefaultsKey, privacy: .public) is set); these lines are browsing history")
+        }
+        return GPUSurfaceTelemetryRules.loggedHost(
+            tab.url?.host(),
+            isPrivateBrowsing: inIncognitoSpace || ephemeralStore,
+            logPublic: logPublic,
+            salt: hostSalt)
     }
 
     private static func tabProcessCount() -> Int {

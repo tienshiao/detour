@@ -309,7 +309,7 @@ category `gpu-surfaces`:[^task-404]
 - `after <events>: total=… (±Δ) …` is a sample taken 3 s after the first
   of a batch of tab events. The events are `show`, `wake`, `sleep` and
   `close`, each with the host and the web-process pid
-  (`close www.youtube.com[7011]×2`); identical ones are folded. The delta is
+  (`close site-3f9a01c2[7011]×2`, or the host with `GPUSurfaceLogPublic`); identical ones are folded. The delta is
   against the previous sample of either kind, so it is what those events
   (and anything else in the same seconds) did. Freeing is not instant: a
   close's effect can show up in the next line too. A brand-new tab shows
@@ -319,8 +319,21 @@ category `gpu-surfaces`:[^task-404]
   against 2,119, total 2,575 in both).
 - `tabProcesses` counts distinct web-content pids behind Detour's live tabs.
   Extension and other non-tab web views are not in it.
-- Hosts are logged public, so `log show` prints them unredacted; a tab in an
-  incognito space or on a non-persistent data store is logged as `private`.
+- Sites are not named by default. A host is logged as `site-xxxxxxxx`, an
+  HMAC-SHA256 under a random key made at launch and never stored: lines from
+  the same site in one run carry the same token, and without the key no one
+  can compute a host's token, so trying popular sites does not reverse it.
+  Tokens are still linkable: whoever can tie one line to a visit they know of
+  (by its time) knows that site's token for the rest of the launch. Host names are browsing
+  history, and these lines persist in the unified log, which a sysdiagnose
+  carries off the machine and which Clear History does not reach. To see real
+  hosts on your own machine: `defaults write com.detourbrowser.mac
+  GPUSurfaceLogPublic -bool YES` (read at each event, no relaunch;
+  `defaults delete …` to stop; the first public host of a launch is preceded
+  by a notice that says so). A tab in an incognito space or on a
+  non-persistent data store is `private` either way. `Logger`'s own
+  `.private(mask: .hash)` was not usable: privacy is fixed per
+  interpolation, and one line folds a variable number of events.
 
 Reading it: a `close`/`sleep` line with a small negative delta means the
 closed tab's surfaces were not freed with it (the 2026-11-17 observation that
