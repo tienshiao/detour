@@ -13,12 +13,14 @@ nonisolated final class GPUProcessRecyclePolicyTests: XCTestCase {
         inactiveFor: TimeInterval? = nil,
         userIdle: TimeInterval = 0,
         audio: Bool = false,
+        away: Bool = false,
         lastRecycleAgo: TimeInterval? = nil
     ) -> GPUProcessRecyclePolicy.Inputs {
         .init(surfaceCount: surfaces,
               inactiveSince: inactiveFor.map { now.addingTimeInterval(-$0) },
               userIdleSeconds: userIdle,
               mediaInUse: audio,
+              userAway: away,
               lastRecycleAt: lastRecycleAgo.map { now.addingTimeInterval(-$0) },
               now: now)
     }
@@ -75,6 +77,42 @@ nonisolated final class GPUProcessRecyclePolicyTests: XCTestCase {
                                             lastRecycleAgo: 60 * 60 - 1)), .wait)
     }
 
+    // MARK: - Away: screen locked or every display asleep (TASK-406)
+
+    @MainActor func testAwayLimitDefault() {
+        XCTAssertEqual(policy.awayLimit, 6_000)
+    }
+
+    @MainActor func testAwayRecyclesFromAwayLimitEvenWhileActiveAndBusy() {
+        XCTAssertEqual(policy.decide(inputs(surfaces: 6_000, inactiveFor: nil, userIdle: 0, away: true)), .recycle)
+        XCTAssertEqual(policy.decide(inputs(surfaces: 11_999, inactiveFor: 1, away: true)), .recycle)
+        XCTAssertEqual(policy.decide(inputs(surfaces: 13_000, inactiveFor: nil, away: true)), .recycle)
+    }
+
+    @MainActor func testAwayBelowAwayLimitKeeps() {
+        XCTAssertEqual(policy.decide(inputs(surfaces: 5_999, inactiveFor: 3600, userIdle: 3600, away: true)), .keep)
+    }
+
+    @MainActor func testAwayStillWaitsForMedia() {
+        XCTAssertEqual(policy.decide(inputs(surfaces: 6_000, inactiveFor: 3600, userIdle: 3600, audio: true,
+                                            away: true)), .wait)
+        XCTAssertEqual(policy.decide(inputs(surfaces: 12_500, inactiveFor: 3600, audio: true, away: true)), .wait)
+    }
+
+    @MainActor func testAwayStillWaitsForRateLimit() {
+        XCTAssertEqual(policy.decide(inputs(surfaces: 8_000, inactiveFor: 3600, userIdle: 3600, away: true,
+                                            lastRecycleAgo: 60 * 60 - 1)), .wait)
+        XCTAssertEqual(policy.decide(inputs(surfaces: 8_000, inactiveFor: 3600, userIdle: 3600, away: true,
+                                            lastRecycleAgo: 60 * 60)), .recycle)
+    }
+
+    /// Not away, the band between the away and soft limits is untouched: keep,
+    /// however long the app has been inactive or the user idle.
+    @MainActor func testNotAwayBetweenAwayAndSoftLimitKeeps() {
+        XCTAssertEqual(policy.decide(inputs(surfaces: 6_000, inactiveFor: 3600, userIdle: 3600)), .keep)
+        XCTAssertEqual(policy.decide(inputs(surfaces: 11_999, inactiveFor: 3600, userIdle: 3600)), .keep)
+    }
+
     // MARK: - Guards that apply at every limit
 
     @MainActor func testAudioBlocksRecycleAtSoftAndHardLimits() {
@@ -94,6 +132,7 @@ nonisolated final class GPUProcessRecyclePolicyTests: XCTestCase {
 
     @MainActor func testEnvironmentOverridesApply() {
         let p = GPUProcessRecyclePolicy.fromEnvironment([
+            "DETOUR_GPU_RECYCLE_AWAY_LIMIT": "50",
             "DETOUR_GPU_RECYCLE_SOFT_LIMIT": "100",
             "DETOUR_GPU_RECYCLE_HARD_LIMIT": "200",
             "DETOUR_GPU_RECYCLE_EXHAUSTED_LIMIT": "300",
@@ -101,12 +140,13 @@ nonisolated final class GPUProcessRecyclePolicyTests: XCTestCase {
             "DETOUR_GPU_RECYCLE_USER_IDLE_SECONDS": "0",
             "DETOUR_GPU_RECYCLE_MIN_INTERVAL_SECONDS": "30",
         ])
-        XCTAssertEqual(p, GPUProcessRecyclePolicy(softLimit: 100, hardLimit: 200, exhaustedLimit: 300, inactiveGrace: 5,
+        XCTAssertEqual(p, GPUProcessRecyclePolicy(awayLimit: 50, softLimit: 100, hardLimit: 200, exhaustedLimit: 300, inactiveGrace: 5,
                                                   userIdleGrace: 0, minimumInterval: 30))
     }
 
     @MainActor func testInvalidEnvironmentOverridesAreIgnored() {
         let p = GPUProcessRecyclePolicy.fromEnvironment([
+            "DETOUR_GPU_RECYCLE_AWAY_LIMIT": "-6000",
             "DETOUR_GPU_RECYCLE_SOFT_LIMIT": "0",
             "DETOUR_GPU_RECYCLE_HARD_LIMIT": "lots",
             "DETOUR_GPU_RECYCLE_EXHAUSTED_LIMIT": "-5",

@@ -32,7 +32,14 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "gpu-recy
 /// captures camera/mic, and never twice within `minimumInterval` (WebKit
 /// terminates every WebContent process when its GPU process "crashes"
 /// repeatedly in a short window).
+///
+/// While the user is away — the screen locked or every display asleep —
+/// nobody can see a recycle, so it fires from `awayLimit`, well below the
+/// others (TASK-406). The busy-user tiers above then become a rare fallback
+/// for long stretches of continuous use. The media and rate-limit guards
+/// still apply.
 struct GPUProcessRecyclePolicy: Equatable {
+    var awayLimit = 6_000
     var softLimit = 12_000
     var hardLimit = 14_000
     /// The kernel's per-process IOSurface cap. The region count this policy
@@ -53,6 +60,9 @@ struct GPUProcessRecyclePolicy: Equatable {
         /// Any tab playing audio or capturing camera/microphone — a recycle
         /// would cut the media off (capture runs in the GPU process).
         var mediaInUse: Bool
+        /// The screen is locked or every online display is asleep: nobody is
+        /// looking at any page.
+        var userAway = false
         var lastRecycleAt: Date?
         var now: Date
     }
@@ -65,11 +75,13 @@ struct GPUProcessRecyclePolicy: Equatable {
     }
 
     func decide(_ inputs: Inputs) -> Decision {
-        guard inputs.surfaceCount >= softLimit else { return .keep }
+        let overAwayLimit = inputs.userAway && inputs.surfaceCount >= awayLimit
+        guard overAwayLimit || inputs.surfaceCount >= softLimit else { return .keep }
         guard !inputs.mediaInUse else { return .wait }
         if let last = inputs.lastRecycleAt, inputs.now.timeIntervalSince(last) < minimumInterval {
             return .wait
         }
+        if overAwayLimit { return .recycle }
         let inactiveFor = inputs.inactiveSince.map { inputs.now.timeIntervalSince($0) }
         if let inactiveFor, inactiveFor >= inactiveGrace { return .recycle }
         if inputs.surfaceCount >= hardLimit,
@@ -93,6 +105,7 @@ struct GPUProcessRecyclePolicy: Equatable {
         func seconds(_ key: String) -> TimeInterval? {
             environment[key].flatMap(TimeInterval.init).flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
         }
+        if let v = int("DETOUR_GPU_RECYCLE_AWAY_LIMIT") { policy.awayLimit = v }
         if let v = int("DETOUR_GPU_RECYCLE_SOFT_LIMIT") { policy.softLimit = v }
         if let v = int("DETOUR_GPU_RECYCLE_HARD_LIMIT") { policy.hardLimit = v }
         if let v = int("DETOUR_GPU_RECYCLE_EXHAUSTED_LIMIT") { policy.exhaustedLimit = v }
@@ -170,6 +183,7 @@ final class GPUProcessRecycler {
             userIdleSeconds: CGEventSource.secondsSinceLastEventType(
                 .combinedSessionState, eventType: CGEventType(rawValue: ~0)!),
             mediaInUse: Self.liveTabs().contains(where: Self.isUsingMedia),
+            userAway: Self.userIsAway(),
             lastRecycleAt: lastRecycleAt,
             now: Date())
         let decision = policy.decide(inputs)
@@ -186,7 +200,7 @@ final class GPUProcessRecycler {
                 lastWaitLogAt = inputs.now
                 let inactiveFor = inputs.inactiveSince.map { inputs.now.timeIntervalSince($0) } ?? -1
                 let sinceRecycle = inputs.lastRecycleAt.map { inputs.now.timeIntervalSince($0) } ?? -1
-                log.notice("GPU process \(pid) holds \(surfaceCount) IOSurfaces; recycle gate closed (inactiveFor=\(inactiveFor, format: .fixed(precision: 0))s, userIdle=\(inputs.userIdleSeconds, format: .fixed(precision: 0))s, media=\(inputs.mediaInUse), sinceLastRecycle=\(sinceRecycle, format: .fixed(precision: 0))s)")
+                log.notice("GPU process \(pid) holds \(surfaceCount) IOSurfaces; recycle gate closed (inactiveFor=\(inactiveFor, format: .fixed(precision: 0))s, userIdle=\(inputs.userIdleSeconds, format: .fixed(precision: 0))s, media=\(inputs.mediaInUse), away=\(inputs.userAway), sinceLastRecycle=\(sinceRecycle, format: .fixed(precision: 0))s)")
             }
         case .recycle:
             // The pid was sampled a moment ago and is about to receive SIGKILL:
@@ -194,10 +208,29 @@ final class GPUProcessRecycler {
             // match another app's WebKit GPU process on a reused pid).
             guard Self.gpuProcessIdentifier() == pid,
                   GPUProcessTable.name(of: pid) == GPUProcessTable.processName else { return }
-            log.notice("Recycling GPU process \(pid) at \(surfaceCount) IOSurfaces")
+            log.notice("Recycling GPU process \(pid) at \(surfaceCount) IOSurfaces (away=\(inputs.userAway))")
             lastRecycleAt = inputs.now
             kill(pid, SIGKILL)
         }
+    }
+
+    /// Whether nobody can be looking at the screen: the session's screen is
+    /// locked, the session is not on the console (fast user switching moved
+    /// another user in front), or every online display is asleep (TASK-406). Read at each
+    /// check rather than tracked through notifications, so a missed
+    /// lock/unlock or display-sleep notification cannot leave it stale. Both
+    /// calls ask the window server and need no privileges. No online display
+    /// at all reads as "not away": that is not a state this can judge.
+    static func userIsAway() -> Bool {
+        if let session = CGSessionCopyCurrentDictionary() as? [String: Any] {
+            if (session["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue == true { return true }
+            if (session[kCGSessionOnConsoleKey] as? NSNumber)?.boolValue == false { return true }
+        }
+        var count: UInt32 = 0
+        guard CGGetOnlineDisplayList(0, nil, &count) == .success, count > 0 else { return false }
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetOnlineDisplayList(count, &displays, &count) == .success, count > 0 else { return false }
+        return displays.prefix(Int(count)).allSatisfy { CGDisplayIsAsleep($0) != 0 }
     }
 
     /// Every tab that may own a web view: space tabs, pinned entries' and

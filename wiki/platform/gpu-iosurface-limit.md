@@ -49,6 +49,9 @@ sources:
   - id: task-175
     resource: backlog:TASK-175
     title: A GPU process WebKit failed to kill stays alive and freezes every tab connected to it
+  - id: task-406
+    resource: backlog:TASK-406
+    title: "GPU recycler: recycle at a lower threshold while the screen is locked or the display is asleep"
 ---
 
 The kernel caps a process at 16,384 IOSurfaces. WebKit's GPU process, which
@@ -239,14 +242,32 @@ Every 120 s (`DETOUR_GPU_RECYCLE_CHECK_SECONDS`) it:
 
 | Surfaces | Decision |
 |---|---|
-| < 12,000 (`softLimit`) | keep |
+| ≥ 6,000 (`awayLimit`) while the user is away | recycle on the next check, whatever the app's activity or the last input[^task-406] |
+| < 12,000 (`softLimit`) otherwise | keep |
 | ≥ 12,000 | recycle once the app has been inactive ≥ 5 min (`inactiveGrace`) |
 | ≥ 14,000 (`hardLimit`) | also recycle as soon as the app is inactive, or while it is active once there has been no keyboard or pointer input for 60 s (`userIdleGrace`) |
 | ≥ 16,384 (`exhaustedLimit`) | recycle on the next check even while the user is busy: allocations are already failing, so WebGL is already dead[^task-403] |
 | any | never while a tab plays audible audio (`BrowserTab.isAudible`: muted playback does not count, TASK-192) or captures camera or microphone; never within 1 h of the last recycle (`minimumInterval`) |
 
+"Away" (`GPUProcessRecycler.userIsAway()`) means the screen is locked
+(`CGSessionCopyCurrentDictionary()` carries `CGSSessionScreenIsLocked`) or
+every online display is asleep (`CGDisplayIsAsleep` over
+`CGGetOnlineDisplayList`). It is read at each check, not tracked through
+lock or display-sleep notifications, so a missed notification cannot leave it
+stale. Both calls ask the window server and need no privileges; from a
+sandboxed shell they return an empty session dictionary and no displays,
+which reads as "not away". No online display at all also reads as "not
+away". Checked on 2026-11-17 only in the unlocked, display-awake state (key
+absent, display awake); the locked and asleep answers were not observed.[^task-406]
+
 Why each gate exists:
 
+- The away tier is the user's 2026-11-17 decision. Nobody sees a recycle
+  while the screen is locked or dark, and on that day the display was off
+  03:05–08:01 while the count climbed; the recycle came only at 16,697
+  during active use at 11:10. Recycling overnight at 6,000 makes the
+  busy-user tiers a rare fallback. The media and one-hour guards still
+  apply: a locked Mac playing music is not interrupted.[^task-406]
 - A recycle interrupts playing media and loses WebGL contexts, so it waits
   until nobody is watching.
 - Camera and microphone capture run in the GPU process.
@@ -262,7 +283,7 @@ Why each gate exists:
 - A direct count replaced the planned WebGL canary: a canary only fires after
   pages have already broken.[^task-105]
 
-Overrides for harness runs: `DETOUR_GPU_RECYCLE_SOFT_LIMIT`,
+Overrides for harness runs: `DETOUR_GPU_RECYCLE_AWAY_LIMIT`, `_SOFT_LIMIT`,
 `_HARD_LIMIT`, `_EXHAUSTED_LIMIT`, `_INACTIVE_GRACE_SECONDS`, `_USER_IDLE_SECONDS`,
 `_MIN_INTERVAL_SECONDS`. A non-positive or unparseable value is ignored
 rather than disabling a guard.
@@ -283,8 +304,8 @@ vmmap <gpu pid> | grep '^IOSurface' | grep -c PURGE=E
 - `vmmap` on a WebContent process prints nothing useful for this.[^notes-gpu]
 - The recycler logs under subsystem `com.detourbrowser.mac`, category
   `gpu-recycle`. The recycle and a closed gate are logged at notice level:
-  the gate line carries the count, `inactiveFor`, `userIdle`, `media` and
-  `sinceLastRecycle`, at most once every 10 minutes while the gate stays
+  the gate line carries the count, `inactiveFor`, `userIdle`, `media`, `away` and
+  `sinceLastRecycle`, and the recycle line says whether the user was away, at most once every 10 minutes while the gate stays
   closed, with info lines in between. Before TASK-403 the gate line was info
   only, and info and debug lines are not persisted for `log show`, so a late
   recycle could not be explained afterwards.[^task-403]
@@ -349,8 +370,8 @@ points at the site that grows the pool.
   when a periodic sample is logged, the line formats, event folding, region
   counts on the test process.
 - [GPUProcessRecyclePolicyTests](../../DetourTests/GPUProcessRecyclePolicyTests.swift):
-  the gate, the rate limit, environment parsing, region counting on the test
-  process itself.
+  the gate, the away tier with its media and rate-limit guards, the rate
+  limit, environment parsing, region counting on the test process itself.
 - [SleepShowBudgetTests](../../DetourTests/SleepShowBudgetTests.swift): the
   budget rule for normal, pinned and favourite tabs, the grace, audio and
   split partners, reset on wake.
@@ -423,3 +444,4 @@ YouTube, GitHub, two apple.com, developer.apple.com). Raw samples are in
 [^telemetry]: GPUSurfaceTelemetry.swift
 [^task-403]: GPU recycler: waits past the IOSurface cap while the user is active
 [^task-175]: A GPU process WebKit failed to kill stays alive and freezes every tab connected to it
+[^task-406]: GPU recycler: recycle at a lower threshold while the screen is locked or the display is asleep
