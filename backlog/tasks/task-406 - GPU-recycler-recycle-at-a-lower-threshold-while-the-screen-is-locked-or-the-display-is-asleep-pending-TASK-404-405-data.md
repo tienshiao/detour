@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-11-17T19:47:00Z'
-updated_date: '2026-11-17T21:24:00Z'
+updated_date: '2026-11-17T21:43:00Z'
 labels:
   - gpu
   - webkit
@@ -49,6 +49,8 @@ Probe (standalone swiftc binary, unprivileged, sandbox off): the session diction
 Claude's choices: no grace once away (a recycle can fire on the first 2-minute check after the lock); no online display at all = not away.
 Tests: GPUProcessRecyclePolicyTests 23/0 (6 new: default, away recycles even active+busy, away below limit keeps, away + media waits, away + rate limit waits/reopens, not away 6k..12k keeps; env parsing extended), GPUSurfaceTelemetryTests 18/0.
 /code-review not run by the implementing agent (left to the lead).
+
+The user confirmed Claude's choices on 2026-11-17.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

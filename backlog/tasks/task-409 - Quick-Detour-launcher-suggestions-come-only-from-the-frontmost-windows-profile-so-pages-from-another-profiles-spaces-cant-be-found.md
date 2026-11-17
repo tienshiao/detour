@@ -3,9 +3,11 @@ id: TASK-409
 title: >-
   Quick Detour launcher: suggestions come only from the frontmost window's
   profile, so pages from another profile's spaces can't be found
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-17T21:35:00Z'
+updated_date: '2026-11-17T21:42:00Z'
 labels:
   - quick-detour
   - palette
@@ -42,3 +44,9 @@ Open decision for the user: whether the launcher should search other profiles (l
 - [ ] #2 Whatever is decided, the Private profile's history never appears outside a Private context, and in-window palettes (Cmd+T, Cmd+L) keep TASK-209's profile scoping unless the user decides otherwise
 - [ ] #3 Suggestion pipeline tests cover the decided scope for the launcher
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+User decision 2026-11-17: the user checked Arc. Arc behaves like Detour today: the palette is scoped to the frontmost window's profile, and switching windows switches the scope. For Detour's Quick Detour launcher, the user chose the recommendation: suggestions from every normal profile's history, each row labelled with its profile. All rows are labelled, the frontmost profile's included, because someone who switches profiles often may not remember which one they last used. Picking a row opens the Quick Detour in that row's profile. In-window palettes (Cmd+T, Cmd+L) keep TASK-209's profile scoping.
+<!-- SECTION:NOTES:END -->

@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-17T20:36:00Z'
-updated_date: '2026-11-17T21:38:00Z'
+updated_date: '2026-11-17T21:43:00Z'
 labels:
   - sleeping
   - memory
@@ -64,6 +64,8 @@ Runtime check 2026-11-17 13:32-13:39, isolated Debug build of branch task-408, D
 - The tab's pool went from 3 web processes to 1, and the GPU total from 233 to 176.
 - Selected again: Cmd+[ landed on iana.org and the page rendered in full (screenshot); Cmd+] returned to apple.com; Cmd+[ twice reached example.com.
 - Not driven: WebKit's own two-finger back swipe on such a tab (synthetic events cannot drive it). Its pictures come from WebKit's own snapshot store, kept per back/forward item, not from the page cache. Detour's forward picture applies only to opener tabs on their first page (TASK-355), so it was rightly absent here.
+
+The user confirmed Claude's choices on 2026-11-17.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

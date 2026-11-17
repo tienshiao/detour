@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-11-17T20:35:00Z'
-updated_date: '2026-11-17T21:24:00Z'
+updated_date: '2026-11-17T21:43:00Z'
 labels:
   - sleeping
   - memory
@@ -66,6 +66,8 @@ Not verified: a real memory-pressure event in the running app (no runtime check;
 
 Follow-up in the same commit: scheduled checks now run as of the time they were armed for (receive reads the clock once). Late timers had pushed the +120 s rescan just past the window, so it was never armed; testTheLastRescanRunsWhenTimersFireLate (checks 50 ms late) covers it. MemoryPressureSleepTests 22 (21 pass + 1 skipped leg), SleepShowBudgetTests 16: 0 failures.
 Claude's choice (5): a critical event within 30 s of a warning sweep waits for the 30 s mark (up to 30 s), because the 30 s rate limit and 'critical sleeps now' collide there; the rate limit won.
+
+The user confirmed Claude's choices on 2026-11-17.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
