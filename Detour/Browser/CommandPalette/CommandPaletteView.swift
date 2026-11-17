@@ -50,13 +50,15 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     var historySpaceIDs: [String] = []
     /// Set by a palette that suggests across profiles (the Quick Detour
     /// launcher, TASK-409): `historySpaceIDs` is then their union, every
-    /// history row is labelled with the profile it belongs to (the profile of
-    /// its newest visit) while there is more than one, and the owner asks
-    /// `historyProfileID(forSubmittedInput:)` which profile to open a row in.
+    /// history row shows a chip naming the space it was last visited in (its
+    /// profile, for a Quick Detour visit) while there is more than one
+    /// profile, and the owner asks `historyProfileID(forSubmittedInput:)`
+    /// which profile to open a row in.
     var historyProfiles: PaletteHistoryProfiles?
-    /// The profile of each history URL the palette has shown, from
-    /// `historyProfiles`. Only grows while the palette is up.
-    private(set) var historyRowProfileIDs: [String: UUID] = [:]
+    /// Where each history URL the palette has shown was last visited (a
+    /// `historyVisit.spaceID` of `historyProfiles`). Only grows while the
+    /// palette is up.
+    private(set) var historyRowSpaceIDs: [String: String] = [:]
     /// A tint for the palette's glass, for a palette with no window content
     /// behind it (the Quick Detour launcher panel, TASK-193.1).
     var glassTint: NSColor? {
@@ -435,7 +437,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         // overwrite the default list when it lands.
         localSuggestionGeneration &+= 1
         let items = suggestionProvider.defaultSuggestions(historySpaceIDs: historySpaceIDs, tabs: gatherTabInfos())
-        noteHistoryProfiles(suggestionProvider.historyProfileIDs(for: items, profiles: historyProfiles))
+        noteHistoryRowSpaces(suggestionProvider.historyRowSpaceIDs(for: items, profiles: historyProfiles))
         suggestionsQuery = nil
         siteSearchOffer = nil
         commandRows = []
@@ -867,7 +869,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             let local = provider.localSuggestions(
                 for: query, historySpaceIDs: historySpaceIDs, tabs: tabs,
                 allowAutocomplete: allowAutocomplete, currentTabID: capturedTabID)
-            let owners = provider.historyProfileIDs(for: local.items, profiles: historyProfiles)
+            let owners = provider.historyRowSpaceIDs(for: local.items, profiles: historyProfiles)
             DispatchQueue.main.async {
                 guard let self else { return }
                 // Drop stale results: a newer rebuild started, or the field text
@@ -883,7 +885,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
                 if !completedFromTab, self.inlineCompletionSuffix == nil, !self.selectionMovedByUser {
                     self.applyInlineCompletion(local.inlineCompletion, for: query)
                 }
-                self.noteHistoryProfiles(owners)
+                self.noteHistoryRowSpaces(owners)
                 self.matchRows = local.items
                 self.showQueryRows(isLatePass: true)
             }
@@ -1225,30 +1227,35 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         historyQueryQueue.async { [weak self] in
             let history = provider.siteSearchHistory(for: query, host: host, historySpaceIDs: historySpaceIDs,
                                                      excludingURL: url.absoluteString)
-            let owners = provider.historyProfileIDs(for: history, profiles: historyProfiles)
+            let owners = provider.historyRowSpaceIDs(for: history, profiles: historyProfiles)
             DispatchQueue.main.async {
                 guard let self, generation == self.localSuggestionGeneration,
                       self.activeSiteSearch?.id == entry.id,
                       self.userTypedText.trimmingCharacters(in: .whitespaces) == query else { return }
-                self.noteHistoryProfiles(owners)
+                self.noteHistoryRowSpaces(owners)
                 self.matchRows = [siteRow] + history
                 self.showQueryRows(isLatePass: true)
             }
         }
     }
 
-    /// Internal for tests, which seed the rows' profiles directly.
-    func noteHistoryProfiles(_ owners: [String: UUID]) {
-        guard !owners.isEmpty else { return }
-        historyRowProfileIDs.merge(owners) { _, new in new }
+    /// Internal for tests, which seed where rows were visited directly.
+    func noteHistoryRowSpaces(_ spaces: [String: String]) {
+        guard !spaces.isEmpty else { return }
+        historyRowSpaceIDs.merge(spaces) { _, new in new }
     }
 
-    /// The profile label a history row shows: only while the palette suggests
-    /// across more than one profile (TASK-409).
-    func historyRowProfileName(for url: String) -> String? {
+    /// The chip a history row shows: only while the palette suggests across
+    /// more than one profile (TASK-409).
+    func historyRowLabel(for url: String) -> PaletteHistoryProfiles.RowLabel? {
         guard let historyProfiles, historyProfiles.labelsRows,
-              let id = historyRowProfileIDs[url] else { return nil }
-        return historyProfiles.name(of: id)
+              let spaceID = historyRowSpaceIDs[url] else { return nil }
+        return historyProfiles.label(forSpaceID: spaceID)
+    }
+
+    /// The profile a history row opens in: its newest visit's.
+    func historyRowProfileID(for url: String) -> UUID? {
+        historyRowSpaceIDs[url].flatMap { historyProfiles?.profileID(forSpaceID: $0) }
     }
 
     /// The profile a submitted history row, or a field the top hit completed
@@ -1261,16 +1268,16 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     /// in a fixed order. Paths compare exactly; only the host ignores case.
     func historyProfileID(forSubmittedInput input: String) -> UUID? {
         guard historyProfiles != nil else { return nil }
-        if let id = historyRowProfileIDs[input] { return id }
+        if let id = historyRowProfileID(for: input) { return id }
         let typed = Self.addressKey(input)
         let shown = suggestions.compactMap { item -> String? in
             if case .historyResult(let url, _, _) = item { return url }
             return nil
         }
-        let candidates = shown + historyRowProfileIDs.keys.sorted()
+        let candidates = shown + historyRowSpaceIDs.keys.sorted()
         return candidates.lazy.compactMap { url -> UUID? in
             guard Self.addressKey(SuggestionProvider.displayURL(url)) == typed else { return nil }
-            return self.historyRowProfileIDs[url]
+            return self.historyRowProfileID(for: url)
         }.first
     }
 
@@ -1408,7 +1415,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             cell.configure(title: text, url: nil, icon: nil, isSearch: !looksLikeURL, isGoTo: looksLikeURL)
         case .historyResult(let url, let title, let faviconURL):
             cell.configure(title: title, url: url, icon: nil, isSearch: false,
-                           profileName: historyRowProfileName(for: url))
+                           chip: historyRowLabel(for: url))
             if let faviconURL {
                 cell.expectedFaviconURL = faviconURL
                 suggestionProvider.loadFavicon(for: faviconURL) { [weak cell] image in
@@ -1522,6 +1529,10 @@ private class SuggestionCellView: NSTableCellView {
     private let urlLabel = NSTextField(labelWithString: "")
     private let badgeIcon = NSImageView()
     private let badgeLabel = NSTextField(labelWithString: "")
+    /// The space (or profile) chip of a launcher row across profiles
+    /// (TASK-409), before its address; detached while hidden.
+    let chip = PaletteRowChipView()
+    private let trailing = NSStackView()
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
@@ -1543,7 +1554,20 @@ private class SuggestionCellView: NSTableCellView {
         urlLabel.alignment = .right
         urlLabel.translatesAutoresizingMaskIntoConstraints = false
         urlLabel.setContentCompressionResistancePriority(.defaultLow - 1, for: .horizontal)
-        addSubview(urlLabel)
+
+        // The chip and the address, right-aligned together: the address
+        // truncates first, the chip never.
+        chip.isHidden = true
+        trailing.orientation = .horizontal
+        trailing.spacing = 6
+        trailing.alignment = .centerY
+        trailing.detachesHiddenViews = true
+        trailing.translatesAutoresizingMaskIntoConstraints = false
+        // The address, then the chip at the row's end, so the chips line up
+        // against the right edge (the user's choice of layouts, 2026-11-17).
+        trailing.addArrangedSubview(urlLabel)
+        trailing.addArrangedSubview(chip)
+        addSubview(trailing)
 
         badgeIcon.image = NSImage(systemSymbolName: "arrow.right.arrow.left", accessibilityDescription: nil)
         badgeIcon.contentTintColor = .secondaryLabelColor
@@ -1566,9 +1590,9 @@ private class SuggestionCellView: NSTableCellView {
             titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 8),
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            urlLabel.leadingAnchor.constraint(greaterThanOrEqualTo: titleLabel.trailingAnchor, constant: 8),
-            urlLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            urlLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            trailing.leadingAnchor.constraint(greaterThanOrEqualTo: titleLabel.trailingAnchor, constant: 8),
+            trailing.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            trailing.centerYAnchor.constraint(equalTo: centerYAnchor),
             urlLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 200),
 
             badgeIcon.widthAnchor.constraint(equalToConstant: 12),
@@ -1588,41 +1612,24 @@ private class SuggestionCellView: NSTableCellView {
     /// `badge` (text, SF Symbol name) is the trailing hint: "Switch to Tab"
     /// for an open tab, "Tab" for a site search's keyword row (TASK-287).
     /// `symbol` (an SF Symbol name) is a command row's icon (TASK-320).
-    /// `profileName` leads the address of a row that names its profile (the
-    /// Quick Detour launcher across profiles, TASK-409); the address truncates
-    /// first, so the name stays readable.
+    /// `chip` is the space (or profile) a launcher row across profiles names
+    /// (TASK-409), shown before its address.
     func configure(title: String, url: String?, icon: NSImage?, isSearch: Bool, switchToTab: Bool = false,
                    isGoTo: Bool = false, badge: (text: String, symbol: String)? = nil, symbol: String? = nil,
-                   profileName: String? = nil) {
+                   chip chipLabel: PaletteHistoryProfiles.RowLabel? = nil) {
         expectedFaviconURL = nil
         titleLabel.stringValue = title.isEmpty ? (url ?? "") : title
 
         let badge = badge ?? (switchToTab ? ("Switch to Tab", "arrow.right.arrow.left") : nil)
-        let showURL = badge == nil && (url != nil || profileName != nil)
-        if let profileName {
-            let text = NSMutableAttributedString(string: profileName, attributes: [
-                .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
-                .foregroundColor: NSColor.secondaryLabelColor,
-            ])
-            if let url, !url.isEmpty {
-                text.append(NSAttributedString(string: " · " + url, attributes: [
-                    .font: NSFont.systemFont(ofSize: 11),
-                    .foregroundColor: NSColor.secondaryLabelColor,
-                ]))
-            }
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.alignment = .right
-            paragraph.lineBreakMode = .byTruncatingTail
-            text.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: text.length))
-            urlLabel.attributedStringValue = text
-        } else {
-            // A reused cell may have shown a labelled row: plain text again,
-            // in the label's own font, not the attributed run's.
-            urlLabel.font = .systemFont(ofSize: 11)
-            urlLabel.textColor = .secondaryLabelColor
-            urlLabel.stringValue = url ?? ""
-        }
+        let showURL = badge == nil && url != nil
+        urlLabel.stringValue = url ?? ""
         urlLabel.isHidden = !showURL
+        if let chipLabel, badge == nil {
+            chip.configure(chipLabel)
+            chip.isHidden = false
+        } else {
+            chip.isHidden = true
+        }
         badgeIcon.isHidden = badge == nil
         badgeLabel.isHidden = badge == nil
         if let badge {
@@ -1647,6 +1654,119 @@ private class SuggestionCellView: NSTableCellView {
             iconView.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
             iconView.contentTintColor = .secondaryLabelColor
         }
+    }
+}
+
+// MARK: - PaletteRowChipView
+
+/// A small rounded chip naming a launcher row's space, filled with the
+/// space's colour, its text light or dark by contrast as `PaletteChipView`'s;
+/// a profile's (no colour) is a neutral grey (TASK-409).
+final class PaletteRowChipView: NSView {
+    private let label = NSTextField(labelWithString: "")
+    private(set) var colorHex: String?
+
+    var text: String { label.stringValue }
+    /// The text colour the last fill chose; readable for tests.
+    var textColor: NSColor? { label.textColor }
+    /// The wash behind the text the last fill chose; readable for tests.
+    private(set) var fillColor: NSColor?
+
+    /// How strong the space colour's wash is, after the sidebar's own (0.1
+    /// behind the window, 0.15 on the selected space): a little stronger, so a
+    /// chip this small still reads as its colour.
+    static let washAlpha: (light: CGFloat, dark: CGFloat) = (0.2, 0.28)
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 4
+        label.font = .systemFont(ofSize: 10, weight: .semibold)
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        setContentCompressionResistancePriority(.required, for: .horizontal)
+        setContentHuggingPriority(.required, for: .horizontal)
+        // Just under required: the 110 pt cap below is required, and a long
+        // space name would otherwise make the two unsatisfiable together.
+        label.setContentCompressionResistancePriority(.required - 1, for: .horizontal)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 5),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -5),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 1),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1),
+            label.widthAnchor.constraint(lessThanOrEqualToConstant: 110),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func configure(_ chipLabel: PaletteHistoryProfiles.RowLabel) {
+        label.stringValue = chipLabel.text
+        colorHex = chipLabel.colorHex
+        setAccessibilityLabel(chipLabel.text)
+        updateFill()
+    }
+
+    // An appearance change marks the view for display, so this re-resolves
+    // the fill and text for it.
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        updateFill()
+    }
+
+    /// The chip's text: its space colour, pushed toward black (light mode) or
+    /// white (dark mode) at least 0.3 and further, in steps, until it reaches
+    /// 4.5:1 against the plain background, so a light hue (yellow, mint) is as
+    /// readable as blue. The wash is light enough not to change the answer.
+    static func readableText(on base: NSColor, dark: Bool) -> NSColor {
+        let toward: NSColor = dark ? .white : .black
+        var fraction: CGFloat = 0.3
+        var text = base.blended(withFraction: fraction, of: toward) ?? base
+        while fraction < 0.8, let rgb = text.usingColorSpace(.sRGB).flatMap(SiteColor.RGB.init),
+              contrast(rgb, dark: dark) < 4.5 {
+            fraction += 0.1
+            text = base.blended(withFraction: fraction, of: toward) ?? text
+        }
+        return text
+    }
+
+    /// Contrast of `rgb` against white (light mode) or black (dark mode).
+    static func contrast(_ rgb: SiteColor.RGB, dark: Bool) -> Double {
+        let luminance = SiteColor.relativeLuminance(rgb)
+        return dark ? (luminance + 0.05) / 0.05 : 1.05 / (luminance + 0.05)
+    }
+
+    private func updateFill() {
+        let dark = effectiveAppearance.isDark
+        if let colorHex {
+            // The space's colour as the sidebar shows it (`Space.color`'s
+            // accent fallback, lifted off a dark background or toned down on a
+            // light one), resolved for this appearance (the accent is
+            // dynamic), as a soft wash with the text in the colour itself —
+            // the sidebar's style, not a saturated fill (the user,
+            // 2026-11-17). The text is pushed a step toward the label colour
+            // so a light hue (yellow, mint) stays readable.
+            var tint: NSColor?
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                tint = (NSColor(hex: colorHex) ?? .controlAccentColor).usingColorSpace(.sRGB)?
+                    .sidebarSafe(darkBackground: dark)
+            }
+            let base = tint ?? .controlAccentColor
+            fillColor = base.withAlphaComponent(dark ? Self.washAlpha.dark : Self.washAlpha.light)
+            label.textColor = Self.readableText(on: base, dark: dark)
+        } else {
+            var neutral: NSColor = .quaternaryLabelColor
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                // Resolved for the current appearance: a dynamic colour's
+                // cgColor is not, on a layer.
+                neutral = NSColor(cgColor: NSColor.quaternaryLabelColor.cgColor) ?? .quaternaryLabelColor
+            }
+            fillColor = neutral
+            label.textColor = .secondaryLabelColor
+        }
+        layer?.backgroundColor = fillColor?.cgColor
     }
 }
 

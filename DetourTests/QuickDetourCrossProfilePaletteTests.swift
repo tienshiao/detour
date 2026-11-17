@@ -106,9 +106,9 @@ nonisolated final class QuickDetourCrossProfilePaletteTests: XCTestCase {
         XCTAssertEqual(Set(historyURLs(palette.suggestions)),
                        ["https://jira.example.com/browse/DET-1", "https://news.example.org/",
                         "https://shared.example.net/"], "both profiles' history, a Quick Detour's visits included")
-        XCTAssertEqual(palette.historyRowProfileName(for: "https://jira.example.com/browse/DET-1"), "Work")
-        XCTAssertEqual(palette.historyRowProfileName(for: "https://news.example.org/"), "Home")
-        XCTAssertEqual(palette.historyRowProfileName(for: "https://shared.example.net/"), "Work",
+        XCTAssertEqual(palette.historyRowLabel(for: "https://jira.example.com/browse/DET-1")?.text, "Work")
+        XCTAssertEqual(palette.historyRowLabel(for: "https://news.example.org/")?.text, "Home")
+        XCTAssertEqual(palette.historyRowLabel(for: "https://shared.example.net/")?.text, "Work",
                        "visited by both: the profile that visited it last")
     }
 
@@ -118,7 +118,7 @@ nonisolated final class QuickDetourCrossProfilePaletteTests: XCTestCase {
         for character in "news" { editor.insertText(String(character), replacementRange: editor.selectedRange()) }
         wait(until: { self.historyURLs(palette.suggestions).contains("https://news.example.org/") },
              "the background pass lists the Home page")
-        XCTAssertEqual(palette.historyRowProfileName(for: "https://news.example.org/"), "Home")
+        XCTAssertEqual(palette.historyRowLabel(for: "https://news.example.org/")?.text, "Home")
 
         XCTAssertEqual(palette.historyProfileID(forSubmittedInput: "https://news.example.org/"), homeID,
                        "a row submits its own address")
@@ -141,7 +141,7 @@ nonisolated final class QuickDetourCrossProfilePaletteTests: XCTestCase {
     @MainActor func testAFieldMatchingTwoRowsTakesTheRowOnScreenFirst() throws {
         let palette = try showPalette(profiles: bothProfiles, db: try makeHistory())
         // An http twin of the shared page, seen earlier and owned by Home.
-        palette.noteHistoryProfiles(["http://shared.example.net/": homeID])
+        palette.noteHistoryRowSpaces(["http://shared.example.net/": homeSpace])
         XCTAssertEqual(palette.historyProfileID(forSubmittedInput: "shared.example.net"), workID,
                        "the listed https row (Work), whatever order the dictionary keeps")
         XCTAssertNil(palette.historyProfileID(forSubmittedInput: "news.example.org/X"),
@@ -155,7 +155,7 @@ nonisolated final class QuickDetourCrossProfilePaletteTests: XCTestCase {
         XCTAssertTrue(historyURLs(palette.suggestions).contains("https://jira.example.com/browse/DET-1"))
         XCTAssertFalse(historyURLs(palette.suggestions).contains("https://news.example.org/"),
                        "Home is not among the profiles")
-        XCTAssertNil(palette.historyRowProfileName(for: "https://jira.example.com/browse/DET-1"),
+        XCTAssertNil(palette.historyRowLabel(for: "https://jira.example.com/browse/DET-1"),
                      "nothing to tell apart")
     }
 
@@ -173,7 +173,61 @@ nonisolated final class QuickDetourCrossProfilePaletteTests: XCTestCase {
                        ["https://news.example.org/", "https://shared.example.net/"],
                        "an in-window palette keeps its profile's history only (TASK-209)")
         XCTAssertNil(palette.historyProfileID(forSubmittedInput: "https://news.example.org/"))
-        XCTAssertNil(palette.historyRowProfileName(for: "https://news.example.org/"))
+        XCTAssertNil(palette.historyRowLabel(for: "https://news.example.org/"))
+    }
+
+    /// The chip names the space the page was last visited in, in its colour;
+    /// a Quick Detour visit names its profile, uncoloured (the user's choice,
+    /// 2026-11-17).
+    @MainActor func testTheChipNamesTheSpaceInItsColourOrTheProfileForAQuickDetour() throws {
+        let profiles = PaletteHistoryProfiles(profiles: [
+            .init(id: homeID, name: "Personal", spaceIDs: [homeSpace],
+                  spaces: [.init(id: homeSpace, name: "Home", colorHex: "34C759")]),
+            .init(id: workID, name: "Work", spaceIDs: [workSpace, workQuickDetour],
+                  spaces: [.init(id: workSpace, name: "Office", colorHex: "007AFF")]),
+        ])
+        let palette = try showPalette(profiles: profiles, db: try makeHistory())
+
+        XCTAssertEqual(palette.historyRowLabel(for: "https://news.example.org/"),
+                       .init(text: "Home", colorHex: "34C759"))
+        XCTAssertEqual(palette.historyRowLabel(for: "https://shared.example.net/"),
+                       .init(text: "Office", colorHex: "007AFF"), "the space of the newest visit")
+        XCTAssertEqual(palette.historyRowLabel(for: "https://jira.example.com/browse/DET-1"),
+                       .init(text: "Work", colorHex: nil), "a Quick Detour visit: its profile, no colour")
+        XCTAssertEqual(palette.historyProfileID(forSubmittedInput: "https://jira.example.com/browse/DET-1"), workID)
+    }
+
+    /// A soft wash of the space's colour, with the text in the colour
+    /// itself, like the sidebar (the user, 2026-11-17); grey for a profile.
+    @MainActor func testTheRowChipIsASoftWashOfTheSpacesColour() throws {
+        let chip = PaletteRowChipView()
+        chip.configure(.init(text: "Home", colorHex: "34C759"))
+        XCTAssertEqual(chip.text, "Home")
+        XCTAssertEqual(chip.colorHex, "34C759")
+        let fill = try XCTUnwrap(chip.fillColor?.usingColorSpace(.sRGB))
+        XCTAssertLessThanOrEqual(fill.alphaComponent, PaletteRowChipView.washAlpha.dark,
+                                 "a wash, not a saturated fill")
+        XCTAssertGreaterThan(fill.greenComponent, fill.redComponent, "the wash is the space's green")
+        let text = try XCTUnwrap(chip.textColor?.usingColorSpace(.sRGB))
+        XCTAssertEqual(text.alphaComponent, 1)
+        XCTAssertGreaterThan(text.greenComponent, text.blueComponent, "the text is green too")
+
+        chip.configure(.init(text: "Work", colorHex: nil))
+        XCTAssertNil(chip.colorHex, "a profile's chip is neutral")
+        XCTAssertEqual(chip.textColor, .secondaryLabelColor)
+    }
+
+    /// Light hues get text dark enough to read: 4.5:1 against the background.
+    @MainActor func testChipTextIsReadableForLightHuesInBothModes() throws {
+        for hex in ["FFCC00", "00C7BE", "34C759", "007AFF", "FF2D55"] {
+            let base = try XCTUnwrap(NSColor(hex: hex))
+            for dark in [false, true] {
+                let text = try XCTUnwrap(PaletteRowChipView.readableText(on: base, dark: dark).usingColorSpace(.sRGB))
+                let rgb = try XCTUnwrap(SiteColor.RGB(text))
+                XCTAssertGreaterThanOrEqual(PaletteRowChipView.contrast(rgb, dark: dark), 4.5,
+                                            "\(hex) in \(dark ? "dark" : "light") mode")
+            }
+        }
     }
 
     // MARK: - The profiles
@@ -196,6 +250,10 @@ nonisolated final class QuickDetourCrossProfilePaletteTests: XCTestCase {
         XCTAssertEqual(profiles.profileID(forSpaceID: QuickDetour.historySpaceIDString(forProfileID: home.id)),
                        home.id, "a profile's Quick Detour visits are its own")
         XCTAssertTrue(profiles.labelsRows)
+        XCTAssertEqual(profiles.label(forSpaceID: space.id.uuidString), .init(text: "S", colorHex: space.colorHex),
+                       "a space's chip: its name and colour")
+        XCTAssertEqual(profiles.label(forSpaceID: QuickDetour.historySpaceIDString(forProfileID: work.id)),
+                       .init(text: "Work", colorHex: nil))
     }
 
     // MARK: - The launcher
@@ -248,7 +306,8 @@ nonisolated final class QuickDetourCrossProfilePaletteTests: XCTestCase {
         let launcher = makeLauncher()
         launcher.show(profile: home, sourceSpace: homeSpace)
         let palette = try XCTUnwrap(launcher.palette)
-        palette.noteHistoryProfiles(["https://jira.example.com/browse/DET-1": work.id])
+        palette.noteHistoryRowSpaces(["https://jira.example.com/browse/DET-1":
+                                           QuickDetour.historySpaceIDString(forProfileID: work.id)])
         launcher.commandPalette(palette, didSubmitInput: "https://jira.example.com/browse/DET-1")
 
         XCTAssertEqual(opened.count, 1)
@@ -276,7 +335,8 @@ nonisolated final class QuickDetourCrossProfilePaletteTests: XCTestCase {
         let launcher = makeLauncher()
         launcher.show(profile: home, sourceSpace: nil)
         let palette = try XCTUnwrap(launcher.palette)
-        palette.noteHistoryProfiles(["https://jira.example.com/": work.id])
+        palette.noteHistoryRowSpaces(["https://jira.example.com/":
+                                           QuickDetour.historySpaceIDString(forProfileID: work.id)])
         work.isDeleted = true
         launcher.commandPalette(palette, didSubmitInput: "https://jira.example.com/")
 

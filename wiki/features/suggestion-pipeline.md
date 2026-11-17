@@ -255,9 +255,17 @@ row belongs to the profile of its newest visit among them
 each pass by `SuggestionProvider.historyProfileIDs`; a host row whose root
 address was never visited takes the newest visit to any page of its host),
 and while there is more
-than one profile **every** row shows its profile's name before its address,
-the frontmost profile's too: someone switching often may not remember which
-one is in front. Picking a row, or submitting the field its top hit completed
+than one profile **every** row shows a chip at its end, after the address
+(so the chips line up against the right edge), the frontmost
+profile's rows too (someone switching often may not remember which one is in
+front): the name of the space the page was last visited in, as a soft wash
+of that space's colour with the text in the colour itself, like the sidebar's
+tint (`PaletteRowChipView`: the sidebar-safe colour at 0.2 alpha, 0.28 in
+dark mode), or, for a page last visited in a Quick Detour, which no
+space owns, the profile's name on a neutral grey. The user chose (2026-11-17)
+the space over the profile, no emoji, the chip at the end over a chip before
+the address or a fixed address column (screenshots compared), and a wash over
+a saturated fill; the row still opens in the space's profile. Picking a row, or submitting the field its top hit completed
 to that row's address, opens the Quick Detour in that row's profile
 (`CommandPaletteView.historyProfileID(forSubmittedInput:)`); typed addresses
 and searches open in the launcher's profile. A Private launcher still reads

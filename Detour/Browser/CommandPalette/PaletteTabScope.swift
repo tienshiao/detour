@@ -64,6 +64,24 @@ nonisolated struct PaletteHistoryProfiles: Equatable, Sendable {
         let name: String
         /// The profile's history scope (`PaletteTabScope.historySpaceIDs`).
         let spaceIDs: [String]
+        /// Its spaces' names and colours, for the chip a row shows; its Quick
+        /// Detour scope is no space and is not here.
+        var spaces: [SpaceLabel] = []
+    }
+
+    struct SpaceLabel: Equatable, Sendable {
+        let id: String
+        let name: String
+        let colorHex: String
+    }
+
+    /// What a row's chip says: the space its page was last visited in, in
+    /// that space's colour (the user's choice, 2026-11-17); a page last
+    /// visited in a Quick Detour, which no space owns, names its profile with
+    /// no colour.
+    struct RowLabel: Equatable, Sendable {
+        let text: String
+        let colorHex: String?
     }
 
     /// In the store's profile order.
@@ -85,11 +103,23 @@ nonisolated struct PaletteHistoryProfiles: Equatable, Sendable {
         profiles.first { $0.id == profileID }?.name
     }
 
+    /// The chip for a row whose newest visit was in `spaceID`.
+    func label(forSpaceID spaceID: String) -> RowLabel? {
+        guard let entry = profiles.first(where: { $0.spaceIDs.contains(spaceID) }) else { return nil }
+        if let space = entry.spaces.first(where: { $0.id == spaceID }) {
+            return RowLabel(text: space.name, colorHex: space.colorHex)
+        }
+        return RowLabel(text: entry.name, colorHex: nil)
+    }
+
     /// Every profile that is neither Private nor deleted.
     @MainActor static func normalProfiles(in store: TabStore) -> PaletteHistoryProfiles {
         PaletteHistoryProfiles(profiles: store.profiles.compactMap { profile in
             guard let spaceIDs = HistoryPageBridge.scope(forProfile: profile, in: store) else { return nil }
-            return Entry(id: profile.id, name: profile.name, spaceIDs: spaceIDs)
+            let spaces = store.spaces.filter { $0.profileID == profile.id }.map {
+                SpaceLabel(id: $0.id.uuidString, name: $0.name, colorHex: $0.colorHex)
+            }
+            return Entry(id: profile.id, name: profile.name, spaceIDs: spaceIDs, spaces: spaces)
         })
     }
 }

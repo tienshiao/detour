@@ -405,7 +405,7 @@ extension AutomationTools {
                 + "settings: the Settings window on pane, with row selected in the pane's list. what "
                 + "quick_detour_launcher: the Quick Detour launcher panel for profile_id (default: the one the "
                 + "menu item would use) with text typed into its field, and its rows in suggestions (each "
-                + "row's kind, title, url and the profile it names, TASK-409). Returns the "
+                + "row's kind, title, url, the chip it shows with its colour, and the profile it opens in, TASK-409). Returns the "
                 + "window_number and frame of the window the UI is in, for set_window_frame and screencapture.",
             inputSchema: MCPSchema.input([
                 ("what", .enumeration(["space_editor", "arc_offer", "arc_import", "settings", "quick_detour_launcher"],
@@ -496,8 +496,14 @@ extension AutomationTools {
             guard let editor = panel.firstResponder as? NSTextView else {
                 throw AutomationToolError(.internalError, "The launcher's field is not being edited")
             }
+            // A pause per key, as a person's typing leaves, so each key's
+            // passes (and inline completion) settle before the next key, which
+            // then replaces a selected completion as a typed key does. Typed in
+            // one go the field came out wrong ("exampleex" for "example",
+            // seen 2026-11-17).
             for character in text {
                 editor.insertText(String(character), replacementRange: editor.selectedRange())
+                try? await Task.sleep(for: .milliseconds(60))
             }
             // The history pass runs off the main thread; let it land.
             try? await Task.sleep(for: .milliseconds(600))
@@ -506,8 +512,11 @@ extension AutomationTools {
         result["suggestions"] = .array(palette.suggestions.map { item in
             switch item {
             case .historyResult(let url, let title, _):
+                let chip = palette.historyRowLabel(for: url)
+                let profile = palette.historyRowProfileID(for: url).flatMap { palette.historyProfiles?.name(of: $0) }
                 return ["kind": "history", "title": .string(title), "url": .string(url),
-                        "profile": .nullable(palette.historyRowProfileName(for: url))]
+                        "chip": .nullable(chip?.text), "chip_color": .nullable(chip?.colorHex),
+                        "profile": .nullable(profile)]
             case .searchInput(let text): return ["kind": "input", "title": .string(text)]
             case .searchSuggestion(let text): return ["kind": "search_suggestion", "title": .string(text)]
             default: return ["kind": "other"]

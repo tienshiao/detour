@@ -65,8 +65,9 @@ File > New Quick Detour Window, or the [global hotkey](./quick-detour-hotkey.md)
 - **Suggestions** come from **every** normal profile's history (TASK-409,
   the user's decision of 2026-11-17): each profile's spaces and its [Quick
   Detour scope](./quick-detour-history.md), whichever window asked. Every row
-  names its profile (the one that visited the address last) while there is
-  more than one, and a row opens the Quick Detour in its own profile; the
+  shows a chip while there is more than one profile: the space it was last
+  visited in, in that space's colour, or its profile in grey for a Quick
+  Detour visit. A row opens the Quick Detour in that visit's profile; the
   source space goes along only into its own profile. Searches, search
   suggestions and typed addresses use the profile the panel opened on (the
   `profileForNewWindow` rule). A Private launcher has no history. Details on

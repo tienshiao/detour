@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-17T21:35:00Z'
-updated_date: '2026-11-17T21:58:00Z'
+updated_date: '2026-11-17T22:31:00Z'
 labels:
   - quick-detour
   - palette
@@ -59,6 +59,14 @@ Open decision for the user: whether the launcher should search other profiles (l
 
 <!-- SECTION:NOTES:BEGIN -->
 User decision 2026-11-17: the user checked Arc. Arc behaves like Detour today: the palette is scoped to the frontmost window's profile, and switching windows switches the scope. For Detour's Quick Detour launcher, the user chose the recommendation: suggestions from every normal profile's history, each row labelled with its profile. All rows are labelled, the frontmost profile's included, because someone who switches profiles often may not remember which one they last used. Picking a row opens the Quick Detour in that row's profile. In-window palettes (Cmd+T, Cmd+L) keep TASK-209's profile scoping.
+
+Follow-up 2026-11-17, at the user's request: the label became a chip. The user chose to show the space the page was last visited in (no emoji), filled with that space's colour. A page last visited in a Quick Detour, which no space owns, shows the profile name on neutral grey. Rows still open in the visit's profile. Rows now remember the visit's space (historyRowSpaceIDs); the profile is derived from it. Screenshots checked in light and dark mode.
+
+Chip, as decided by the user after comparing real screenshots on 2026-11-17:
+- Placement: at the row's end, after the address (layout B), chosen over a chip before the address and over a fixed address column.
+- Colour: a soft wash of the sidebar-safe space colour (0.2 alpha light, 0.28 dark), like the sidebar's tint, rather than a saturated fill. The text is the space colour pushed toward black or white until it reaches 4.5:1.
+- Review: a long space name truncates at 110 pt instead of breaking layout; the double recomputation on appearance change is gone.
+- Tests: 117 passed across the palette, launcher, staging, site-search, provider and scope suites. Light and dark screenshots checked.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
