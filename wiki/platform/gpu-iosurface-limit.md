@@ -31,6 +31,9 @@ sources:
   - id: telemetry
     resource: ../../Detour/Browser/GPUSurfaceTelemetry.swift
     title: GPUSurfaceTelemetry.swift
+  - id: task-405
+    resource: backlog:TASK-405
+    title: gpu_process_stats tool and the closed-tab experiment
   - id: recycler
     resource: ../../Detour/Browser/GPUProcessRecycler.swift
     title: GPUProcessRecycler.swift
@@ -352,14 +355,43 @@ points at the site that grows the pool.
   budget rule for normal, pinned and favourite tabs, the grace, audio and
   split partners, reset on wake.
 
+# What closing tabs and trimming back/forward caches free (TASK-405)
+
+Measured on 2026-11-17 with `docs/harness/task405-gpu-experiment.py` and the
+endpoint's `gpu_process_stats` (isolated Debug build, six real pages: two
+YouTube, GitHub, two apple.com, developer.apple.com). Raw samples are in
+[docs/task-405](../../docs/task-405).[^task-405]
+
+- **Closing frees most, but not all, and the rest accumulates.** One batch of
+  six tabs, shown 2–3 times each and then closed, freed 62–65% of what it added.
+  About 350 regions stayed with no web view left and every web process exited.
+  Four batches in one session left 338, 624, 912 and 1,198 behind, about 290
+  more per batch (roughly 48 per closed tab), mostly non-resident by the end.
+- **WebKit does it, not Detour.** A plain WKWebView program
+  (`docs/task-405/spike-rounds.swift`: fresh configuration per view,
+  removeFromSuperview/addSubview switching, close = remove + release) left 527,
+  675, 810 and 946 behind over four rounds: the same linear growth, about 140
+  per round. This is the reproduction for the WebKit bug (TASK-106).
+- **So sleeping or closing tabs cannot keep the count down for good.** It frees
+  the larger part, but every web process that has ever lived leaves a
+  remainder. Only the GPU process exiting clears it, which makes the recycler
+  (and its away tier) the real control, not the sleep rules.
+- **Back/forward caches hold a large share.** Six tabs, each navigated three
+  more times across sites and then hidden, held 2,367 regions and 14 web
+  processes. Clearing their back/forward caches (`_clearBackForwardCache`)
+  brought that to 1,521 regions and 7 processes within 30 s, freeing 846 (36%).
+  The frozen back pages lived in separate suspended processes, each with its
+  own surfaces. This is what TASK-408's 15-minute trim acts on.
+- **Process pools.** Every tab gets its own `WKProcessPool`, because each
+  configuration is fresh (six tabs: seven pools; the 13 pools that logged
+  `gpuProcessDidExit` on 2026-11-17 were the open tabs). WebKit's web process
+  cache and prewarming are off in all of them. Sharing one pool
+  (`DETOUR_SHARED_PROCESS_POOL=1`, an experiment switch only) changed nothing
+  here: six processes either way, 65% freed, a similar remainder. Search
+  measured a page-load benefit from sharing; that is a separate question.
+
 # Open questions
 
-- Whether closing a tab frees its surfaces at all. On 2026-11-17, closing
-  every YouTube and Jira tab of a burst (all their web processes exited, the
-  GPU process logged `removeGPUConnectionToWebProcess` for each) freed about
-  450 of the burst's ~1,700, and purged regions were later reused. The
-  telemetry above and the TASK-405 experiment are meant to settle
-  it.[^task-404]
 - What exactly holds the bulk of the purged surfaces alive, given that the
   pool flush does not release them.[^task-109]
 - Whether WebKit ever suspends the GPU process on macOS, and why Safari on
@@ -386,6 +418,7 @@ points at the site that grows the pool.
 [^task-105]: GPU-process recycle valve
 [^task-109]: Does the GPU process ever get the memory-pressure pool flush
 [^notes-gpu]: GPU IOSurface limit diagnosis and measurement recipes
+[^task-405]: gpu_process_stats tool and the closed-tab experiment
 [^task-404]: Persist the IOSurface growth curve and per-event deltas
 [^telemetry]: GPUSurfaceTelemetry.swift
 [^task-403]: GPU recycler: waits past the IOSurface cap while the user is active

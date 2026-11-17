@@ -105,6 +105,18 @@ See [capture staging](./automation-endpoint-staging.md).
 | `open_ui` | Debug builds and test runs only. `space_editor` (a draft: name, emoji, color, profile_id; new or `space_id`), `arc_offer` and `arc_import` (from `arc_folder`, a fake Arc folder in the data directory or a temporary folder: never in or under Arc's own, in any case spelling, and with no symbolic or hard links inside, which the reader would follow to Arc's files), `settings` (`pane`, `row`) | Returns the window the UI is in (`window_number`, `frame`, `screen_bounds`). Absent from Release (its tool list was checked on a Release test run). |
 | `navigation_swipe` | Debug builds and test runs only (TASK-325). `state` reports each hosted pane's back-swipe mode, WebKit's gesture flag, rubber-band edges, history and opener; `begin` starts a swipe on a pane (`context`, `direction`, `progress`) with a scripted tracker and holds the veneer; `finish` completes it or springs it back through the trackpad swipe's completion code | Synthetic events cannot drive `NSEvent.trackSwipeEvent`; see [Back swipe to the opener](../tabs/back-swipe-to-opener.md). |
 
+# GPU process tools
+
+Always available while the endpoint is on (TASK-405).
+
+| Tool | What it does | Notes |
+|---|---|---|
+| `gpu_process_stats` | WebKit's GPU process: `gpu_pid`, `total` IOSurface regions and `non_resident` ones (as the recycler counts them); `live_web_views`, `tab_processes`, `tab_process_footprint_mb`; `process_pools`, one per WebKit process pool with its `tab_web_views`, `web_processes` (processes holding a back/forward page included), `cached_processes`, `uses_web_process_cache`, `prewarms_processes_automatically`; `detail: true` adds `tabs` (`tab_id`, `host`, `web_process`, `pool`, `asleep`; Private tabs only with Private access) | Read-only. The region walk runs off the main thread. Pool data comes from WebKit SPI (`_allProcessPoolsForTesting`, `_webProcessCountIgnoringPrewarmedAndCached`, `_processCacheSize`); a missing selector gives null. |
+| `trim_back_forward_cache` | Clears WebKit's back/forward cache of one tab (`context`) or of every live tab no window hosts (Private ones only with Private access), keeping history; returns the `trimmed` tab ids | `BrowserTab.clearBackForwardCache()`, the call TASK-408's timer uses. |
+
+The experiment that uses both is `docs/harness/task405-gpu-experiment.py`;
+its results are on [GPU process IOSurface limit](../platform/gpu-iosurface-limit.md).
+
 # The `context` argument
 
 Tools that act on page content take a `context`: a tab (`tab:<uuid>`, or a
@@ -160,7 +172,7 @@ another space, validation through the window, Pin Tab and Unpin Tab matched
 by the named window's title with neither window key, a slow command, and
 `open_url` never opening a quarantine through a Link Route, with Private
 allowed or not); every suite in [the endpoint's
-tests](./automation-endpoint-tests.md).[^tests]
+tests](./automation-endpoint-tests.md).[^tests] `AutomationGPUToolsTests` covers the two GPU process tools.
 
 # Related
 

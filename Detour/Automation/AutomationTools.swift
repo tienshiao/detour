@@ -180,7 +180,7 @@ final class AutomationTools {
 
     var all: [MCPTool] {
         [listWindows, listSpaces, listTabs, selectTab, openURL, runMenuItem] + inputTools + captureTools + pageTools
-            + extensionTools + compatReportTools + stagingTools + navigationSwipeTools
+            + extensionTools + compatReportTools + stagingTools + navigationSwipeTools + gpuTools
     }
 
     // MARK: Lookup

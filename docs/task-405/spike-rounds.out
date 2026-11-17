@@ -1,0 +1,9 @@
+[screen-lock] acquired by lead-405-spike
+ROUND 1 peak: total=605 nonResident=160 | closed +20s: total=527 nonResident=139
+ROUND 2 peak: total=752 nonResident=303 | closed +20s: total=675 nonResident=283
+ROUND 3 peak: total=891 nonResident=283 | closed +20s: total=810 nonResident=283
+ROUND 4 peak: total=1089 nonResident=670 | closed +20s: total=946 nonResident=700
+DONE left behind: [527, 675, 810, 946]
+[screen-lock] released
+
+[exited with code 0]

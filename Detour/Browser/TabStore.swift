@@ -205,6 +205,11 @@ class Space {
         self.profileID = profileID
     }
 
+    /// One pool for every space configuration, only while the TASK-405
+    /// experiment asks for it (`DETOUR_SHARED_PROCESS_POOL=1`, read at launch).
+    private static let sharedProcessPoolForExperiment: WKProcessPool? =
+        ProcessInfo.processInfo.environment["DETOUR_SHARED_PROCESS_POOL"] == "1" ? WKProcessPool() : nil
+
     /// Returns a fresh WKWebViewConfiguration wired to this space's profile data store.
     /// When per-tab isolation is enabled, each call gets its own non-persistent store.
     func makeWebViewConfiguration() -> WKWebViewConfiguration {
@@ -220,6 +225,10 @@ class Space {
     /// profile (TASK-228.5).
     static func makeWebViewConfiguration(for profile: Profile?, inSpace: Bool = true) -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
+        // TASK-405 experiment switch: a fresh configuration brings a fresh
+        // WKProcessPool, so every tab gets its own pool (measured: 6 tabs, 7
+        // pools). DETOUR_SHARED_PROCESS_POOL=1 shares one, to compare.
+        if let shared = sharedProcessPoolForExperiment { config.processPool = shared }
         let profile = profile.flatMap { $0.isDeleted ? nil : $0 }
         if profile?.isPerTabIsolation == true {
             config.websiteDataStore = .nonPersistent()

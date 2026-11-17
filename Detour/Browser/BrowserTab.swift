@@ -1125,6 +1125,20 @@ class BrowserTab: NSObject {
         provisionalURL = nil
     }
 
+    /// Drops the frozen pages WebKit keeps for this tab's back/forward entries
+    /// (the back/forward cache), keeping the entries themselves: Back and
+    /// Forward still work, and a trimmed entry loads again instead of resuming
+    /// frozen (TASK-408). False when there is no web view or WebKit lacks the
+    /// private `_clearBackForwardCache`.
+    @discardableResult
+    func clearBackForwardCache() -> Bool {
+        let selector = NSSelectorFromString("_clearBackForwardCache")
+        guard let webView, webView.responds(to: selector) else { return false }
+        typealias Clear = @convention(c) (AnyObject, Selector) -> Void
+        unsafeBitCast(webView.method(for: selector), to: Clear.self)(webView, selector)
+        return true
+    }
+
     /// A window just hosted this tab's web view — the pane was attached, or an
     /// occluded window carrying it came back on screen (TASK-104). Only
     /// meaningful while `webView != nil`; the count is reset by the next wake.

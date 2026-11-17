@@ -1,0 +1,1080 @@
+[
+ {
+  "gpu_pid": null,
+  "live_web_views": 0,
+  "non_resident": null,
+  "process_pools": [],
+  "tab_processes": 0,
+  "tabs": [],
+  "total": null,
+  "step": "baseline",
+  "at": "12:53:58"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 6,
+  "non_resident": 24,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 2
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   }
+  ],
+  "tab_processes": 6,
+  "tabs": [
+   {
+    "asleep": false,
+    "host": "developer.apple.com",
+    "pool": 6,
+    "tab_id": "40A0EF86-D57B-4CAE-931D-0F3AD7749AD5",
+    "web_process": 98452
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 5,
+    "tab_id": "AAA2B654-28AA-4551-9A9F-4DAFDED69CC4",
+    "web_process": 98259
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 4,
+    "tab_id": "1C829A56-3D00-43BD-BD4A-D4D4559EFA2E",
+    "web_process": 98121
+   },
+   {
+    "asleep": false,
+    "host": "github.com",
+    "pool": 3,
+    "tab_id": "08D595D4-133C-4B59-B1FB-5A1B106AC1E1",
+    "web_process": 97877
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 2,
+    "tab_id": "11691CB3-389C-46E9-83C8-B7D595061BF9",
+    "web_process": 97725
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 1,
+    "tab_id": "13F737FD-7A2B-48DB-8154-773507F1ACE1",
+    "web_process": 97581
+   }
+  ],
+  "total": 771,
+  "step": "r1 opened 6",
+  "at": "12:54:46"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 6,
+  "non_resident": 52,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 2
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   }
+  ],
+  "tab_processes": 6,
+  "tabs": [
+   {
+    "asleep": false,
+    "host": "developer.apple.com",
+    "pool": 6,
+    "tab_id": "40A0EF86-D57B-4CAE-931D-0F3AD7749AD5",
+    "web_process": 98452
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 5,
+    "tab_id": "AAA2B654-28AA-4551-9A9F-4DAFDED69CC4",
+    "web_process": 98259
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 4,
+    "tab_id": "1C829A56-3D00-43BD-BD4A-D4D4559EFA2E",
+    "web_process": 98121
+   },
+   {
+    "asleep": false,
+    "host": "github.com",
+    "pool": 3,
+    "tab_id": "08D595D4-133C-4B59-B1FB-5A1B106AC1E1",
+    "web_process": 97877
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 2,
+    "tab_id": "11691CB3-389C-46E9-83C8-B7D595061BF9",
+    "web_process": 97725
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 1,
+    "tab_id": "13F737FD-7A2B-48DB-8154-773507F1ACE1",
+    "web_process": 97581
+   }
+  ],
+  "total": 849,
+  "step": "r1 after 2 show cycles",
+  "at": "12:55:11"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 0,
+  "non_resident": 52,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   }
+  ],
+  "tab_processes": 0,
+  "tabs": [],
+  "total": 338,
+  "step": "r1 closed, +0s",
+  "at": "12:55:21"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 0,
+  "non_resident": 52,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   }
+  ],
+  "tab_processes": 0,
+  "tabs": [],
+  "total": 338,
+  "step": "r1 closed, +20s",
+  "at": "12:55:41"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 0,
+  "non_resident": 52,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   }
+  ],
+  "tab_processes": 0,
+  "tabs": [],
+  "total": 338,
+  "step": "r1 closed, +40s",
+  "at": "12:56:01"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 6,
+  "non_resident": 237,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   }
+  ],
+  "tab_processes": 6,
+  "tabs": [
+   {
+    "asleep": false,
+    "host": "developer.apple.com",
+    "pool": 6,
+    "tab_id": "4D76B63F-62D7-4199-95D5-AC247ECC04EE",
+    "web_process": 99500
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 5,
+    "tab_id": "1597FA4E-B6A7-4B05-9647-F132A8536F8E",
+    "web_process": 99453
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 4,
+    "tab_id": "2E42551C-DCBD-4336-92B4-4F34F941ABA7",
+    "web_process": 99421
+   },
+   {
+    "asleep": false,
+    "host": "github.com",
+    "pool": 3,
+    "tab_id": "C62797F3-D9CB-47C2-B0D1-7884D08F6F27",
+    "web_process": 99374
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 2,
+    "tab_id": "DE77B7FC-0618-4AC5-B0A4-F6013F512927",
+    "web_process": 99335
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 1,
+    "tab_id": "E75C4832-FFED-48CE-A2B6-A8CF081E441B",
+    "web_process": 99283
+   }
+  ],
+  "total": 1085,
+  "step": "r2 opened 6",
+  "at": "12:56:49"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 6,
+  "non_resident": 324,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   }
+  ],
+  "tab_processes": 6,
+  "tabs": [
+   {
+    "asleep": false,
+    "host": "developer.apple.com",
+    "pool": 6,
+    "tab_id": "4D76B63F-62D7-4199-95D5-AC247ECC04EE",
+    "web_process": 99500
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 5,
+    "tab_id": "1597FA4E-B6A7-4B05-9647-F132A8536F8E",
+    "web_process": 99453
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 4,
+    "tab_id": "2E42551C-DCBD-4336-92B4-4F34F941ABA7",
+    "web_process": 99421
+   },
+   {
+    "asleep": false,
+    "host": "github.com",
+    "pool": 3,
+    "tab_id": "C62797F3-D9CB-47C2-B0D1-7884D08F6F27",
+    "web_process": 99374
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 2,
+    "tab_id": "DE77B7FC-0618-4AC5-B0A4-F6013F512927",
+    "web_process": 99335
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 1,
+    "tab_id": "E75C4832-FFED-48CE-A2B6-A8CF081E441B",
+    "web_process": 99283
+   }
+  ],
+  "total": 1149,
+  "step": "r2 after 2 show cycles",
+  "at": "12:57:14"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 0,
+  "non_resident": 324,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   }
+  ],
+  "tab_processes": 0,
+  "tabs": [],
+  "total": 624,
+  "step": "r2 closed, +0s",
+  "at": "12:57:23"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 0,
+  "non_resident": 359,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   }
+  ],
+  "tab_processes": 0,
+  "tabs": [],
+  "total": 624,
+  "step": "r2 closed, +20s",
+  "at": "12:57:43"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 0,
+  "non_resident": 359,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   }
+  ],
+  "tab_processes": 0,
+  "tabs": [],
+  "total": 624,
+  "step": "r2 closed, +40s",
+  "at": "12:58:10"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 6,
+  "non_resident": 761,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   }
+  ],
+  "tab_processes": 6,
+  "tabs": [
+   {
+    "asleep": false,
+    "host": "developer.apple.com",
+    "pool": 6,
+    "tab_id": "79A58A44-9BE8-4321-BF44-5B545B2282B6",
+    "web_process": 1008
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 5,
+    "tab_id": "AAD1DDEB-79EA-4203-9529-440707075438",
+    "web_process": 659
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 4,
+    "tab_id": "38274DE6-CCA0-4531-BD9D-8E0D17196842",
+    "web_process": 434
+   },
+   {
+    "asleep": false,
+    "host": "github.com",
+    "pool": 3,
+    "tab_id": "0356DBC2-24EA-4AB9-B181-34E43896CDA7",
+    "web_process": 360
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 2,
+    "tab_id": "8D887244-0510-4114-93A5-1ED5A3D2ECF4",
+    "web_process": 324
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 1,
+    "tab_id": "EBD62650-B321-4BBE-B8E6-8827979E38EE",
+    "web_process": 228
+   }
+  ],
+  "total": 1355,
+  "step": "r3 opened 6",
+  "at": "12:59:04"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 6,
+  "non_resident": 920,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   }
+  ],
+  "tab_processes": 6,
+  "tabs": [
+   {
+    "asleep": false,
+    "host": "developer.apple.com",
+    "pool": 6,
+    "tab_id": "79A58A44-9BE8-4321-BF44-5B545B2282B6",
+    "web_process": 1008
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 5,
+    "tab_id": "AAD1DDEB-79EA-4203-9529-440707075438",
+    "web_process": 659
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 4,
+    "tab_id": "38274DE6-CCA0-4531-BD9D-8E0D17196842",
+    "web_process": 434
+   },
+   {
+    "asleep": false,
+    "host": "github.com",
+    "pool": 3,
+    "tab_id": "0356DBC2-24EA-4AB9-B181-34E43896CDA7",
+    "web_process": 360
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 2,
+    "tab_id": "8D887244-0510-4114-93A5-1ED5A3D2ECF4",
+    "web_process": 324
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 1,
+    "tab_id": "EBD62650-B321-4BBE-B8E6-8827979E38EE",
+    "web_process": 228
+   }
+  ],
+  "total": 1428,
+  "step": "r3 after 2 show cycles",
+  "at": "12:59:29"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 0,
+  "non_resident": 664,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   }
+  ],
+  "tab_processes": 0,
+  "tabs": [],
+  "total": 912,
+  "step": "r3 closed, +0s",
+  "at": "12:59:38"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 0,
+  "non_resident": 664,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   }
+  ],
+  "tab_processes": 0,
+  "tabs": [],
+  "total": 912,
+  "step": "r3 closed, +20s",
+  "at": "12:59:58"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 0,
+  "non_resident": 664,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   }
+  ],
+  "tab_processes": 0,
+  "tabs": [],
+  "total": 912,
+  "step": "r3 closed, +40s",
+  "at": "13:00:18"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 6,
+  "non_resident": 1138,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   }
+  ],
+  "tab_processes": 6,
+  "tabs": [
+   {
+    "asleep": false,
+    "host": "developer.apple.com",
+    "pool": 6,
+    "tab_id": "46015F78-1CB8-40B2-A073-D6704E5ED0B1",
+    "web_process": 1910
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 5,
+    "tab_id": "B84F4B36-789B-4581-897D-5E1BFA34B175",
+    "web_process": 1864
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 4,
+    "tab_id": "0F6065D0-D9F2-4007-9E51-9AC38B3CB47C",
+    "web_process": 1791
+   },
+   {
+    "asleep": false,
+    "host": "github.com",
+    "pool": 3,
+    "tab_id": "0A905B4F-A4CE-46FC-84BE-62D482E1FEFC",
+    "web_process": 1698
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 2,
+    "tab_id": "79B385F7-0E41-4CB8-9571-917A5E862EFF",
+    "web_process": 1644
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 1,
+    "tab_id": "38C650BA-B511-4D5A-8409-B742FFDD4C27",
+    "web_process": 1584
+   }
+  ],
+  "total": 1693,
+  "step": "r4 opened 6",
+  "at": "13:01:07"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 6,
+  "non_resident": 1204,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   }
+  ],
+  "tab_processes": 6,
+  "tabs": [
+   {
+    "asleep": false,
+    "host": "developer.apple.com",
+    "pool": 6,
+    "tab_id": "46015F78-1CB8-40B2-A073-D6704E5ED0B1",
+    "web_process": 1910
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 5,
+    "tab_id": "B84F4B36-789B-4581-897D-5E1BFA34B175",
+    "web_process": 1864
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 4,
+    "tab_id": "0F6065D0-D9F2-4007-9E51-9AC38B3CB47C",
+    "web_process": 1791
+   },
+   {
+    "asleep": false,
+    "host": "github.com",
+    "pool": 3,
+    "tab_id": "0A905B4F-A4CE-46FC-84BE-62D482E1FEFC",
+    "web_process": 1698
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 2,
+    "tab_id": "79B385F7-0E41-4CB8-9571-917A5E862EFF",
+    "web_process": 1644
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 1,
+    "tab_id": "38C650BA-B511-4D5A-8409-B742FFDD4C27",
+    "web_process": 1584
+   }
+  ],
+  "total": 1762,
+  "step": "r4 after 2 show cycles",
+  "at": "13:01:31"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 0,
+  "non_resident": 959,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   }
+  ],
+  "tab_processes": 0,
+  "tabs": [],
+  "total": 1198,
+  "step": "r4 closed, +0s",
+  "at": "13:01:41"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 0,
+  "non_resident": 959,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   }
+  ],
+  "tab_processes": 0,
+  "tabs": [],
+  "total": 1198,
+  "step": "r4 closed, +20s",
+  "at": "13:02:01"
+ },
+ {
+  "gpu_pid": 97574,
+  "live_web_views": 0,
+  "non_resident": 959,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   }
+  ],
+  "tab_processes": 0,
+  "tabs": [],
+  "total": 1198,
+  "step": "r4 closed, +40s",
+  "at": "13:02:21"
+ }
+]

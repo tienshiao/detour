@@ -70,7 +70,8 @@ Every claim below is from code reading at each repository's HEAD on
   (prewarming; Nook `suspendsWebProcessesAggressivelyOnMemoryPressure`).
   Feather turns off WebKit's web process cache and prewarming. Detour sets no
   pool. When its GPU process was recycled on 2026-11-17, 13 distinct
-  `WebProcessPool` instances logged `gpuProcessDidExit`. What they are is open
+  `WebProcessPool` instances logged `gpuProcessDidExit`. They turned out to be one pool per open
+  tab; sharing one changed nothing measurable for IOSurfaces or process count
   (TASK-405).[^task-405]
 - **Back/forward cache.** Clearing it (`_clearBackForwardCache`) keeps the
   back/forward list: Back still works, but a trimmed entry loads again instead

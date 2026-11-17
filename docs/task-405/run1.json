@@ -1,0 +1,285 @@
+[
+ {
+  "gpu_pid": null,
+  "live_web_views": 0,
+  "non_resident": null,
+  "process_pools": [],
+  "tab_processes": 0,
+  "tabs": [],
+  "total": null,
+  "step": "baseline",
+  "at": "12:44:26"
+ },
+ {
+  "gpu_pid": 91643,
+  "live_web_views": 6,
+  "non_resident": 642,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 2
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   }
+  ],
+  "tab_processes": 6,
+  "tabs": [
+   {
+    "asleep": false,
+    "host": "developer.apple.com",
+    "pool": 6,
+    "tab_id": "45E154FC-2789-43DE-A35A-E5D33A161EF4",
+    "web_process": 92196
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 5,
+    "tab_id": "B1EEDCBF-BBB1-4B7C-B52C-E22B166E41F8",
+    "web_process": 92149
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 4,
+    "tab_id": "5E0FC320-3146-47F7-A108-C00BC00D13E3",
+    "web_process": 92064
+   },
+   {
+    "asleep": false,
+    "host": "github.com",
+    "pool": 3,
+    "tab_id": "91C0A6CC-534C-4F58-A644-64C8F012A28A",
+    "web_process": 92016
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 2,
+    "tab_id": "28A3F1FC-D570-41F0-8E5D-2B091EC1CC3C",
+    "web_process": 91924
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 1,
+    "tab_id": "B063DDC9-BC9B-4C44-B6B6-608656D0B3BF",
+    "web_process": 91646
+   }
+  ],
+  "total": 923,
+  "step": "opened 6",
+  "at": "12:45:14"
+ },
+ {
+  "gpu_pid": 91643,
+  "live_web_views": 6,
+  "non_resident": 460,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 2
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 1,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   }
+  ],
+  "tab_processes": 6,
+  "tabs": [
+   {
+    "asleep": false,
+    "host": "developer.apple.com",
+    "pool": 6,
+    "tab_id": "45E154FC-2789-43DE-A35A-E5D33A161EF4",
+    "web_process": 92196
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 5,
+    "tab_id": "B1EEDCBF-BBB1-4B7C-B52C-E22B166E41F8",
+    "web_process": 92149
+   },
+   {
+    "asleep": false,
+    "host": "www.apple.com",
+    "pool": 4,
+    "tab_id": "5E0FC320-3146-47F7-A108-C00BC00D13E3",
+    "web_process": 92064
+   },
+   {
+    "asleep": false,
+    "host": "github.com",
+    "pool": 3,
+    "tab_id": "91C0A6CC-534C-4F58-A644-64C8F012A28A",
+    "web_process": 92016
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 2,
+    "tab_id": "28A3F1FC-D570-41F0-8E5D-2B091EC1CC3C",
+    "web_process": 91924
+   },
+   {
+    "asleep": false,
+    "host": "www.youtube.com",
+    "pool": 1,
+    "tab_id": "B063DDC9-BC9B-4C44-B6B6-608656D0B3BF",
+    "web_process": 91646
+   }
+  ],
+  "total": 1028,
+  "step": "after 3 show cycles",
+  "at": "12:45:51"
+ },
+ {
+  "gpu_pid": 91643,
+  "live_web_views": 0,
+  "non_resident": 62,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   },
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 1
+   }
+  ],
+  "tab_processes": 0,
+  "tabs": [],
+  "total": 357,
+  "step": "closed, +0s",
+  "at": "12:46:01"
+ },
+ {
+  "gpu_pid": 91643,
+  "live_web_views": 0,
+  "non_resident": 92,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   }
+  ],
+  "tab_processes": 0,
+  "tabs": [],
+  "total": 357,
+  "step": "closed, +30s",
+  "at": "12:46:31"
+ },
+ {
+  "gpu_pid": 91643,
+  "live_web_views": 0,
+  "non_resident": 113,
+  "process_pools": [
+   {
+    "cached_processes": 0,
+    "prewarms_processes_automatically": false,
+    "tab_web_views": 0,
+    "uses_web_process_cache": false,
+    "web_processes": 0
+   }
+  ],
+  "tab_processes": 0,
+  "tabs": [],
+  "total": 357,
+  "step": "closed, +60s",
+  "at": "12:47:01"
+ }
+]
