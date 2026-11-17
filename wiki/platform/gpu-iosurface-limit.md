@@ -371,6 +371,7 @@ points at the site that grows the pool.
 
 # Related
 
+- [How other WebKit browsers manage tabs](./other-webkit-browsers-tab-lifecycle.md) — none handles this limit; how their sleep, memory-pressure and process-pool choices compare with Detour's.
 - [Abandoned GPU process](./abandoned-gpu-process.md) — the other way the GPU process breaks pages: one WebKit dropped without it exiting.
 - [Sleeping and archiving](../tabs/sleeping-and-archiving.md) — the sleep policy the show budget extends.
 - [BrowserTab](../architecture/browser-tab.md) — `showsSinceWake`, `noteShown`, `wake`.

@@ -3,6 +3,7 @@
 * [Abandoned GPU process](abandoned-gpu-process.md) - A GPU process that WebKit "terminated" while its main thread was blocked stays alive, and every web process still connected to it freezes for good on its next synchronous call to it; how it was diagnosed in a running app and the reaper that kills such processes.
 * [GPU process IOSurface limit](gpu-iosurface-limit.md) - After days of uptime WebKit's GPU process reaches the kernel's 16,384-IOSurface limit, WebGL and canvas die in every page and YouTube stops playing; how it was diagnosed, the show-budget sleep rule and the GPU process recycler that contain it.
 * [Hidden web view load stalls](hidden-webview-load-stalls.md) - Why a tab opened in the background can sit part-loaded until it is shown — WebKit drops a hidden page's web process to background priority about a second after commit — and what Detour does about it.
+* [How other WebKit browsers manage tabs and web views](other-webkit-browsers-tab-lifecycle.md) - A 2026-11-17 survey of six open-source macOS WebKit browsers (Search, Zigzag, Nook, Lilo, Zephium, Ora) — when they create, hide, suspend and discard web views, how they react to memory pressure, how they share process pools — and how Detour compares; none of them handles the GPU process's IOSurface limit. *(draft)*
 
 # Platform quirks
 
