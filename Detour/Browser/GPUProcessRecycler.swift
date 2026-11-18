@@ -38,6 +38,14 @@ private let log = Logger(subsystem: "com.detourbrowser.mac", category: "gpu-recy
 /// others (TASK-406). The busy-user tiers above then become a rare fallback
 /// for long stretches of continuous use. The media and rate-limit guards
 /// still apply.
+///
+/// A page losing a WebGL context, or failing to get one, is the breakage
+/// itself (TASK-410). With the count at `breakageLimit` or more, such a report
+/// recycles at once: inside `minimumInterval`, and while a tab plays audio,
+/// since playback is failing too. Never during a call, and never for reports
+/// that arrive within `postRecycleGrace` of a recycle, which itself makes every
+/// WebGL page lose its context (WebKit gives up on its web processes after
+/// repeated GPU process exits in a short window).
 struct GPUProcessRecyclePolicy: Equatable {
     var awayLimit = 6_000
     var softLimit = 12_000
@@ -50,6 +58,13 @@ struct GPUProcessRecyclePolicy: Equatable {
     var inactiveGrace: TimeInterval = 5 * 60
     var userIdleGrace: TimeInterval = 60
     var minimumInterval: TimeInterval = 60 * 60
+    /// At or above this count, a reported context loss is taken as the cap
+    /// failing allocations. Below it, a report only logs (TASK-410).
+    var breakageLimit = 15_000
+    /// How old a context-loss report may be and still confirm breakage.
+    var contextLossWindow: TimeInterval = 30
+    /// Reports this soon after a recycle are the recycle's own doing.
+    var postRecycleGrace: TimeInterval = 5 * 60
 
     struct Inputs {
         var surfaceCount: Int
@@ -63,6 +78,11 @@ struct GPUProcessRecyclePolicy: Equatable {
         /// The screen is locked or every online display is asleep: nobody is
         /// looking at any page.
         var userAway = false
+        /// A tab captures camera or microphone (a subset of `mediaInUse`):
+        /// even confirmed breakage does not cut a call off (TASK-410).
+        var capturingMedia = false
+        /// When a page last reported a lost WebGL context or a failed one.
+        var lastContextLossAt: Date? = nil
         var lastRecycleAt: Date?
         var now: Date
     }
@@ -75,6 +95,7 @@ struct GPUProcessRecyclePolicy: Equatable {
     }
 
     func decide(_ inputs: Inputs) -> Decision {
+        if confirmsBreakage(inputs) { return .recycle }
         let overAwayLimit = inputs.userAway && inputs.surfaceCount >= awayLimit
         guard overAwayLimit || inputs.surfaceCount >= softLimit else { return .keep }
         guard !inputs.mediaInUse else { return .wait }
@@ -90,6 +111,24 @@ struct GPUProcessRecyclePolicy: Equatable {
         }
         if inputs.surfaceCount >= exhaustedLimit { return .recycle }
         return .wait
+    }
+
+    /// A recent context-loss report with the count near the cap and no call in
+    /// progress: the GPU process is failing allocations now (TASK-410).
+    func confirmsBreakage(_ inputs: Inputs) -> Bool {
+        guard let loss = inputs.lastContextLossAt,
+              inputs.surfaceCount >= breakageLimit,
+              !inputs.capturingMedia else { return false }
+        let age = inputs.now.timeIntervalSince(loss)
+        guard age >= 0, age <= contextLossWindow else { return false }
+        return !isRecyclesOwn(reportAt: loss, lastRecycleAt: inputs.lastRecycleAt)
+    }
+
+    /// A report from before the last recycle, or within `postRecycleGrace`
+    /// after it: the recycle's own doing, never evidence of breakage.
+    func isRecyclesOwn(reportAt report: Date, lastRecycleAt: Date?) -> Bool {
+        guard let lastRecycleAt else { return false }
+        return report.timeIntervalSince(lastRecycleAt) < postRecycleGrace
     }
 
     /// Environment overrides for the runtime harness, read once at launch. A
@@ -112,7 +151,40 @@ struct GPUProcessRecyclePolicy: Equatable {
         if let v = seconds("DETOUR_GPU_RECYCLE_INACTIVE_GRACE_SECONDS") { policy.inactiveGrace = v }
         if let v = seconds("DETOUR_GPU_RECYCLE_USER_IDLE_SECONDS") { policy.userIdleGrace = v }
         if let v = seconds("DETOUR_GPU_RECYCLE_MIN_INTERVAL_SECONDS") { policy.minimumInterval = v }
+        if let v = int("DETOUR_GPU_RECYCLE_BREAKAGE_LIMIT") { policy.breakageLimit = v }
+        if let v = seconds("DETOUR_GPU_RECYCLE_POST_RECYCLE_GRACE_SECONDS") { policy.postRecycleGrace = v }
         return policy
+    }
+}
+
+/// When a context-loss report starts a count of its own (TASK-410): at once,
+/// at most once per `gap`; a report inside the gap schedules one check for
+/// when it ends, and later ones ride on that.
+struct ContextLossCheckThrottle: Equatable {
+    var gap: TimeInterval = 5
+    private(set) var lastCheckAt: Date?
+    private(set) var scheduled = false
+
+    enum Action: Equatable {
+        case checkNow
+        case checkAfter(TimeInterval)
+        /// A check is already scheduled; it will see this report.
+        case none
+    }
+
+    mutating func report(at now: Date) -> Action {
+        guard !scheduled else { return .none }
+        if let last = lastCheckAt, now.timeIntervalSince(last) < gap {
+            scheduled = true
+            return .checkAfter(gap - now.timeIntervalSince(last))
+        }
+        lastCheckAt = now
+        return .checkNow
+    }
+
+    mutating func scheduledCheckFired(at now: Date) {
+        scheduled = false
+        lastCheckAt = now
     }
 }
 
@@ -137,6 +209,14 @@ final class GPUProcessRecycler {
     private var lastWaitLogAt: Date?
     private let waitLogInterval: TimeInterval = 10 * 60
 
+    /// Context-loss reports not yet logged: each is logged once the count it
+    /// prompted is known (TASK-410). Capped; the rest are only counted.
+    private var pendingLosses: [String] = []
+    private var droppedLosses = 0
+    private let pendingLossCap = 20
+    private var lastContextLossAt: Date?
+    private var reportChecks = ContextLossCheckThrottle()
+
     func start() {
         guard timer == nil else { return }
         inactiveSince = NSApp.isActive ? nil : Date()
@@ -155,10 +235,43 @@ final class GPUProcessRecycler {
         self.timer = timer
     }
 
+    /// A page lost a WebGL context or failed to get one
+    /// (`WebGLContextLossBridge`): count now rather than at the next tick.
+    func contextLossReported(_ kind: WebGLContextLossKind, tab: BrowserTab, isMainFrame: Bool) {
+        let now = Date()
+        lastContextLossAt = now
+        if pendingLosses.count < pendingLossCap {
+            pendingLosses.append("\(kind.rawValue) in \(GPUSurfaceTelemetry.loggedHost(of: tab)) (\(isMainFrame ? "main frame" : "subframe"))")
+        } else {
+            droppedLosses += 1
+        }
+        // A recycle makes every WebGL page lose its context, and the policy
+        // refuses those reports anyway: nothing to count.
+        if policy.isRecyclesOwn(reportAt: now, lastRecycleAt: lastRecycleAt) {
+            logPendingLosses { "within \(Int(policy.postRecycleGrace)) s of a recycle; not counted" }
+            return
+        }
+        switch reportChecks.report(at: now) {
+        case .none:
+            return
+        case .checkNow:
+            check()
+        case .checkAfter(let delay):
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(delay))
+                guard let self else { return }
+                self.reportChecks.scheduledCheckFired(at: Date())
+                self.check()
+            }
+        }
+    }
+
     private func check() {
+        // A sample already in flight evaluates with the latest report.
         guard !sampling else { return }
         guard let pid = Self.gpuProcessIdentifier() else {
             log.debug("No GPU process identifier from any live web view")
+            logPendingLosses { "no GPU process" }
             return
         }
         sampling = true
@@ -169,6 +282,7 @@ final class GPUProcessRecycler {
             self.sampling = false
             guard let sample else {
                 log.debug("GPU process \(pid) could not be inspected")
+                self.logPendingLosses { "GPU process \(pid) could not be inspected" }
                 return
             }
             GPUSurfaceTelemetry.shared.recordPeriodic(sample)
@@ -177,16 +291,35 @@ final class GPUProcessRecycler {
     }
 
     private func evaluate(pid: pid_t, surfaceCount: Int) {
+        let tabs = Self.liveTabs()
         let inputs = GPUProcessRecyclePolicy.Inputs(
             surfaceCount: surfaceCount,
             inactiveSince: inactiveSince,
             userIdleSeconds: CGEventSource.secondsSinceLastEventType(
                 .combinedSessionState, eventType: CGEventType(rawValue: ~0)!),
-            mediaInUse: Self.liveTabs().contains(where: Self.isUsingMedia),
+            mediaInUse: tabs.contains(where: Self.isUsingMedia),
             userAway: Self.userIsAway(),
+            capturingMedia: tabs.contains(where: \.isCapturingMedia),
+            lastContextLossAt: lastContextLossAt,
             lastRecycleAt: lastRecycleAt,
             now: Date())
         let decision = policy.decide(inputs)
+        // Confirmed breakage always decides `.recycle`.
+        let breakage = policy.confirmsBreakage(inputs)
+        // The pid was sampled a moment ago and is about to receive SIGKILL:
+        // confirm it is still *our* GPU process (the name alone would also
+        // match another app's WebKit GPU process on a reused pid).
+        let pidStillOurs = decision == .recycle && Self.gpuProcessIdentifier() == pid
+            && GPUProcessTable.name(of: pid) == GPUProcessTable.processName
+        logPendingLosses {
+            let outcome = switch decision {
+            case .keep: "keep"
+            case .wait: "wait"
+            case .recycle where !pidStillOurs: "recycle skipped (GPU process changed)"
+            case .recycle: breakage ? "recycle (breakage confirmed)" : "recycle"
+            }
+            return "GPU process \(pid) holds \(surfaceCount) IOSurfaces; \(outcome)"
+        }
         if decision != .wait { lastWaitLogAt = nil }
         switch decision {
         case .keep:
@@ -203,15 +336,27 @@ final class GPUProcessRecycler {
                 log.notice("GPU process \(pid) holds \(surfaceCount) IOSurfaces; recycle gate closed (inactiveFor=\(inactiveFor, format: .fixed(precision: 0))s, userIdle=\(inputs.userIdleSeconds, format: .fixed(precision: 0))s, media=\(inputs.mediaInUse), away=\(inputs.userAway), sinceLastRecycle=\(sinceRecycle, format: .fixed(precision: 0))s)")
             }
         case .recycle:
-            // The pid was sampled a moment ago and is about to receive SIGKILL:
-            // confirm it is still *our* GPU process (the name alone would also
-            // match another app's WebKit GPU process on a reused pid).
-            guard Self.gpuProcessIdentifier() == pid,
-                  GPUProcessTable.name(of: pid) == GPUProcessTable.processName else { return }
-            log.notice("Recycling GPU process \(pid) at \(surfaceCount) IOSurfaces (away=\(inputs.userAway))")
+            guard pidStillOurs else { return }
+            log.notice("Recycling GPU process \(pid) at \(surfaceCount) IOSurfaces (away=\(inputs.userAway), contextLoss=\(breakage))")
             lastRecycleAt = inputs.now
             kill(pid, SIGKILL)
         }
+    }
+
+    /// One notice per context-loss report since the last check, each with what
+    /// the check found (TASK-410). Hosts are tokens unless the user turned
+    /// on `GPUSurfaceLogPublic` (see `GPUSurfaceTelemetry.loggedHost(of:)`).
+    private func logPendingLosses(_ outcome: () -> String) {
+        guard !pendingLosses.isEmpty || droppedLosses > 0 else { return }
+        let result = outcome()
+        for loss in pendingLosses {
+            log.notice("WebGL context \(loss, privacy: .public): \(result, privacy: .public)")
+        }
+        if droppedLosses > 0 {
+            log.notice("WebGL context: \(self.droppedLosses) more reports not logged: \(result, privacy: .public)")
+        }
+        pendingLosses.removeAll()
+        droppedLosses = 0
     }
 
     /// Whether nobody can be looking at the screen: the session's screen is

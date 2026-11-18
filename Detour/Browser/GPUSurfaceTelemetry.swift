@@ -232,7 +232,7 @@ final class GPUSurfaceTelemetry {
     /// names are being written in the clear.
     private static var announcedPublicHosts = false
 
-    private static func loggedHost(of tab: BrowserTab) -> String {
+    static func loggedHost(of tab: BrowserTab) -> String {
         let inIncognitoSpace = tab.spaceID.flatMap { TabStore.shared.space(withID: $0) }?.isIncognito ?? false
         let ephemeralStore = tab.webView.map { !$0.configuration.websiteDataStore.isPersistent } ?? false
         let logPublic = UserDefaults.standard.bool(forKey: logPublicDefaultsKey)

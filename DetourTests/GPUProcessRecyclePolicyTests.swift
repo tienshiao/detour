@@ -14,13 +14,17 @@ nonisolated final class GPUProcessRecyclePolicyTests: XCTestCase {
         userIdle: TimeInterval = 0,
         audio: Bool = false,
         away: Bool = false,
+        capturing: Bool = false,
+        contextLossAgo: TimeInterval? = nil,
         lastRecycleAgo: TimeInterval? = nil
     ) -> GPUProcessRecyclePolicy.Inputs {
         .init(surfaceCount: surfaces,
               inactiveSince: inactiveFor.map { now.addingTimeInterval(-$0) },
               userIdleSeconds: userIdle,
-              mediaInUse: audio,
+              mediaInUse: audio || capturing,
               userAway: away,
+              capturingMedia: capturing,
+              lastContextLossAt: contextLossAgo.map { now.addingTimeInterval(-$0) },
               lastRecycleAt: lastRecycleAgo.map { now.addingTimeInterval(-$0) },
               now: now)
     }
@@ -139,9 +143,12 @@ nonisolated final class GPUProcessRecyclePolicyTests: XCTestCase {
             "DETOUR_GPU_RECYCLE_INACTIVE_GRACE_SECONDS": "5",
             "DETOUR_GPU_RECYCLE_USER_IDLE_SECONDS": "0",
             "DETOUR_GPU_RECYCLE_MIN_INTERVAL_SECONDS": "30",
+            "DETOUR_GPU_RECYCLE_BREAKAGE_LIMIT": "250",
+            "DETOUR_GPU_RECYCLE_POST_RECYCLE_GRACE_SECONDS": "7",
         ])
         XCTAssertEqual(p, GPUProcessRecyclePolicy(awayLimit: 50, softLimit: 100, hardLimit: 200, exhaustedLimit: 300, inactiveGrace: 5,
-                                                  userIdleGrace: 0, minimumInterval: 30))
+                                                  userIdleGrace: 0, minimumInterval: 30, breakageLimit: 250,
+                                                  postRecycleGrace: 7))
     }
 
     @MainActor func testInvalidEnvironmentOverridesAreIgnored() {
@@ -153,8 +160,81 @@ nonisolated final class GPUProcessRecyclePolicyTests: XCTestCase {
             "DETOUR_GPU_RECYCLE_INACTIVE_GRACE_SECONDS": "-1",
             "DETOUR_GPU_RECYCLE_USER_IDLE_SECONDS": "nan",
             "DETOUR_GPU_RECYCLE_MIN_INTERVAL_SECONDS": "inf",
+            "DETOUR_GPU_RECYCLE_BREAKAGE_LIMIT": "0",
+            "DETOUR_GPU_RECYCLE_POST_RECYCLE_GRACE_SECONDS": "-3",
         ])
         XCTAssertEqual(p, GPUProcessRecyclePolicy())
+    }
+
+    // MARK: - A page reports a lost WebGL context (TASK-410)
+
+    @MainActor func testBreakageDefaults() {
+        XCTAssertEqual(policy.breakageLimit, 15_000)
+        XCTAssertEqual(policy.contextLossWindow, 30)
+        XCTAssertEqual(policy.postRecycleGrace, 5 * 60)
+    }
+
+    @MainActor func testContextLossNearTheCapRecyclesWhileTheUserIsBusy() {
+        XCTAssertEqual(policy.decide(inputs(surfaces: 15_000, contextLossAgo: 1)), .recycle)
+        XCTAssertEqual(policy.decide(inputs(surfaces: 15_000)), .wait, "without the report, the hard-limit gate stays closed")
+    }
+
+    @MainActor func testContextLossRecyclesWithinTheHourAndWhileAudioPlays() {
+        XCTAssertEqual(policy.decide(inputs(surfaces: 15_500, audio: true, contextLossAgo: 2, lastRecycleAgo: 600)), .recycle)
+    }
+
+    @MainActor func testContextLossNeverCutsACallOff() {
+        XCTAssertEqual(policy.decide(inputs(surfaces: 16_500, capturing: true, contextLossAgo: 1)), .wait)
+    }
+
+    @MainActor func testContextLossBelowTheBreakageLimitChangesNothing() {
+        XCTAssertEqual(policy.decide(inputs(surfaces: 14_999, contextLossAgo: 1)), .wait)
+        XCTAssertEqual(policy.decide(inputs(surfaces: 800, contextLossAgo: 1)), .keep, "a page calling WEBGL_lose_context")
+    }
+
+    @MainActor func testAStaleContextLossIsIgnored() {
+        XCTAssertEqual(policy.decide(inputs(surfaces: 15_000, contextLossAgo: 30)), .recycle)
+        XCTAssertEqual(policy.decide(inputs(surfaces: 15_000, contextLossAgo: 31)), .wait)
+    }
+
+    @MainActor func testContextLossSoonAfterARecycleIsTheRecyclesOwn() {
+        // 59 s after the recycle: every WebGL page loses its context then.
+        XCTAssertEqual(policy.decide(inputs(surfaces: 15_000, contextLossAgo: 1, lastRecycleAgo: 60)), .wait)
+        // Reported before the recycle.
+        XCTAssertEqual(policy.decide(inputs(surfaces: 15_000, contextLossAgo: 20, lastRecycleAgo: 10)), .wait)
+        // Past the grace: a new breakage.
+        XCTAssertEqual(policy.decide(inputs(surfaces: 15_000, contextLossAgo: 1, lastRecycleAgo: 5 * 60 + 1)), .recycle)
+    }
+
+    @MainActor func testIsRecyclesOwn() {
+        let recycle = now
+        XCTAssertFalse(policy.isRecyclesOwn(reportAt: now, lastRecycleAt: nil))
+        XCTAssertTrue(policy.isRecyclesOwn(reportAt: recycle.addingTimeInterval(-1), lastRecycleAt: recycle), "before it")
+        XCTAssertTrue(policy.isRecyclesOwn(reportAt: recycle.addingTimeInterval(299), lastRecycleAt: recycle))
+        XCTAssertFalse(policy.isRecyclesOwn(reportAt: recycle.addingTimeInterval(300), lastRecycleAt: recycle))
+    }
+
+    // MARK: - How often reports start a check (TASK-410)
+
+    @MainActor func testTheFirstReportChecksAtOnce() {
+        var throttle = ContextLossCheckThrottle()
+        XCTAssertEqual(throttle.report(at: now), .checkNow)
+    }
+
+    @MainActor func testAReportInsideTheGapSchedulesOneCheckForItsEnd() {
+        var throttle = ContextLossCheckThrottle()
+        _ = throttle.report(at: now)
+        XCTAssertEqual(throttle.report(at: now.addingTimeInterval(2)), .checkAfter(3))
+        XCTAssertEqual(throttle.report(at: now.addingTimeInterval(3)), .none, "rides on the scheduled check")
+        XCTAssertEqual(throttle.report(at: now.addingTimeInterval(60)), .none, "until it has fired")
+        throttle.scheduledCheckFired(at: now.addingTimeInterval(5))
+        XCTAssertEqual(throttle.report(at: now.addingTimeInterval(6)), .checkAfter(4), "the fired check counts as the last one")
+    }
+
+    @MainActor func testAReportAfterTheGapChecksAtOnceAgain() {
+        var throttle = ContextLossCheckThrottle()
+        _ = throttle.report(at: now)
+        XCTAssertEqual(throttle.report(at: now.addingTimeInterval(5)), .checkNow)
     }
 
     // MARK: - Surface counting

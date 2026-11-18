@@ -52,6 +52,12 @@ sources:
   - id: task-406
     resource: backlog:TASK-406
     title: "GPU recycler: recycle at a lower threshold while the screen is locked or the display is asleep"
+  - id: task-410
+    resource: backlog:TASK-410
+    title: "GPU recycler: a page's WebGL context loss triggers an immediate check"
+  - id: bridge
+    resource: ../../Detour/Browser/WebGLContextLossBridge.swift
+    title: WebGLContextLossBridge.swift
 ---
 
 The kernel caps a process at 16,384 IOSurfaces. WebKit's GPU process, which
@@ -253,7 +259,8 @@ Every 120 s (`DETOUR_GPU_RECYCLE_CHECK_SECONDS`) it:
 | ≥ 12,000 | recycle once the app has been inactive ≥ 5 min (`inactiveGrace`) |
 | ≥ 14,000 (`hardLimit`) | also recycle as soon as the app is inactive, or while it is active once there has been no keyboard or pointer input for 60 s (`userIdleGrace`) |
 | ≥ 16,384 (`exhaustedLimit`) | recycle on the next check even while the user is busy: allocations are already failing, so WebGL is already dead[^task-403] |
-| any | never while a tab plays audible audio (`BrowserTab.isAudible`: muted playback does not count, TASK-192) or captures camera or microphone; never within 1 h of the last recycle (`minimumInterval`) |
+| ≥ 15,000 (`breakageLimit`) and a page reported a lost or failed WebGL context in the last 30 s | recycle now, even within the hour and while audio plays; never during a call, never for a report within 5 min of a recycle (`postRecycleGrace`)[^task-410] |
+| any | otherwise never while a tab plays audible audio (`BrowserTab.isAudible`: muted playback does not count, TASK-192) or captures camera or microphone; never within 1 h of the last recycle (`minimumInterval`) |
 
 "Away" (`GPUProcessRecycler.userIsAway()`) means the screen is locked
 (`CGSessionCopyCurrentDictionary()` carries `CGSSessionScreenIsLocked`) or
@@ -287,11 +294,63 @@ Why each gate exists:
   09:46, which suggests (not measured) the climb past 15k happened during the 83 minutes of use after that.
   The user chose to keep the media gate even past the cap.[^task-403]
 - A direct count replaced the planned WebGL canary: a canary only fires after
-  pages have already broken.[^task-105]
+  pages have already broken.[^task-105] TASK-410 brings the breakage back
+  as a trigger, not as the detector (see below).
+
+## Context-loss reports (TASK-410)
+
+Between checks, a page that breaks waits up to about 2.5 min for the next
+count (120 s plus timer tolerance), and inside the one-hour floor it would not
+be recycled at all. So `WebGLContextLossBridge`[^bridge] listens in every
+frame of every tab for `webglcontextlost` and `webglcontextcreationerror`
+and reports them to `GPUProcessRecycler.contextLossReported`, which counts at
+once.
+
+- **Where it listens.** A user script in its own `WKContentWorld`
+  (`DetourWebGLLoss`), at document start, all frames, installed beside the
+  favicon and media bridges in `BrowserTab.makeWebView`. Capture-phase
+  listeners on `window`: neither event bubbles, but both pass through capture
+  on their way to a canvas *in the document*. Page script sees neither the
+  listener nor the handler, and a page-world handler of the same name is
+  refused by the `message.world` check. Only `isTrusted` events count, and a
+  frame reports each kind at most once per 5 s.
+- **What it misses.** A canvas that is not in the document, and an
+  `OffscreenCanvas`, raise their events where `window` never sees them.
+  Fingerprinting and attestation scripts (possibly YouTube's) may create
+  their contexts that way; this was not checked. Catching those would need a
+  page-world `getContext` wrapper, which an attestation script can detect, so
+  it was not built. The two-minute count still covers those pages.
+- **Not trusted on its own.** Pages lose contexts for harmless reasons too
+  (`WEBGL_lose_context`, WebKit evicting a page's oldest context, a GPU reset
+  after sleep, a recycle), so a report only prompts a count:
+  `GPUProcessRecyclePolicy.confirmsBreakage` requires `breakageLimit` (15,000).
+  Below it the report only logs.
+- **Why it may skip the audio and one-hour guards.** It's the user's
+  2026-11-18 decision: media is failing anyway once allocations fail, but a
+  call (camera or microphone in the GPU process) is never cut off. The
+  five-minute `postRecycleGrace` keeps the context losses a recycle itself
+  causes from starting another (WebKit gives up on its web processes after
+  repeated GPU process exits); such reports are logged as "not counted" and
+  start no count.
+- **How often it counts.** `ContextLossCheckThrottle`: at once, then at most
+  once per 5 s, with a report inside the gap scheduling one check for its
+  end. A count already in flight evaluates with the latest report.
+- **Log.** Every report gets a notice in `gpu-recycle` once its count is known:
+  `WebGL context lost in <host> (main frame|subframe): GPU process <pid>
+  holds <n> IOSurfaces; keep|wait|recycle|recycle (breakage confirmed)`.
+  The host is tokenized like the telemetry's (`GPUSurfaceTelemetry.loggedHost(of:)`).
+  A recycle it caused logs `contextLoss=true`.
+- **Runtime check (2026-11-18).** Isolated profile with
+  `DETOUR_GPU_RECYCLE_BREAKAGE_LIMIT=1`, the other tiers at 100,000,
+  `_MIN_INTERVAL_SECONDS=3600`, `_POST_RECYCLE_GRACE_SECONDS=60`, and a local
+  page calling `WEBGL_lose_context`. The loss recycled in the same
+  millisecond, so the GPU pid changed. A loss 20 s later logged "within 60 s of a recycle;
+  not counted". One 85 s after the first recycle recycled again, inside the
+  hour. A real failed creation (out of IOSurfaces) was not produced.
 
 Overrides for harness runs: `DETOUR_GPU_RECYCLE_AWAY_LIMIT`, `_SOFT_LIMIT`,
 `_HARD_LIMIT`, `_EXHAUSTED_LIMIT`, `_INACTIVE_GRACE_SECONDS`, `_USER_IDLE_SECONDS`,
-`_MIN_INTERVAL_SECONDS`. A non-positive or unparseable value is ignored
+`_MIN_INTERVAL_SECONDS`, `_BREAKAGE_LIMIT`, `_POST_RECYCLE_GRACE_SECONDS`. A non-positive or unparseable value is ignored
 rather than disabling a guard.
 
 # How to measure
@@ -452,3 +511,5 @@ YouTube, GitHub, two apple.com, developer.apple.com). Raw samples are in
 [^task-403]: GPU recycler: waits past the IOSurface cap while the user is active
 [^task-175]: A GPU process WebKit failed to kill stays alive and freezes every tab connected to it
 [^task-406]: GPU recycler: recycle at a lower threshold while the screen is locked or the display is asleep
+[^task-410]: GPU recycler: a page's WebGL context loss triggers an immediate check
+[^bridge]: WebGLContextLossBridge.swift

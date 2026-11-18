@@ -220,7 +220,7 @@ These exist in the shipped code and are useful from a harness run:
 | `DETOUR_TRACKING_FILTER_URL` | the tracking-parameter list's download URL, to serve a fixture (Debug builds only) | `TrackingParameterList` |
 | `DETOUR_NATIVE_MESSAGING_HOSTS_DIR` | extra native-host manifest directory, searched first (Debug builds only) | `NativeMessagingHost.searchDirectories` |
 | `DETOUR_SLEEP_SHOW_BUDGET`, `DETOUR_SLEEP_SHOW_BUDGET_GRACE_SECONDS` | shrink the show-budget sleep rule | `TabStore` |
-| `DETOUR_GPU_RECYCLE_AWAY_LIMIT`, `_SOFT_LIMIT`, `_HARD_LIMIT`, `_EXHAUSTED_LIMIT`, `_INACTIVE_GRACE_SECONDS`, `_USER_IDLE_SECONDS`, `_MIN_INTERVAL_SECONDS`, `DETOUR_GPU_RECYCLE_CHECK_SECONDS` | make the GPU recycler fire quickly | `GPUProcessRecycler` |
+| `DETOUR_GPU_RECYCLE_AWAY_LIMIT`, `_SOFT_LIMIT`, `_HARD_LIMIT`, `_EXHAUSTED_LIMIT`, `_INACTIVE_GRACE_SECONDS`, `_USER_IDLE_SECONDS`, `_MIN_INTERVAL_SECONDS`, `_BREAKAGE_LIMIT`, `_POST_RECYCLE_GRACE_SECONDS`, `DETOUR_GPU_RECYCLE_CHECK_SECONDS` | make the GPU recycler fire quickly | `GPUProcessRecycler` |
 | `DETOUR_GPU_ORPHAN_MIN_AGE_SECONDS`, `DETOUR_GPU_ORPHAN_CHECK_SECONDS` | make the abandoned-GPU-process reaper act within seconds | `GPUProcessOrphanReaper` |
 | `-ExtensionConsoleLogPublic YES` (launch argument) | extension console text readable in the log | `ExtensionPolyfillHandler` |
 

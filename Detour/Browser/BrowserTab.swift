@@ -166,6 +166,7 @@ class BrowserTab: NSObject {
                 ExtensionPageHostRegistry.register(webView)
                 FaviconLinkBridge.register(webView, for: self)
                 MediaSessionBridge.register(webView, for: self)
+                WebGLContextLossBridge.register(webView, for: self)
             }
         }
     }
@@ -654,6 +655,7 @@ class BrowserTab: NSObject {
         InternalPageBridge.install(on: configuration)
         FaviconLinkBridge.install(on: configuration)
         MediaSessionBridge.install(on: configuration)
+        WebGLContextLossBridge.install(on: configuration)
         let webView = BrowserWebView(frame: .zero, configuration: configuration)
         webView.isInspectable = true
         return webView
@@ -667,6 +669,7 @@ class BrowserTab: NSObject {
             ExtensionPageHostRegistry.register(webView)
             FaviconLinkBridge.register(webView, for: self)
             MediaSessionBridge.register(webView, for: self)
+            WebGLContextLossBridge.register(webView, for: self)
         }
         webView?.navigationDelegate = self
         applyUserAgent()
@@ -687,6 +690,7 @@ class BrowserTab: NSObject {
         ExtensionPageHostRegistry.register(webView)
         FaviconLinkBridge.register(webView, for: self)
         MediaSessionBridge.register(webView, for: self)
+        WebGLContextLossBridge.register(webView, for: self)
         webView.navigationDelegate = self
         self.webView?.isInspectable = true
         // Seed published properties from the existing webView state

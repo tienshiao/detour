@@ -3,9 +3,11 @@ id: TASK-410
 title: >-
   GPU recycler: a page's WebGL context loss triggers an immediate check, and
   near the IOSurface cap it recycles without waiting for the next tick
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-11-18T08:41:00Z'
+updated_date: '2026-11-18T08:57:00Z'
 labels:
   - gpu
   - webkit
@@ -41,10 +43,49 @@ Guard against loops: WebKit terminates all web processes after repeated GPU proc
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A webglcontextlost or webglcontextcreationerror in any frame of a normal or private tab reaches the recycler as an immediate check; pages cannot observe the listener or the message handler
-- [ ] #2 With the count at or above the near-cap level, a confirmed signal recycles even within minimumInterval and while a tab is audible, and never while a tab captures camera or microphone
-- [ ] #3 Below the near-cap level, a signal only logs; a page calling WEBGL_lose_context does not recycle
-- [ ] #4 Context losses caused by a recycle do not trigger another recycle (grace period), and the signal rate is limited per web view
-- [ ] #5 Every signal logs a notice in category gpu-recycle with kind, tokenized host, count and decision
-- [ ] #6 Policy tests cover the confirmed-breakage path (interval and audio bypass, capture guard, below-threshold, grace period); a runtime check with low env thresholds and a fixture page that loses its context shows the immediate recycle in log show
+- [x] #1 A webglcontextlost or webglcontextcreationerror in any frame of a normal or private tab reaches the recycler as an immediate check; pages cannot observe the listener or the message handler
+- [x] #2 With the count at or above the near-cap level, a confirmed signal recycles even within minimumInterval and while a tab is audible, and never while a tab captures camera or microphone
+- [x] #3 Below the near-cap level, a signal only logs; a page calling WEBGL_lose_context does not recycle
+- [x] #4 Context losses caused by a recycle do not trigger another recycle (grace period), and the signal rate is limited per web view
+- [x] #5 Every signal logs a notice in category gpu-recycle with kind, tokenized host, count and decision
+- [x] #6 Policy tests cover the confirmed-breakage path (interval and audio bypass, capture guard, below-threshold, grace period); a runtime check with low env thresholds and a fixture page that loses its context shows the immediate recycle in log show
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. WebGLContextLossBridge (new): an isolated-world script in every frame, with capture listeners on window for webglcontextlost and webglcontextcreationerror, at most one report per kind per frame per 5 s. It posts to the detourWebGLLoss handler; installed and registered beside the favicon and media bridges in BrowserTab.
+2. Policy: breakageLimit 15,000, contextLossWindow 30 s, postRecycleGrace 5 min; inputs capturingMedia and lastContextLossAt; confirmsBreakage() is checked first in decide(). Env overrides BREAKAGE_LIMIT and POST_RECYCLE_GRACE_SECONDS.
+3. Recycler: contextLossReported starts an immediate check, at most one per 5 s, with a check scheduled for any report in between. Each pending report is logged as a notice with the outcome (count, keep/wait/recycle). The recycle line says contextLoss=.
+4. Tests: policy cases plus bridge tests with real WebGL (main frame, subframe, rate limit, creation error, page isolation, idempotent install).
+5. Runtime check with low env thresholds and a fixture page; wiki gpu-iosurface-limit.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented 2026-11-18.
+- Review (/code-review --fix, 10 findings):
+  - Fixed by the review: reports within the post-recycle grace start no count and are logged 'not counted'; the pid recheck runs before the losses are logged, so a cancelled kill logs 'recycle skipped (GPU process changed)'; a redundant condition; a duplicate test helper; the isolation test could not fail (it now registers a page-world handler and posts to it).
+  - Fixed after the review: only isTrusted events count; the report throttle is now the pure ContextLossCheckThrottle and the grace is GPUProcessRecyclePolicy.isRecyclesOwn, both tested.
+  - Not done: canvases outside the document and OffscreenCanvas are missed. Catching them would need a page-world getContext wrapper, which attestation scripts can detect; documented in the wiki. Also not done: no sampling-skip far below the limit (reports should still log a count, and one sample costs about 50 ms); not merged with the telemetry's event batching (different flush triggers).
+- Tests: GPUProcessRecyclePolicyTests 34/0, WebGLContextLossBridgeTests 6/0 (real WebGL in the test host: main frame, subframe, 5 s per frame, untrusted events ignored, page isolation, idempotent install). The related suites (FaviconLinkBridge, PageMediaControl, MediaBridgeMessage, GPUSurfaceTelemetry, AutomationGPUTools, BackForwardCacheTrim, MemoryPressureSleep) also ran: 119 tests, 0 failures, 1 skipped (the gated measurement leg testMeasureCriticalSweepCost).
+- Runtime (/verify): isolated DetourVerify410 with BREAKAGE_LIMIT=1, the other tiers at 100000, MIN_INTERVAL 3600, POST_RECYCLE_GRACE 60, and a local fixture page.
+  - The page world sees no handler (typeof … 'undefined').
+  - WEBGL_lose_context at 00:54:39 logged 'WebGL context lost in 127.0.0.1 (main frame): GPU process 20224 holds 35 IOSurfaces; recycle (breakage confirmed)' and 'Recycling … contextLoss=true'; the GPU pid changed 20224 → 21058.
+  - A loss at 00:54:59 logged 'within 60 s of a recycle; not counted'.
+  - A loss at 00:56:04, 85 s after the first recycle and inside the hour, recycled again (21058 → 22073). The page kept working through both.
+  - The host was in the clear because GPUSurfaceLogPublic is set in the shared defaults domain.
+- Not verified: a real failed creation from an exhausted GPU process; a page losing contexts at default limits (covered by the policy tests).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A page that loses a WebGL context, or fails to get one, now makes the GPU recycler count at once instead of at the next 2-minute tick.
+- Detection: WebGLContextLossBridge listens in every frame of every tab, in its own script world, for trusted events only, at most once per kind per frame per 5 s.
+- Decision: at 15,000 surfaces or more (breakageLimit) a report recycles immediately, even within the one-hour floor and while audio plays, but never during a camera or microphone call. Reports within 5 min of a recycle are the recycle's own and are ignored. Below the limit a report only logs.
+- Logging: every report is logged at notice in gpu-recycle with the tokenized host, the count and the outcome.
+- Limitation: canvases outside the document and OffscreenCanvas are missed (a page-world wrapper would be detectable); the 2-minute count still covers them.
+- Verification: tests 40 + related suites (119, 0 failures); the runtime check showed an immediate recycle, the grace and the one-hour bypass.
+<!-- SECTION:FINAL_SUMMARY:END -->

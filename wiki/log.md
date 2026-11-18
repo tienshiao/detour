@@ -1,5 +1,8 @@
 # Wiki Update Log
 
+## 2026-11-18
+* **Update**: TASK-410 — [GPU process IOSurface limit](platform/gpu-iosurface-limit.md): new "Context-loss reports" section and recycler-table row. A page's trusted `webglcontextlost`/`webglcontextcreationerror` (isolated world, all frames, capture on `window`) prompts an immediate count. At 15,000 or more it recycles even within the hour and while audio plays, never during a call, and ignores reports within 5 min of a recycle. It misses canvases outside the document (a page-world wrapper was rejected as detectable). Includes the runtime check.
+
 ## 2026-11-17
 * **Update**: TASK-409 chip styling — [Suggestion pipeline](features/suggestion-pipeline.md): the chip sits at the row's end and is a soft wash of the space colour, as the sidebar tints (user choices after comparing screenshots).
 * **Update**: TASK-409 follow-up — the launcher row label is a chip naming the space of the newest visit in its colour (a Quick Detour visit: the profile, grey): [Suggestion pipeline](features/suggestion-pipeline.md), [Quick Detour launcher](features/quick-detour-launcher.md), [Automation endpoint staging](features/automation-endpoint-staging.md).
