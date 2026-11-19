@@ -1,6 +1,7 @@
 # Wiki Update Log
 
 ## 2026-11-19
+* **Update**: TASK-412 — [Quick Detour launcher](features/quick-detour-launcher.md): new "The cooperative request is refused over Chrome" section. The window server refuses `NSApp.activate()` whenever Chrome is frontmost or was in front just before, so the Quick Detour window opened behind it. Neither opening first nor holding the panel's key focus helped; `activate(ignoringOtherApps: true)` is granted every time with only the new window forward. Corrects TASK-193.2's claim that the request was honoured because the panel holds the key focus. Harness and counts in `docs/harness/task412`. Links routed to Quick Detour from other apps and the Dock menu's Show All were measured over Chrome too and need no change; LaunchServices and the Dock click grant the activation.
 * **Creation**: TASK-411 — [Local server suggestions](features/local-server-suggestions.md): the palette and the Quick Detour launcher offer the HTTP/HTTPS servers running on this Mac with their folder (libproc scan of the user's listeners, the project-server filter measured on the user's Mac, the concurrent TLS + plain probe and what it caches, typed-text matching, rank open tab > running server > history, dead-port demotion, the late scan). Linked from [Suggestion pipeline](features/suggestion-pipeline.md), [Quick Detour launcher](features/quick-detour-launcher.md); `local_server` rows in [Automation endpoint staging](features/automation-endpoint-staging.md).
 
 ## 2026-11-18

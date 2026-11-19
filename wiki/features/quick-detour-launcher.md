@@ -1,7 +1,7 @@
 ---
 type: Feature
 title: Quick Detour launcher panel
-description: "The Spotlight-like panel that opens a Quick Detour: a non-activating borderless floating panel holding the command palette, its suggestions, undo and the browser-window commands it answers itself, which profile it opens on, and how submitting activates Detour with only the new window forward."
+description: "The Spotlight-like panel that opens a Quick Detour: a non-activating borderless floating panel holding the command palette, its suggestions, undo and the browser-window commands it answers itself, which profile it opens on, and how submitting activates Detour with only the new window forward (ignoringOtherApps, since the cooperative request is refused over Chrome)."
 tags: [window, palette, profiles]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: 2026-11-16T21:49:17Z }
@@ -46,6 +46,9 @@ sources:
   - id: task-409
     resource: backlog:TASK-409
     title: "Quick Detour launcher: suggestions from every profile, labelled"
+  - id: harness-412
+    resource: ../../docs/harness/task412/README.md
+    title: TASK-412 runtime harness and results (the window over Chrome)
 ---
 
 File > New Quick Detour Window, or the [global hotkey](./quick-detour-hotkey.md), shows the **launcher panel**: the command palette alone, centred on the screen, like Spotlight, with no web view and no title bar. Submitting opens the [Quick Detour window](./quick-detour-window.md) on that page; Escape or clicking away opens nothing, so no Quick Detour window ever has an empty page (the user's change of 2026-10-25; the first build opened the window showing the palette).
@@ -142,13 +145,14 @@ profile is one click away in the window once the page is open (the
 
 # Activating with only the new window forward
 
-`NSApp.activate()` brings forward the app's key and main windows, not all of
+Activation brings forward the app's key and main windows, not all of
 them (`NSRunningApplication.activate(options:)` without
 `.activateAllWindows`). Submitting from the panel over another app opens
-the Quick Detour window first (key and main) and then calls
-`NSApp.activate()`. Measured with the window server's order (front to back)
-over a scratch app, with a browser window that had been Detour's key and
-main window:[^harness-2]
+the Quick Detour window first (key and main) and then calls the deprecated
+`NSApp.activate(ignoringOtherApps: true)` (TASK-412; why not the cooperative
+`activate()` is [below](#the-cooperative-request-is-refused-over-chrome)).
+Measured with the window server's order (front to back) over a scratch app,
+with a browser window that had been Detour's key and main window:[^harness-2]
 
 | Step | `CGWindowList` order |
 |---|---|
@@ -161,9 +165,50 @@ The same order came from the cooperative `NSApp.activate()`,
 `NSRunningApplication.current.activate(options: [])` and the deprecated
 `activate(ignoringOtherApps:)` called after opening, and from TASK-193.1's
 activate-then-open: activation is asynchronous, and by the time AppKit
-orders windows the new one is key and main. The request is honoured
-although activation is cooperative since macOS 14: Detour holds the key
-focus (the panel) when Return is pressed in it.
+orders windows the new one is key and main. Over Chrome,
+`activate(ignoringOtherApps: true)` gave the same: quick, Chrome, the earlier
+Quick Detour windows and the browser window behind (TASK-412).[^harness-412]
+
+## The cooperative request is refused over Chrome
+
+Since macOS 14 `activate()` is a request the window server may refuse. Over
+the scratch app it was always granted, and TASK-193.2 credited that to the
+panel holding the key focus when Return is pressed. That was wrong. On the
+user's Mac (macOS 26.7, about 20 Chrome windows) the cooperative request was
+refused **every time Chrome was frontmost** (0 of 7), and over Ghostty
+whenever Chrome had been in front just before it (0 of 2); over Ghostty
+without Chrome before, it was granted (3 of 3). The Quick Detour window then
+opened behind the other app's front window, Detour inactive.[^harness-412]
+
+- **Not the key focus.** In a granted trial the panel had already returned
+  the key focus to Ghostty about 220 ms before the request reached the
+  window server. Opening the window before closing the panel, and keeping
+  the panel key until Detour became active, were both refused over Chrome
+  all the same.
+- **Not logged.** A granted request logs the session's activation token
+  check (`launchservices:front`) followed by `SetFrontProcessWithInfo`
+  making Detour the front process; a refused one logs the same token check
+  and then nothing. The token in both is the same one, held for Chrome's
+  process serial number.
+- **What works.** `NSApp.activate(ignoringOtherApps: true)` and
+  `NSRunningApplication.current.activate(options: .activateIgnoringOtherApps)`
+  were granted every time (5 of 5 and 2 of 2 over Chrome, 2 of 2 over
+  Ghostty right after Chrome), with only the new window forward. Both are
+  deprecated, without a replacement for this case; Settings and the
+  WKUIDelegate's window opening already use the first.
+- **Only the launcher was affected.** Two other ways a Quick Detour comes
+  forward were measured over Chrome, and both work without the deprecated
+  call. A link from another app routed to a Quick Detour
+  (`AppDelegate.openInQuickDetour`) never asks for activation itself:
+  LaunchServices activates Detour when it delivers the link (2 of 2 over
+  Chrome, 1 of 1 over Ghostty right after Chrome). The Dock menu's Show All
+  Quick Detour Windows calls the cooperative `NSApp.activate()`, which is
+  granted because the user just chose Detour in its Dock menu (2 of 2 and 2
+  of 2).
+
+Why Chrome in particular triggers the refusal is not known. The test is a hotkey press over Chrome followed
+by Return in the panel, measured with `CGWindowList` and
+`NSWorkspace.frontmostApplication` (`docs/harness/task412`).
 
 **Trap: do not guard on `NSApp.isActive`.** It is true while the panel is
 key, so a first build's `if !NSApp.isActive { NSApp.activate() }` never
@@ -188,3 +233,4 @@ Suites, counts and the runtime passes are on [Quick Detour tests and runtime che
 [^harness-2]: TASK-193.2 runtime harness, its scratch tools and results
 [^harness-348]: TASK-348 runtime check (real keys in the launcher)
 [^task-409]: Quick Detour launcher: suggestions from every profile, labelled
+[^harness-412]: TASK-412 runtime harness and results (the window over Chrome)

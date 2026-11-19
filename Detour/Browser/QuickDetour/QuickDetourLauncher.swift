@@ -28,11 +28,16 @@ final class QuickDetourLauncher: NSObject {
     /// Opens the window, then activates Detour, for the panel the global
     /// hotkey showed over another app (TASK-193.2). Only the Quick Detour
     /// window comes forward: the other Detour windows stay behind the app
-    /// that was in front (seen on macOS 26.7 with the cooperative `activate()`,
-    /// `NSRunningApplication.activate(options: [])` and the deprecated
-    /// `activate(ignoringOtherApps:)`, before or after opening the window).
-    /// The request is honoured because Detour holds the key focus (the panel)
-    /// when Return is pressed in it.
+    /// that was in front.
+    ///
+    /// The deprecated `activate(ignoringOtherApps: true)`, not the cooperative
+    /// `activate()` (TASK-412): the window server refuses the cooperative
+    /// request, without logging why, whenever Google Chrome is frontmost or was
+    /// the app in front just before, and then the window opens behind the
+    /// other app (macOS 26.7: 0 of 7 over Chrome, 0 of 2 over Ghostty right
+    /// after Chrome; with this call 5 of 5 and 2 of 2; docs/harness/task412).
+    /// Opening first and holding the panel's key focus until the request
+    /// lands made no difference.
     ///
     /// Not guarded on `NSApp.isActive`: that is already true while the
     /// non-activating panel is key, although the other app keeps the menu bar
@@ -40,7 +45,7 @@ final class QuickDetourLauncher: NSObject {
     /// window opened behind the other app.
     static func defaultOpenWindow(_ profile: Profile, _ sourceSpace: Space?, _ url: URL, _ typed: Bool) {
         QuickDetourWindowController.open(profile: profile, sourceSpace: sourceSpace, url: url, typed: typed)
-        NSApp.activate()
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     var palette: CommandPaletteView? { panel?.palette }
