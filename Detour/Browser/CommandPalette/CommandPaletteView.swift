@@ -128,6 +128,22 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
 
     /// Replaced in tests with a provider over an in-memory history database.
     var suggestionProvider = SuggestionProvider()
+    /// Where the palette reads the servers running on this Mac (TASK-411);
+    /// set by whoever shows it (`.shared`), nil offers none (the default, so
+    /// a test's palette never sees the machine's own servers).
+    var localServerDirectory: LocalServerDirectory?
+    /// The servers the rows are built from: the directory's last scan when
+    /// the palette showed, then its own scan's.
+    private(set) var localServers: [LocalServer] = []
+    /// Every port the user's processes listen on (the last scan's): local
+    /// history rows on any other port are not running.
+    private var localListeningPorts: Set<Int> = []
+    /// The folder each server's rows show, by port.
+    private(set) var localServerFolders: [Int: String] = [:]
+    private var localServerScan: Task<Void, Never>?
+    /// Whether the last keystroke allowed inline completion, for the pass a
+    /// late scan runs again.
+    private var lastAllowAutocomplete = false
     /// The rows shown; readable so tests can check what a pass listed.
     private(set) var suggestions: [SuggestionItem] = []
     /// The query the current suggestion list was built for; nil when showing
@@ -358,6 +374,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         if initialText != nil {
             textField.currentEditor()?.selectAll(nil)
         }
+        startLocalServerScan()
         loadDefaultSuggestions()
     }
 
@@ -417,6 +434,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
     func dismiss() {
         currentTask?.cancel()
         debounceWorkItem?.cancel()
+        localServerScan?.cancel()
+        localServerScan = nil
 
         // Restore default centered positioning for potential reuse
         anchorLeadingConstraint?.isActive = false
@@ -788,6 +807,8 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             return command.title
         case .commandChoice(let choice):
             return choice.title
+        case .localServer(let url, _):
+            return url
         }
     }
 
@@ -829,8 +850,12 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         // The provider's own tab rules, so the background pass agrees with it.
         var instantItems: [SuggestionItem] = []
         var appliedTabCompletion = false
+        let serverMatch = LocalServerRules.match(query, servers: localServers)
+        // Then a running server for local input (TASK-411), as the
+        // background pass ranks them, so the two passes agree.
         let tabTopHit = allowAutocomplete
             ? SuggestionProvider.tabTopHit(for: query, tabs: tabs, currentTabID: currentTabID)
+                ?? SuggestionProvider.serverTopHit(for: serverMatch)
             : nil
         if let tabTopHit {
             instantItems.append(tabTopHit.item)
@@ -838,7 +863,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             appliedTabCompletion = true
         }
         instantItems.append(.searchInput(text: query))
-        let matchingTabs = SuggestionProvider.matchingTabs(for: query, tabs: tabs, excluding: tabTopHit?.tabID)
+        let matchingTabs = SuggestionProvider.matchingTabs(
+            for: query, tabs: tabs, excluding: tabTopHit?.tabID,
+            serverPorts: SuggestionProvider.folderMatchedPorts(serverMatch))
         let tabItems: [SuggestionItem] = matchingTabs.map {
             .openTab(tabID: $0.tabID, spaceID: $0.spaceID, url: $0.url, title: $0.title, favicon: $0.favicon)
         }
@@ -852,15 +879,30 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         }
         showQueryRows(isLatePass: false)
         scheduleSearchSuggestionFetch(for: query)
+        lastAllowAutocomplete = allowAutocomplete
 
-        // --- Background pass: history queries off the main thread ---
+        runBackgroundPass(for: query, tabs: tabs, allowAutocomplete: allowAutocomplete,
+                          completedFromTab: appliedTabCompletion, serverTopHitAllowed: true)
+    }
+
+    /// The background pass: history queries off the main thread, merged in
+    /// as a late pass. `completedFromTab`: the field already completed from
+    /// the instant pass, so history's completion is not applied.
+    /// `followsTopHit`: a pass a late scan started (TASK-411), whose top hit
+    /// may differ from the one the field completed to (a server stopped, a
+    /// visited port came back to life); the field's completion follows the
+    /// new top row while the user has not arrowed, so the field never shows
+    /// one address while Return opens another.
+    private func runBackgroundPass(for query: String, tabs: [SuggestionProvider.TabInfo], allowAutocomplete: Bool,
+                                   completedFromTab: Bool, serverTopHitAllowed: Bool, followsTopHit: Bool = false) {
         localSuggestionGeneration &+= 1
         let generation = localSuggestionGeneration
         let provider = suggestionProvider
         let historySpaceIDs = historySpaceIDs
         let capturedTabID = currentTabID
-        let completedFromTab = appliedTabCompletion
         let historyProfiles = historyProfiles
+        let localServers = localServers
+        let listeningPorts = localListeningPorts
         historyQueryQueue.async { [weak self] in
             // localSuggestions recomputes the open-tab matches too, but its two
             // SQLite reads are what we moved off the main thread. It is
@@ -868,7 +910,9 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             // that it touches no main-actor state.
             let local = provider.localSuggestions(
                 for: query, historySpaceIDs: historySpaceIDs, tabs: tabs,
-                allowAutocomplete: allowAutocomplete, currentTabID: capturedTabID)
+                allowAutocomplete: allowAutocomplete, currentTabID: capturedTabID,
+                localServers: localServers, listeningPorts: listeningPorts,
+                serverTopHitAllowed: serverTopHitAllowed)
             let owners = provider.historyRowSpaceIDs(for: local.items, profiles: historyProfiles)
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -883,6 +927,13 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
                 // Nor once the user has arrowed to a row: the field shows that
                 // row's text.
                 if !completedFromTab, self.inlineCompletionSuffix == nil, !self.selectionMovedByUser {
+                    self.applyInlineCompletion(local.inlineCompletion, for: query)
+                } else if followsTopHit, !self.selectionMovedByUser, let suffix = self.inlineCompletionSuffix,
+                          (query + suffix).lowercased() != local.inlineCompletion?.lowercased() {
+                    self.inlineCompletionSuffix = nil
+                    self.setTextFieldQuietly(self.userTypedText)
+                    self.textField.currentEditor()?.selectedRange =
+                        NSRange(location: self.userTypedText.utf16.count, length: 0)
                     self.applyInlineCompletion(local.inlineCompletion, for: query)
                 }
                 self.noteHistoryRowSpaces(owners)
@@ -1239,6 +1290,70 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
         }
     }
 
+    // MARK: - Local servers (TASK-411)
+
+    /// Uses the directory's last scan at once and scans again; the rows
+    /// follow when the scan lands (`localServersDidArrive`).
+    private func startLocalServerScan() {
+        localServerScan?.cancel()
+        guard let directory = localServerDirectory else {
+            setLocalServers(.empty)
+            return
+        }
+        setLocalServers(directory.last)
+        localServerScan = Task { [weak self] in
+            let scan = await directory.refresh()
+            guard !Task.isCancelled else { return }
+            self?.localServersDidArrive(scan)
+        }
+    }
+
+    private func setLocalServers(_ scan: LocalServerScan) {
+        localServers = scan.servers
+        localListeningPorts = scan.listeningPorts
+        localServerFolders = LocalServerRules.folderLabels(for: scan.servers, home: NSHomeDirectory())
+    }
+
+    /// A scan landed while the palette is up. Rows already listed get their
+    /// folder in place; a typed query's rows are built again as a late pass,
+    /// which never changes the row the user arrowed to, and lets a server
+    /// take the top hit only while nothing has completed the field (or it
+    /// completed to a server). Internal so tests can land a scan.
+    func localServersDidArrive(_ scan: LocalServerScan) {
+        guard scan.servers != localServers || scan.listeningPorts != localListeningPorts else { return }
+        setLocalServers(scan)
+        reconfigureVisibleRows()
+        guard let query = suggestionsQuery, activeSiteSearch == nil, activeCommandChip == nil, !isInCommandMode,
+              userTypedText.trimmingCharacters(in: .whitespaces) == query else { return }
+        let untouched = inlineCompletionSuffix == nil && !selectionMovedByUser
+        // The field completed to a server's row (from the scan before this
+        // one): a server may keep that row, and the field follows whatever
+        // the row becomes, so Return opens what the field shows.
+        let completedFromServer: Bool = {
+            guard inlineCompletionSuffix != nil, !selectionMovedByUser,
+                  case .localServer = suggestions.first else { return false }
+            return true
+        }()
+        runBackgroundPass(for: query, tabs: gatherTabInfos(), allowAutocomplete: lastAllowAutocomplete,
+                          completedFromTab: !untouched, serverTopHitAllowed: untouched || completedFromServer,
+                          followsTopHit: true)
+    }
+
+    /// Configures every row on screen again: what it shows beside its item
+    /// (a folder) changed, which `updateSuggestions` cannot see.
+    private func reconfigureVisibleRows() {
+        for row in 0..<min(suggestions.count, tableView.numberOfRows) {
+            if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? SuggestionCellView {
+                configureCell(cell, for: suggestions[row])
+            }
+        }
+    }
+
+    /// The folder of the running server a row's URL is on, or nil.
+    func localServerFolder(for url: String) -> String? {
+        LocalServerRules.loopbackPort(ofURL: url).flatMap { localServerFolders[$0] }
+    }
+
     /// Internal for tests, which seed where rows were visited directly.
     func noteHistoryRowSpaces(_ spaces: [String: String]) {
         guard !spaces.isEmpty else { return }
@@ -1297,7 +1412,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             let input = text.trimmingCharacters(in: .whitespaces)
             guard !input.isEmpty else { return }
             delegate?.commandPalette(self, didSubmitInput: input)
-        case .historyResult(let url, _, _):
+        case .historyResult(let url, _, _), .localServer(let url, _):
             delegate?.commandPalette(self, didSubmitInput: url)
         case .searchSuggestion(let text):
             delegate?.commandPalette(self, didSubmitSearch: text)
@@ -1415,7 +1530,7 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
             cell.configure(title: text, url: nil, icon: nil, isSearch: !looksLikeURL, isGoTo: looksLikeURL)
         case .historyResult(let url, let title, let faviconURL):
             cell.configure(title: title, url: url, icon: nil, isSearch: false,
-                           chip: historyRowLabel(for: url))
+                           chip: historyRowLabel(for: url), folder: localServerFolder(for: url))
             if let faviconURL {
                 cell.expectedFaviconURL = faviconURL
                 suggestionProvider.loadFavicon(for: faviconURL) { [weak cell] image in
@@ -1426,8 +1541,18 @@ class CommandPaletteView: NSView, NSTextFieldDelegate, NSTableViewDataSource, NS
                     cell.iconView.contentTintColor = nil
                 }
             }
-        case .openTab(_, _, _, let title, let favicon):
-            cell.configure(title: title, url: nil, icon: favicon, isSearch: false, switchToTab: true)
+        case .openTab(_, _, let url, let title, let favicon):
+            cell.configure(title: title, url: nil, icon: favicon, isSearch: false, switchToTab: true,
+                           folder: localServerFolder(for: url))
+        case .localServer(let url, let server):
+            // The directory as the title, where it has the room; the address
+            // and the program serving it where a history row has its address.
+            let address = SuggestionProvider.displayURL(url)
+            let shown = server.isHTTPS ? "https://\(address)" : address
+            let title = LocalServerRules.abbreviated(server.directory, home: NSHomeDirectory())
+            cell.configure(title: title.isEmpty ? server.processName : title,
+                           url: "\(shown) · \(server.processName)", icon: nil, isSearch: false,
+                           symbol: "server.rack", titleIsPath: true)
         case .searchSuggestion(let text):
             cell.configure(title: text, url: nil, icon: nil, isSearch: true)
         case .siteSearch(let name, let query, _):
@@ -1616,13 +1741,26 @@ private class SuggestionCellView: NSTableCellView {
     /// (TASK-409), shown before its address.
     func configure(title: String, url: String?, icon: NSImage?, isSearch: Bool, switchToTab: Bool = false,
                    isGoTo: Bool = false, badge: (text: String, symbol: String)? = nil, symbol: String? = nil,
-                   chip chipLabel: PaletteHistoryProfiles.RowLabel? = nil) {
+                   chip chipLabel: PaletteHistoryProfiles.RowLabel? = nil, folder: String? = nil,
+                   titleIsPath: Bool = false) {
         expectedFaviconURL = nil
         titleLabel.stringValue = title.isEmpty ? (url ?? "") : title
+        // A local server's row (TASK-411): its title is a directory, whose
+        // last folder matters most, and its short address (port, program)
+        // must not give way to it.
+        titleLabel.lineBreakMode = titleIsPath ? .byTruncatingMiddle : .byTruncatingTail
+        urlLabel.setContentCompressionResistancePriority(titleIsPath ? .defaultHigh : .defaultLow - 1,
+                                                         for: .horizontal)
 
-        let badge = badge ?? (switchToTab ? ("Switch to Tab", "arrow.right.arrow.left") : nil)
+        // The folder of the local server the row is on (TASK-411): after
+        // the address, or before Switch to Tab. Text, not a chip: the chip
+        // says where a page was visited, the folder what runs there now.
+        let switchText = folder.map { "\($0) · Switch to Tab" } ?? "Switch to Tab"
+        let badge = badge ?? (switchToTab ? (switchText, "arrow.right.arrow.left") : nil)
         let showURL = badge == nil && url != nil
-        urlLabel.stringValue = url ?? ""
+        urlLabel.stringValue = folder.map { "\(url ?? "") · \($0)" } ?? url ?? ""
+        // A long address gives way in the middle, so the folder at its end stays.
+        urlLabel.lineBreakMode = folder == nil ? .byTruncatingTail : .byTruncatingMiddle
         urlLabel.isHidden = !showURL
         if let chipLabel, badge == nil {
             chip.configure(chipLabel)

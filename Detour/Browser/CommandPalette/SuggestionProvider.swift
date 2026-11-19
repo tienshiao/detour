@@ -50,21 +50,45 @@ nonisolated final class SuggestionProvider: Sendable {
     /// every keystroke. Ordering: top hit (the URL the query autocompletes to,
     /// shown as a rich tab/history row), the verbatim typed input, other
     /// visited hosts matching a host prefix, matching open tabs, then history.
+    ///
+    /// `localServers` are the servers running on this Mac (TASK-411). Local
+    /// input (`localhost:51`) completes to an open tab first, then to a
+    /// running server, then to history; `serverTopHitAllowed` is false when
+    /// the field already completed to something else before the scan landed.
+    /// A server another row in the list stands for (same port) gets no row
+    /// of its own; history rows for local ports nothing listens on
+    /// (`listeningPorts`, every port the user's processes listen on, offered
+    /// or not; the servers' own when nil) go last.
     func localSuggestions(for query: String, historySpaceIDs: [String], tabs: [TabInfo],
-                          allowAutocomplete: Bool, currentTabID: UUID? = nil) -> LocalSuggestions {
+                          allowAutocomplete: Bool, currentTabID: UUID? = nil,
+                          localServers: [LocalServer] = [], listeningPorts: Set<Int>? = nil,
+                          serverTopHitAllowed: Bool = true) -> LocalSuggestions {
         let q = query.lowercased()
         let hostQuery = Self.isHostQuery(q)
+        let serverMatch = LocalServerRules.match(query, servers: localServers)
+        let livePorts = listeningPorts ?? Set(localServers.map(\.port))
+        // Rows for local ports nothing is running on now go after the others.
+        let isDeadLocal = { (url: String) -> Bool in
+            guard !livePorts.isEmpty, let port = LocalServerRules.loopbackPort(ofURL: url) else { return false }
+            return !livePorts.contains(port)
+        }
         let hosts = hostQuery
-            ? db.bestHostCompletions(prefix: q, spaceIDs: historySpaceIDs, limit: Self.maxOtherHosts + 1)
+            ? Self.stablyDemoting(db.bestHostCompletions(prefix: q, spaceIDs: historySpaceIDs,
+                                                         limit: Self.maxOtherHosts + 1)) { isDeadLocal($0.url) }
             : []
 
         // Top hit: open tabs first (the rule the palette's instant pass also
-        // applies), else history — the best host for a host prefix, otherwise
-        // the best URL.
+        // applies), then a running server for local input, else history — the
+        // best host for a host prefix, otherwise the best URL.
         var topHit: TopHit?
         if allowAutocomplete {
             topHit = Self.tabTopHit(for: query, tabs: tabs, currentTabID: currentTabID)
-            if hostQuery {
+            if topHit == nil, serverTopHitAllowed {
+                topHit = Self.serverTopHit(for: serverMatch)
+            }
+            if topHit?.isLocalServer == true {
+                // The server is the answer; history does not replace it.
+            } else if hostQuery {
                 if topHit == nil, let best = hosts.first {
                     topHit = TopHit(item: Self.hostItem(best), inlineCompletion: best.host, tabID: nil, url: best.url)
                 } else if let hit = topHit, hit.tabID == nil,
@@ -83,8 +107,10 @@ nonisolated final class SuggestionProvider: Sendable {
             }
         }
 
-        // Open tabs matching query (excluding the top hit)
-        let matchingTabs = Self.matchingTabs(for: query, tabs: tabs, excluding: topHit?.tabID)
+        // Open tabs matching query (excluding the top hit), and tabs on the
+        // servers whose folder name it matches
+        let matchingTabs = Self.matchingTabs(for: query, tabs: tabs, excluding: topHit?.tabID,
+                                             serverPorts: Self.folderMatchedPorts(serverMatch))
 
         // Other visited hosts the prefix could mean (excluding the top hit's,
         // and any whose root is already offered as an open tab row)
@@ -101,14 +127,27 @@ nonisolated final class SuggestionProvider: Sendable {
         var excludedURLs = matchingTabURLs
         if let topHit { excludedURLs.insert(topHit.url) }
         excludedURLs.formUnion(otherHosts.map(\.url))
-        let historyItems: [SuggestionItem] = db.searchHistory(query: query, spaceIDs: historySpaceIDs, limit: 8)
-            .filter { !excludedURLs.contains($0.url) }
+        let historyItems: [SuggestionItem] = Self.stablyDemoting(
+            db.searchHistory(query: query, spaceIDs: historySpaceIDs, limit: 8)
+                .filter { !excludedURLs.contains($0.url) }) { isDeadLocal($0.url) }
             .map { .historyResult(url: $0.url, title: Self.displayTitle($0), faviconURL: $0.faviconURL) }
+
+        // Servers the text matches that no row above stands for
+        var coveredURLs = Set(matchingTabURLs).union(otherHosts.map(\.url))
+        if let topHit { coveredURLs.insert(topHit.url) }
+        let serverItems = Self.serverRows(
+            for: serverMatch, coveredURLs: coveredURLs,
+            historyURLs: historyItems.compactMap { if case .historyResult(let url, _, _) = $0 { url } else { nil } },
+            rowsBeforeHistory: (topHit == nil ? 0 : 1) + 1 + hostItems.count + tabItems.count)
 
         var merged: [SuggestionItem] = []
         if let topHit { merged.append(topHit.item) }
         merged.append(.searchInput(text: query))
-        merged.append(contentsOf: hostItems)
+        // Visited local hosts nothing runs on now follow the running servers.
+        let deadHosts = hostItems.filter { if case .historyResult(let url, _, _) = $0 { isDeadLocal(url) } else { false } }
+        merged.append(contentsOf: hostItems.filter { !deadHosts.contains($0) })
+        merged.append(contentsOf: serverItems)
+        merged.append(contentsOf: deadHosts)
         merged.append(contentsOf: tabItems)
         merged.append(contentsOf: historyItems)
         return LocalSuggestions(items: Array(merged.prefix(Self.maxSuggestions)),
@@ -158,6 +197,70 @@ nonisolated final class SuggestionProvider: Sendable {
         let tabID: UUID?
         /// The URL the row stands for, kept out of the rows below it.
         let url: String
+
+        var isLocalServer: Bool {
+            if case .localServer = item { return true } else { return false }
+        }
+    }
+
+    // MARK: - Local servers (TASK-411)
+
+    /// The top hit a running server gives typed local input (`localhost:51`
+    /// → `localhost:5173`), with no SQLite: shared by `localSuggestions` and
+    /// the palette's instant pass, after `tabTopHit`. Only text that is
+    /// completing a host qualifies; a bare port or a folder name never takes
+    /// the row Return activates.
+    static func serverTopHit(for match: LocalServerMatch) -> TopHit? {
+        guard let host = match.completingHost, let server = match.servers.first else { return nil }
+        let url = server.url(host: host)
+        return TopHit(item: .localServer(url: url, server: server),
+                      inlineCompletion: "\(host):\(server.port)", tabID: nil, url: url)
+    }
+
+    /// The ports of the servers `match` found by folder name, whose open tabs
+    /// are offered whatever their title says. Typed addresses and ports find
+    /// those tabs by their URL already.
+    static func folderMatchedPorts(_ match: LocalServerMatch) -> Set<Int> {
+        guard match.completingHost == nil else { return [] }
+        return Set(match.servers.map(\.port))
+    }
+
+    /// At most this many server rows of their own.
+    static let maxServerRows = 4
+
+    /// The server rows of a list: one for each matched server that no row
+    /// above the servers (`coveredURLs`) and no history row that makes the
+    /// list stands for. History rows follow the servers after
+    /// `rowsBeforeHistory` other rows, and a history row past
+    /// `maxSuggestions` is cut, so it stands for nothing; dropping a server
+    /// row moves history up, so this settles on the rows that fit.
+    static func serverRows(for match: LocalServerMatch, coveredURLs: Set<String>, historyURLs: [String],
+                           rowsBeforeHistory: Int) -> [SuggestionItem] {
+        var rows = serverRows(for: match, coveredURLs: coveredURLs)
+        while true {
+            let room = max(0, maxSuggestions - rowsBeforeHistory - rows.count)
+            let next = serverRows(for: match, coveredURLs: coveredURLs.union(historyURLs.prefix(room)))
+            let settled = next.count == rows.count
+            rows = next
+            if settled { return rows }
+        }
+    }
+
+    /// A row for each matched server whose port no URL in `coveredURLs`
+    /// (the other rows of the list) is on.
+    static func serverRows(for match: LocalServerMatch, coveredURLs: Set<String>) -> [SuggestionItem] {
+        let coveredPorts = Set(coveredURLs.compactMap(LocalServerRules.loopbackPort(ofURL:)))
+        let host = match.completingHost ?? "localhost"
+        return match.servers
+            .filter { !coveredPorts.contains($0.port) }
+            .prefix(maxServerRows)
+            .map { .localServer(url: $0.url(host: host), server: $0) }
+    }
+
+    /// `items` with those `isDemoted` picks moved after the rest, each part
+    /// in its own order.
+    static func stablyDemoting<T>(_ items: [T], _ isDemoted: (T) -> Bool) -> [T] {
+        items.filter { !isDemoted($0) } + items.filter(isDemoted)
     }
 
     /// The top hit open tabs alone give, with no SQLite: shared by
@@ -197,10 +300,15 @@ nonisolated final class SuggestionProvider: Sendable {
 
     /// Up to three open tabs whose URL or title contains the query, other than
     /// the top hit's. Shared with the palette's instant pass.
-    static func matchingTabs(for query: String, tabs: [TabInfo], excluding topHitTabID: UUID?) -> [TabInfo] {
+    /// `serverPorts` are local servers the query named by folder (TASK-411):
+    /// their tabs match too.
+    static func matchingTabs(for query: String, tabs: [TabInfo], excluding topHitTabID: UUID?,
+                             serverPorts: Set<Int> = []) -> [TabInfo] {
         let q = query.lowercased()
         return Array(tabs.filter {
-            $0.tabID != topHitTabID && ($0.url.lowercased().contains(q) || $0.title.lowercased().contains(q))
+            $0.tabID != topHitTabID && ($0.url.lowercased().contains(q) || $0.title.lowercased().contains(q)
+                || (!serverPorts.isEmpty
+                    && LocalServerRules.loopbackPort(ofURL: $0.url).map(serverPorts.contains) == true))
         }.prefix(3))
     }
 

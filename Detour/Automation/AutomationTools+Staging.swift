@@ -516,7 +516,11 @@ extension AutomationTools {
                 let profile = palette.historyRowProfileID(for: url).flatMap { palette.historyProfiles?.name(of: $0) }
                 return ["kind": "history", "title": .string(title), "url": .string(url),
                         "chip": .nullable(chip?.text), "chip_color": .nullable(chip?.colorHex),
-                        "profile": .nullable(profile)]
+                        "profile": .nullable(profile), "folder": .nullable(palette.localServerFolder(for: url))]
+            case .localServer(let url, let server):
+                return ["kind": "local_server", "url": .string(url), "directory": .string(server.directory),
+                        "process": .string(server.processName),
+                        "folder": .nullable(palette.localServerFolder(for: url))]
             case .searchInput(let text): return ["kind": "input", "title": .string(text)]
             case .searchSuggestion(let text): return ["kind": "search_suggestion", "title": .string(text)]
             default: return ["kind": "other"]

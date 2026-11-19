@@ -91,6 +91,7 @@ enum SuggestionItem {
     case siteSearchHint(id:name:fieldText:)       // "Search <name>" with a Tab badge
     case command(PaletteCommand)                  // a browser command (TASK-320)
     case commandChoice(CommandChoice)             // a value for the command in the chip (TASK-320 AC #3)
+    case localServer(url:server:)                 // a server running on this Mac (TASK-411)
 }
 ```
 
@@ -118,6 +119,12 @@ returns, in order, capped at `maxSuggestions` (12):
 The top hit also supplies `inlineCompletion`: for a host query the host
 (`displayHost`), otherwise the scheme-stripped display URL (`displayURL`
 drops `https://`, `http://`, a leading `www.` and one trailing slash).
+
+Local input (`localhost`, a port, a running server's folder name) adds the
+servers running on this Mac: a running server can be the top hit, joins the
+tab or history row on its port, gets its own row otherwise, and history rows
+on ports nothing listens on sink. See
+[Local server suggestions](./local-server-suggestions.md).
 
 ## Host queries complete to the site
 
@@ -507,6 +514,7 @@ it. Errors yield an empty list silently.
 - [Incognito](../architecture/incognito.md) - the Private-window boundary the tab candidates respect.
 - [History page](./history-page.md) - whose profile scope the palette shares since TASK-209.
 - [Quick Detour](./quick-detour.md) - its palettes, and the scope its visits are filed under.
+- [Local server suggestions](./local-server-suggestions.md) - the running-servers source (TASK-411).
 
 [^task-83]: Treat host:port and localhost input as a URL
 [^task-137]: A normal window's open-tab suggestions include tabs from open Private windows

@@ -463,6 +463,7 @@ final class QuickDetourWindowController: NSWindowController {
         guard commandPaletteView == nil else { return }
         let palette = CommandPaletteView()
         palette.delegate = self
+        palette.localServerDirectory = .shared
         // No open tabs to offer: switching to a tab is another window's
         // business, and this window has one page.
         palette.tabStore = nil

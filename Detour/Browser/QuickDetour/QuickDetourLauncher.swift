@@ -61,6 +61,7 @@ final class QuickDetourLauncher: NSObject {
         let panel = QuickDetourPalettePanel()
         let palette = CommandPaletteView()
         palette.delegate = self
+        palette.localServerDirectory = .shared
         // No open tabs: switching to one would bring a browser window forward
         // instead of opening a Quick Detour.
         palette.tabStore = nil

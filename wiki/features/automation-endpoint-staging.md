@@ -106,7 +106,8 @@ from those bounds, not from the frame asked for (see Traps).
 `open_ui quick_detour_launcher` (TASK-409) shows the launcher panel for
 `profile_id` (default: the frontmost window's, as the menu item picks),
 types `text` into its field, waits for the history pass, and returns its rows
-(kind, title, url, and each history row's `chip`, `chip_color` and the `profile` it opens in) with the panel's
+(kind, title, url, and each history row's `chip`, `chip_color`, `folder` and the `profile` it opens in; a
+`local_server` row's url, directory, process and folder, TASK-411) with the panel's
 `window_number` for `screencapture -l`. The global hotkey and the panel are
 otherwise out of the endpoint's reach.
 

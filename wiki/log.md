@@ -1,5 +1,8 @@
 # Wiki Update Log
 
+## 2026-11-19
+* **Creation**: TASK-411 — [Local server suggestions](features/local-server-suggestions.md): the palette and the Quick Detour launcher offer the HTTP/HTTPS servers running on this Mac with their folder (libproc scan of the user's listeners, the project-server filter measured on the user's Mac, the concurrent TLS + plain probe and what it caches, typed-text matching, rank open tab > running server > history, dead-port demotion, the late scan). Linked from [Suggestion pipeline](features/suggestion-pipeline.md), [Quick Detour launcher](features/quick-detour-launcher.md); `local_server` rows in [Automation endpoint staging](features/automation-endpoint-staging.md).
+
 ## 2026-11-18
 * **Update**: TASK-410 — [GPU process IOSurface limit](platform/gpu-iosurface-limit.md): new "Context-loss reports" section and recycler-table row. A page's trusted `webglcontextlost`/`webglcontextcreationerror` (isolated world, all frames, capture on `window`) prompts an immediate count. At 15,000 or more it recycles even within the hour and while audio plays, never during a call, and ignores reports within 5 min of a recycle. It misses canvases outside the document (a page-world wrapper was rejected as detectable). Includes the runtime check.
 

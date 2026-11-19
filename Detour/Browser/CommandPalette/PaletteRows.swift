@@ -100,7 +100,8 @@ enum PaletteRows {
 
     private static func url(of item: SuggestionItem) -> String? {
         switch item {
-        case .historyResult(let url, _, _), .openTab(_, _, let url, _, _), .siteSearch(_, _, let url):
+        case .historyResult(let url, _, _), .openTab(_, _, let url, _, _), .siteSearch(_, _, let url),
+             .localServer(let url, _):
             return url
         case .searchInput, .searchSuggestion, .siteSearchHint, .command, .commandChoice:
             return nil

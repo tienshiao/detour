@@ -2745,6 +2745,7 @@ class BrowserWindowController: NSWindowController {
         let palette = CommandPaletteView()
         palette.delegate = self
         palette.tabStore = store
+        palette.localServerDirectory = .shared
         // The registry's commands this window answers (TASK-320).
         palette.commandSource = PaletteCommands.source(for: self)
         scopeCommandPalette(palette)

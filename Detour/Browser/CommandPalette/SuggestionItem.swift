@@ -17,4 +17,7 @@ nonisolated enum SuggestionItem: Equatable, Sendable {
     /// A value for the command in the field's chip (TASK-320 AC #3): Return
     /// runs the command on it.
     case commandChoice(CommandChoice)
+    /// A server running on this Mac (TASK-411) that no tab or history row in
+    /// the list stands for: Return opens `url`, its root on the host typed.
+    case localServer(url: String, server: LocalServer)
 }

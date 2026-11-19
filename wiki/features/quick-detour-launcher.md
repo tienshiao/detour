@@ -180,6 +180,7 @@ Suites, counts and the runtime passes are on [Quick Detour tests and runtime che
 - [Quick Detour hotkey](./quick-detour-hotkey.md) — what shows the panel from any app, and the toggle.
 - [Command palette](./command-palette.md) — the palette the panel holds.
 - [Suggestion pipeline](./suggestion-pipeline.md) — the profile-scoped history it suggests from.
+- [Local server suggestions](./local-server-suggestions.md) — the servers running on this Mac, which the launcher offers too (TASK-411).
 - [A page's key equivalents and its undo](../platform/page-key-equivalents-and-undo.md) — the panel's Undo and Redo.
 - [Quick Detour tests and runtime checks](./quick-detour-tests.md) — the suites, what was written first, and the runtime passes.
 
