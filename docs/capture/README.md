@@ -17,7 +17,7 @@ docs/capture/capture.py "$APP" --out /tmp/c --shots split --offline \
 ```
 
 What `capture.py` does, in order, and undoes at the end (also on failure or
-Ctrl-C): builds and starts `vdisplay` (a 1600 × 1000 pt @2x display), launches
+Ctrl-C): builds and starts `vdisplay` (a 1600 × 1000 pt @2x display; `--display WxH` for another size), launches
 the app with a fresh `DetourCapture-<random>` data directory and the endpoint
 on, seeds `demo-world.json` (`seed_world`), sets light appearance, hides the
 connected-agent capsule (`set_debug_override automation_indicator off`),
@@ -40,6 +40,30 @@ Shots (add one as a `shot_<name>` method and a `SHOTS` entry):
 | `spaces` | `spaces.mp4` + poster, 1400 × 1760 px | 560 × 700 pt | Work, then Next Space ×3, Previous Space ×3 (`run_menu_item`); refused if Detour lost the front during the take |
 | `split` | `split.webp`, 2784 × 1584 px | 1280 × 680 pt | the Personal space's split |
 | `space-editor` | `spaces-editor.webp`, 1400 × 1760 px | 560 × 700 pt | over Reading: `open_ui space_editor` (🍳, Sage, Personal), "Recipes" typed at 110 ms a character |
+| `profiles-list` | `profiles-list.webp`, 448 × 230 px | Settings | `open_ui settings pane=profiles row=1`, cropped to the list's first four rows |
+| `profiles-spaces` | `profiles-spaces.webp`, 448 × 230 px | Settings | `open_ui settings pane=spaces row=0`, cropped likewise |
+| `automation` | `automation.mp4` + poster, 2280 × 1800 px | 1000 × 720 pt | reconnected as "Claude Code" with the capsule on: the agent clicks the GitHub Docs row, the page's search, types "pull request", Escape, back to the GitHub row |
+| `link-routes` | `link-routes.webp`, 1760 × 1808 px | Settings | banking world: `open_ui settings pane=links` |
+| `privacy` | `privacy.webp`, 1760 × 2516 px | Settings, 1096 pt tall | banking world, `--display 1600x1300 --dark-reader <crx>`: Dark Reader installed in Personal, Banking selected, Identify as → Safari through the pop-up |
+
+The last two need the **banking world** (`banking_world` in `capture.py`:
+Client X becomes Banking with a Banking space, and the Quarantine route takes
+Mail's links rather than TextEdit's), so they run on their own:
+
+```bash
+docs/capture/capture.py "$APP" --out ~/Desktop/captures --shots link-routes,privacy \
+    --display 1600x1300 --dark-reader darkreader.crx
+```
+
+Dark Reader's CRX comes from the Chrome Web Store's update URL
+(`https://clients2.google.com/service/update2/crx?response=redirect&prodversion=140.0&acceptformat=crx2,crx3&x=id%3Deimadpbcbfnmbkopoojfekhnkhdbieeh%26uc`).
+Settings stills park the browser window on the main display and turn the
+agent pointer off while they are taken. Window ids are per session and
+handed out in `list_windows` order, so the script looks the browser window up
+by kind rather than assuming `window_id` 1. Typing into a page with live
+suggestions: Wikipedia's search flashed unsuitable people and events between
+keystrokes (Nov 19 2026), so the loop types into GitHub Docs, whose
+suggestions are its own articles; check every frame of a typing take.
 
 Margins around the window: 70 pt left and right, 60 top, 120 bottom (the
 split still: 56, 38, 74, as the site's), so the native shadow fades out on

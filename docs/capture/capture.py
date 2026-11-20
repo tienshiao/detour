@@ -171,6 +171,41 @@ h1{{font-size:28px;margin:0 0 16px}} p{{line-height:1.6;color:#555}}</style></he
     return server
 
 
+# MARK: - World variants
+
+def banking_world(world):
+    """The world of the Link Routes and privacy stills (as in their 0.4.2
+    captures): the Client X profile is Banking, used by a Banking space, and
+    the Quarantine route takes every link from Mail rather than TextEdit."""
+    world = json.loads(json.dumps(world))
+    for profile in world["profiles"]:
+        if profile["name"] == "Client X":
+            profile["name"] = "Banking"
+            profile["favorites"] = []
+    for index, space in enumerate(world["spaces"]):
+        if space["profile"] == "Client X":
+            world["spaces"][index] = {"name": "Banking", "emoji": "🏦", "color": "2F6FDB", "profile": "Banking",
+                                      "tabs": [{"url": "https://en.wikipedia.org/wiki/Online_banking",
+                                                "title": "Online banking - Wikipedia", "selected": True}]}
+    for route in world.get("link_routes", []):
+        if route.get("source_app") == "com.apple.TextEdit":
+            route["source_app"] = "com.apple.mail"
+    return world
+
+
+# Shots that need a variant of the fixture; the rest use it as it is. One run
+# seeds one world, so a run takes shots of one world only.
+SHOT_WORLDS = {"link-routes": banking_world, "privacy": banking_world}
+
+
+def shot_world(shots):
+    worlds = {SHOT_WORLDS.get(shot) for shot in shots}
+    if len(worlds) > 1:
+        raise ValueError("these shots need different worlds; take "
+                         + ", ".join(s for s in shots if s in SHOT_WORLDS) + " in a run of their own")
+    return worlds.pop() if worlds else None
+
+
 # MARK: - Cleanup of an isolated run (as docs/harness/task324-endpoint-checks.py)
 
 WEBKIT_NAMESPACE = uuid.UUID("9DC6C971-6D72-44C8-9541-D6DEBE44E0A3")
@@ -226,11 +261,39 @@ class Capture:
         self.vdisplay = None
         self.server = None
         self.session = None
+        self.endpoint = None
+        self.browser = None
         self.wallpaper_set = False
         self.display = None
         self.taken = []
 
     # Endpoint
+
+    def connect(self, client_name):
+        """A session as `client_name`, replacing the one open: the
+        connected-agent capsule names the first session's client, so the
+        Automation loop reconnects as "Claude Code". Window ids are per
+        session, so the browser window is looked up again."""
+        if self.session is not None:
+            try:
+                self.session.close()
+            except Exception:
+                pass
+        self.session = load_client().Session(self.endpoint["url"], self.endpoint["token"], client_name)
+        self.session.open()
+        self.browser = None
+
+    def browser_id(self):
+        """The browser window's window_id in this session. Ids are handed out
+        in list_windows order the first time a session sees a window, so with
+        Settings open the browser window is not always 1."""
+        if self.browser is None:
+            windows = self.call("list_windows")["windows"]
+            self.browser = next(w["window_id"] for w in windows if w["kind"] == "browser")
+        return self.browser
+
+    def window_of_kind(self, kind):
+        return next(w for w in self.call("list_windows")["windows"] if w["kind"] == kind)
 
     def call(self, tool, **arguments):
         result = self.session.call(tool, arguments)
@@ -246,10 +309,12 @@ class Capture:
 
     def start_virtual_display(self):
         binary = os.path.join(self.out, "vdisplay")
-        if not os.path.exists(binary):
+        source = os.path.join(KIT, "vdisplay.m")
+        if not os.path.exists(binary) or os.path.getmtime(binary) < os.path.getmtime(source):
             subprocess.run(["clang", "-fobjc-arc", "-framework", "Foundation", "-framework", "CoreGraphics",
-                            os.path.join(KIT, "vdisplay.m"), "-o", binary], check=True)
-        self.vdisplay = subprocess.Popen([binary], stdout=subprocess.PIPE, text=True)
+                            source, "-o", binary], check=True)
+        width, height = self.args.display
+        self.vdisplay = subprocess.Popen([binary, str(width), str(height)], stdout=subprocess.PIPE, text=True)
         line = self.vdisplay.stdout.readline()
         match = re.search(r"displayID=(\d+)", line)
         if not match:
@@ -275,14 +340,16 @@ class Capture:
             raise RuntimeError("Detour did not open its endpoint")
         time.sleep(1.5)
         with open(endpoint_file) as f:
-            endpoint = json.load(f)
-        self.session = load_client().Session(endpoint["url"], endpoint["token"], "capture.py")
-        self.session.open()
+            self.endpoint = json.load(f)
+        self.connect("capture.py")
         self.log(f"Detour pid {self.detour.pid}, data directory {self.data_dir}")
 
     def seed(self):
         with open(self.args.fixture) as f:
             world = json.load(f)
+        variant = shot_world(self.args.shots)
+        if variant is not None:
+            world = variant(world)
         if self.args.offline:
             pages = {}
             self.server = serve_offline(pages, self.args.favicons)
@@ -330,7 +397,7 @@ class Capture:
         frame = self.display["frame"]
         x = round(visible["x"] - frame["x"] + (visible["width"] - width) / 2)
         y = round(visible["y"] - frame["y"] + (visible["height"] - height) / 2 + dy)
-        placed = self.call("set_window_frame", window_id=1, x=x, y=y, width=width, height=height,
+        placed = self.call("set_window_frame", window_id=self.browser_id(), x=x, y=y, width=width, height=height,
                            display_id=self.display["display_id"], activate=True)
         time.sleep(0.6)
         if not self.window_is_front():
@@ -338,7 +405,7 @@ class Capture:
             # the Mac (or an app took the front), and the take would be grey.
             raise RuntimeError(f"Detour did not keep the front ({front_app()} has it); capture while the Mac is idle")
         # Read back right before recording: the README's first loops drifted.
-        window = [w for w in self.call("list_windows")["windows"] if w["window_id"] == 1][0]
+        window = [w for w in self.call("list_windows")["windows"] if w["window_id"] == self.browser_id()][0]
         bounds = window["screen_bounds"]
         if bounds is None:
             raise RuntimeError("the window is not on screen")
@@ -360,11 +427,11 @@ class Capture:
         items = self.call("list_tabs", space_id=self.spaces[name])["items"]
         tabs = [i for i in items if i["section"] == "tab"]
         chosen = next((i for i in tabs if tab_title and i["title"].startswith(tab_title)), tabs[0])
-        self.call("select_tab", window_id=1, id=chosen["id"], space_id=self.spaces[name])
+        self.call("select_tab", window_id=self.browser_id(), id=chosen["id"], space_id=self.spaces[name])
         return chosen
 
     def wait_loaded(self, timeout=15):
-        window = [w for w in self.call("list_windows")["windows"] if w["window_id"] == 1][0]
+        window = [w for w in self.call("list_windows")["windows"] if w["window_id"] == self.browser_id()][0]
         tab = window.get("selected_tab_id")
         if tab:
             try:
@@ -406,7 +473,7 @@ class Capture:
         """Whether Detour is the active app with window 1 key: what the take
         needs (traffic lights in colour)."""
         listing = self.call("list_windows")
-        window = [w for w in listing["windows"] if w["window_id"] == 1][0]
+        window = [w for w in listing["windows"] if w["window_id"] == self.browser_id()][0]
         return listing["app_active"] and window["is_key"]
 
     def shot_spaces(self, attempts=1):
@@ -431,7 +498,7 @@ class Capture:
                 for index, path in enumerate([["Spaces", "Next Space"]] * 3 + [["Spaces", "Previous Space"]] * 3):
                     if index:
                         time.sleep(1.7)
-                    self.call("run_menu_item", window_id=1, path=path)
+                    self.call("run_menu_item", window_id=self.browser_id(), path=path)
                     if not self.window_is_front():
                         spoiled.append(index)
                 elapsed = time.time() - start
@@ -463,16 +530,206 @@ class Capture:
         self.select_space("Reading")
         self.wait_loaded()
         bounds, _ = self.place(560, 700)
-        self.call("open_ui", what="space_editor", window_id=1, name="", emoji="🍳", color="5DA37A",
+        self.call("open_ui", what="space_editor", window_id=self.browser_id(), name="", emoji="🍳", color="5DA37A",
                   profile_id=self.profiles["Personal"])
         time.sleep(0.6)
-        self.call("type_text", window_id=1, text="Recipes", interval_ms=110)
+        self.call("type_text", window_id=self.browser_id(), text="Recipes", interval_ms=110)
         time.sleep(1.0)
         self.still("spaces-editor", self.region(bounds))
-        self.call("press_key", window_id=1, key="escape")
+        self.call("press_key", window_id=self.browser_id(), key="escape")
         time.sleep(0.6)
 
-    SHOTS = {"spaces": shot_spaces, "split": shot_split, "space-editor": shot_space_editor}
+    # MARK: Settings stills
+
+    def pointer(self, on):
+        """The agent pointer would sit in a Settings still where the last
+        click landed; stills of Settings leave it out."""
+        if self.args.agent_pointer:
+            self.call("set_debug_override", name="agent_pointer", value="on" if on else "off")
+
+    def place_settings(self, pane, row=None, height=None):
+        """The Settings window on `pane` (row selected in its list) mid
+        virtual display, front and key, with the browser window moved to the
+        main display out of the frame. Returns the window server's bounds and
+        the window's id."""
+        main = next(d for d in self.call("list_displays")["displays"] if d["main"])
+        self.call("set_window_frame", window_id=self.browser_id(), x=0, y=0, width=800, height=600,
+                  display_id=main["display_id"], activate=False)
+        arguments = {"what": "settings", "pane": pane}
+        if row is not None:
+            arguments["row"] = row
+        opened = self.call("open_ui", **arguments)
+        time.sleep(0.8)   # the window animates to the pane's size
+        settings = self.window_of_kind("settings")
+        width = settings["frame"]["width"]
+        height = height or settings["frame"]["height"]
+        visible, frame = self.display["visible_frame"], self.display["frame"]
+        if height + MARGIN["top"] + MARGIN["bottom"] > visible["height"]:
+            raise RuntimeError(f"the virtual display is too short for a {height} pt Settings window: "
+                               f"--display {frame['width']}x{height + MARGIN['top'] + MARGIN['bottom'] + 40}")
+        x = round(visible["x"] - frame["x"] + (visible["width"] - width) / 2)
+        y = round(visible["y"] - frame["y"] + (visible["height"] - height) / 2)
+        placed = self.call("set_window_frame", window_id=settings["window_id"], x=x, y=y, width=width,
+                           height=height, display_id=self.display["display_id"], activate=True)
+        time.sleep(1.0)
+        listing = self.call("list_windows")
+        settings = next(w for w in listing["windows"] if w["kind"] == "settings")
+        if not (listing["app_active"] and settings["is_key"]):
+            raise RuntimeError(f"Settings did not keep the front ({front_app()} has it); capture while the Mac is idle")
+        if not placed.get("settled"):
+            self.log(f"Settings had not settled when placed: {placed.get('screen_bounds')}")
+        return settings["screen_bounds"], settings["window_id"], opened
+
+    def park_settings(self):
+        """Settings off the virtual display, so later takes do not show it."""
+        main = next(d for d in self.call("list_displays")["displays"] if d["main"])
+        settings = self.window_of_kind("settings")
+        self.call("set_window_frame", window_id=settings["window_id"], x=40, y=40,
+                  width=settings["frame"]["width"], height=settings["frame"]["height"],
+                  display_id=main["display_id"], activate=False)
+
+    def settings_still(self, name, pane, row=None, height=None, stage=None, crop=None):
+        """A still of the Settings window. `stage(window_id)` runs once it is
+        placed; `crop` (x, y, width, height in points from the window's top
+        left) keeps only that part, at 2x, as the profile list insets."""
+        self.pointer(False)
+        try:
+            bounds, window_id, _ = self.place_settings(pane, row, height)
+            if stage is not None:
+                stage(window_id)
+                time.sleep(1.0)
+            region = self.region(bounds)
+            if crop is None:
+                self.still(name, region)
+                return
+            png = os.path.join(self.out, f"{name}-window.png")
+            x, y, w, h = region
+            subprocess.run(["screencapture", "-x", f"-R{x},{y},{w},{h}", png], check=True)
+            cx, cy, cw, ch = crop
+            left = round((bounds["x"] - x + cx) * 2)
+            top = round((bounds["y"] - y + cy) * 2)
+            cropped = os.path.join(self.out, f"{name}.png")
+            subprocess.run(["sips", "-c", str(ch * 2), str(cw * 2), "--cropOffset", str(top), str(left), png,
+                            "--out", cropped], check=True, capture_output=True)
+            subprocess.run(["cwebp", "-quiet", "-q", "90", cropped, "-o", os.path.join(self.out, f"{name}.webp")],
+                           check=True)
+            self.taken.append(f"{name}.webp")
+        finally:
+            self.park_settings()
+            self.pointer(True)
+
+    def shot_link_routes(self):
+        """The Link Routes still (banking world): the Links pane with its
+        three routes, GitHub to Work, Wikipedia to Reading, Mail to Quarantine."""
+        self.settings_still("link-routes", "links")
+
+    def shot_profiles_list(self):
+        """The Profiles list inset: its first four rows with Work selected."""
+        self.settings_still("profiles-list", "profiles", row=1, crop=(18, 167, 224, 115))
+
+    def shot_profiles_spaces(self):
+        """The Spaces list inset: each space with its profile, Work selected."""
+        self.settings_still("profiles-spaces", "spaces", row=0, crop=(18, 152, 224, 115))
+
+    def shot_privacy(self):
+        """The privacy still (banking world, --display 1600x1300 or taller,
+        --dark-reader CRX): the Banking profile's whole pane, with trackers
+        blocked, Dark Reader installed but off here (it is on in Personal),
+        and Safari's user agent chosen through the pop-up as a person would."""
+        if not self.args.dark_reader:
+            raise RuntimeError("the privacy still needs --dark-reader (Dark Reader's CRX from the Chrome Web Store)")
+        installed = self.call("install_extension", path=os.path.abspath(self.args.dark_reader),
+                              profile_id=self.profiles["Personal"])
+        if not installed.get("loaded"):
+            raise RuntimeError(f"Dark Reader did not load: {installed}")
+
+        def safari_user_agent(window_id):
+            # The pop-up's place depends on the pane above it: find it by its
+            # label, scanning down a column at the pop-ups' x (content points).
+            for y in range(560, 1000, 6):
+                hit = self.call("hit_test", window_id=window_id, x=662, y=y)
+                if hit.get("view") == "NSPopUpButton" and hit.get("label") == "Identify as":
+                    f = hit["frame"]
+                    self.call("click", window_id=window_id, x=f["x"] + f["width"] / 2, y=f["y"] + f["height"] / 2)
+                    self.call("choose_menu_item", title="Safari")
+                    # Back to the list, as a person would: its selection turns
+                    # blue again and the pop-up loses its focus ring. The
+                    # Banking row, in content points (below the 88 pt toolbar).
+                    self.call("click", window_id=window_id, x=130, y=179)
+                    return
+            raise RuntimeError("no Identify as pop-up in the Profiles pane")
+        # Rows: Private, Work, Personal, Banking. The whole pane is 1096 pt.
+        self.settings_still("privacy", "profiles", row=3, height=1096, stage=safari_user_agent)
+
+    # MARK: The Automation loop
+
+    def shot_automation(self, attempts=2):
+        """The Automation (MCP) loop, 1000 × 720 pt (tall enough for the
+        GitHub Docs row): connected as "Claude Code" (the capsule names it),
+        the agent clicks the GitHub Docs row in the Work sidebar, opens the
+        page's search and types "pull request" while its suggestions appear,
+        then clicks back to the GitHub tab, so the loop ends where it starts.
+        GitHub Docs suggests only its own articles; Wikipedia's live
+        suggestions were tried first and flashed unsuitable people and events
+        between keystrokes (Nov 19 2026)."""
+        self.connect("Claude Code")
+        self.call("set_debug_override", name="automation_indicator", value="on")
+        try:
+            work = self.spaces["Work"]
+            items = self.call("list_tabs", space_id=work)["items"]
+            tabs = [i for i in items if i["section"] == "tab"]
+            github = next(i for i in tabs if i["title"].startswith("GitHub - "))
+            docs = next(i for i in tabs if i["title"].startswith("GitHub Docs"))
+            # Sidebar rows in content points at this window size (measured
+            # Nov 19 2026; each click is checked through the selection).
+            rows = {docs["id"]: (120, 640), github["id"]: (120, 532)}
+            for attempt in range(1, attempts + 1):
+                self.call("select_tab", window_id=self.browser_id(), id=docs["id"], space_id=work)
+                self.wait_loaded()
+                self.call("select_tab", window_id=self.browser_id(), id=github["id"], space_id=work)
+                self.wait_loaded()
+                bounds, _ = self.place(1000, 720)
+                time.sleep(3.5)   # the pointer of the staging clicks fades
+                spoiled = []
+
+                def click_row(tab):
+                    x, y = rows[tab["id"]]
+                    self.call("click", window_id=self.browser_id(), x=x, y=y)
+                    window = [w for w in self.call("list_windows")["windows"]
+                              if w["window_id"] == self.browser_id()][0]
+                    if window["selected_tab_id"] != tab["id"]:
+                        spoiled.append(f"row of {tab['title'][:20]} missed")
+
+                def steps():
+                    start = time.time()
+                    time.sleep(1.0)
+                    click_row(docs)
+                    time.sleep(1.6)
+                    self.call("click", context=docs["id"], selector='button[data-testid="homepage-search"]')
+                    time.sleep(1.2)
+                    self.call("type_text", context=docs["id"], text="pull request", interval_ms=130)
+                    time.sleep(2.4)
+                    self.call("press_key", context=docs["id"], key="escape")
+                    time.sleep(0.9)
+                    click_row(github)
+                    elapsed = time.time() - start
+                    if not self.window_is_front():
+                        spoiled.append("front")
+                    return elapsed
+                # Trimmed 3.8 s after the last click: the pointer lingers 3 s
+                # and fades, so the loop's last frame matches its first.
+                self.record("automation", self.region(bounds), 22, steps, settle=3.8)
+                if not spoiled:
+                    return
+                self.log(f"take {attempt} spoiled: {spoiled} (front: {front_app()})")
+                self.taken.remove("automation.mp4")
+            raise RuntimeError("the Automation loop was never clean (see the log)")
+        finally:
+            self.call("set_debug_override", name="automation_indicator", value="off")
+
+    SHOTS = {"spaces": shot_spaces, "split": shot_split, "space-editor": shot_space_editor,
+             "profiles-list": shot_profiles_list, "profiles-spaces": shot_profiles_spaces,
+             "automation": shot_automation, "link-routes": shot_link_routes, "privacy": shot_privacy}
 
     # MARK: Run
 
@@ -533,7 +790,13 @@ def main():
     parser.add_argument("app")
     parser.add_argument("--out", required=True, help="where movies, stills and logs go (never the repository)")
     parser.add_argument("--fixture", default=os.path.join(KIT, "demo-world.json"))
-    parser.add_argument("--shots", default=",".join(Capture.SHOTS))
+    parser.add_argument("--shots", default=",".join(s for s in Capture.SHOTS if s not in SHOT_WORLDS),
+                        help="default: every shot of the fixture as it is; link-routes and privacy "
+                             "(the banking world) run on their own")
+    parser.add_argument("--display", default="1600x1000",
+                        help="the virtual display in points, WIDTHxHEIGHT (privacy: 1600x1300)")
+    parser.add_argument("--dark-reader", default=None,
+                        help="privacy: Dark Reader's CRX, installed in the Personal profile")
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--favicons", default=None)
     parser.add_argument("--appearance", choices=["light", "dark"], default="light")
@@ -547,6 +810,14 @@ def main():
     unknown = [s for s in args.shots if s not in Capture.SHOTS]
     if unknown:
         parser.error(f"unknown shots {unknown}; there are {list(Capture.SHOTS)}")
+    try:
+        shot_world(args.shots)
+    except ValueError as error:
+        parser.error(str(error))
+    match = re.fullmatch(r"(\d+)x(\d+)", args.display)
+    if not match:
+        parser.error("--display is WIDTHxHEIGHT in points, such as 1600x1300")
+    args.display = (int(match.group(1)), int(match.group(2)))
     if os.path.abspath(args.out).startswith(REPO + os.sep):
         parser.error("--out must be outside the repository")
     capture = Capture(args)

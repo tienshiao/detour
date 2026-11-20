@@ -28,13 +28,20 @@
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
-        unsigned int w = 1600, h = 1000;  // points; pixels are 2x
+        // Points; pixels are 2x. `vdisplay [width height]`: the privacy
+        // still needs a Settings window taller than 1000 points.
+        unsigned int w = 1600, h = 1000;
+        if (argc == 3) {
+            w = (unsigned int)atoi(argv[1]);
+            h = (unsigned int)atoi(argv[2]);
+            if (w < 800 || h < 600 || w > 4000 || h > 3000) { fprintf(stderr, "vdisplay: bad size\n"); return 2; }
+        }
         CGVirtualDisplayDescriptor *d = [CGVirtualDisplayDescriptor new];
         d.queue = dispatch_get_main_queue();
         d.name = @"Detour Capture 2x";
         d.maxPixelsWide = w * 2;
         d.maxPixelsHigh = h * 2;
-        d.sizeInMillimeters = CGSizeMake(340, 212);
+        d.sizeInMillimeters = CGSizeMake(340.0 * w / 1600, 212.0 * h / 1000);  // same density at any size
         d.serialNum = 0x0D70;
         d.productID = 0x1234;
         d.vendorID = 0x3456;

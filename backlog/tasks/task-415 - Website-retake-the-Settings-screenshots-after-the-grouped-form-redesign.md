@@ -3,10 +3,10 @@ id: TASK-415
 title: >-
   Website: capture session — retake the Settings stills, and record the
   Automation (MCP) loop
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-20T02:57:00Z'
-updated_date: '2026-11-20T03:17:00Z'
+updated_date: '2026-11-20T06:11:00Z'
 labels:
   - website
 dependencies: []
@@ -31,4 +31,8 @@ TASK-338 redesigned Settings (grouped rows, switches) and TASK-327 added a Short
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-19: the user asked to record the Automation page's video later, with this capture session, not on release night. The page shipped on website branch guides-0.5.0 without media (the schema allows it).
+
+2026-11-19 capture run (Debug build of 472ee7bd; no app code changed since c9ec65cd, so the stills match 0.5.0). Stills showing Settings: link-routes, privacy, profiles-list, profiles-spaces (checked: web-extensions, private-browsing, content-blocker, dev-mode and history show no Settings window). Retaken with new capture.py shots (profiles-list, profiles-spaces, link-routes, privacy, automation; banking world variant; vdisplay size option; browser window looked up by kind). Automation loop: 1000x720 pt, Claude Code capsule, agent clicks the GitHub Docs row, its search, types 'pull request', back to GitHub; first and last frames match. Wikipedia search was rejected as the typing target: its live suggestions flashed Saddam Hussein, the Sandy Hook shooting and a convicted murderer between keystrokes. Candidates on website branch media-0.5.0 (e055300), built, NOT deployed, awaiting the user's review. Kit changes (docs/capture/capture.py, vdisplay.m, README.md) uncommitted in MyBrowser.
+
+Also viewed tab-archiving and both arc-import stills: no Settings window. The home page uses profiles-list/-spaces at the same 448x230 size. Website checkout switched back to main after the branch commit.
 <!-- SECTION:NOTES:END -->
