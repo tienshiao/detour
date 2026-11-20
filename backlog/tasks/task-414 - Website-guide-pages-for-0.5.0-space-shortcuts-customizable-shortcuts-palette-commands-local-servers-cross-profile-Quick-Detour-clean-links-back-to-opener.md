@@ -4,11 +4,11 @@ title: >-
   Website: guide pages for 0.5.0 (space shortcuts, customizable shortcuts,
   palette commands, local servers, cross-profile Quick Detour, clean links, back
   to opener)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-20T02:57:00Z'
-updated_date: '2026-11-20T03:01:00Z'
+updated_date: '2026-11-20T03:37:00Z'
 labels:
   - website
 dependencies:
@@ -34,8 +34,8 @@ Every claim is checked against the app's code (menu titles, setting labels, shor
 <!-- AC:BEGIN -->
 - [x] #1 The Spaces guide, Arc hub and Keyboard Shortcuts page list ⌃1–⌃9 and no longer call jump-to-space missing
 - [x] #2 The Keyboard Shortcuts page says shortcuts can be changed in Settings › Shortcuts
-- [ ] #3 The command palette, Quick Detour, privacy and content blocker guides describe the 0.5.0 behaviour listed in the description
-- [ ] #4 Wording checked against the code; the site builds; the branch is reviewed by the user before it is deployed
+- [x] #3 The command palette, Quick Detour, privacy and content blocker guides describe the 0.5.0 behaviour listed in the description
+- [x] #4 Wording checked against the code; the site builds; the branch is reviewed by the user before it is deployed
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -49,4 +49,12 @@ Every claim is checked against the app's code (menu titles, setting labels, shor
 - privacy.md (step 6) and content-blocker.md (new section): Copy URL/Copy Link/Share… strip tracking parameters, the AdGuard switch; Update the lists sentence fixed for the redesigned rows (no In List/Active columns any more).
 - features index: Sleeping Tabs (memory pressure), Undo (page typing), Keyboard Shortcuts (customizable), new Clean Links and Local Servers entries.
 Checked against code: BrowserCommands.swift (titles, default keys, jumpToSpace), AppDelegate.updateSpacesMenu, SpaceJump order, ContentBlockerSettingsViewController and ProfilesSettingsViewController labels, ShortcutsSettingsViewController (Restore Defaults), the wiki's palette/tracking-parameters/keyboard-shortcuts/tab-opener pages, TASK-409/411 summaries. npm run build: 23 pages; anchors and new rows checked in dist/. Not done: a visual check in a browser; the user's review; deploy. Automation (MCP) left off the site pending the user's decision.
+
+2026-11-19: also added a new guide, /features/automation/ (Automation, MCP: connect Claude Code via Copy Claude Code Command and other clients via Copy MCP Config, what agents can do and cannot, uses, the indicator and agent pointer, Disconnect/Revoke/Turn Off, Private windows, safety), checked against GeneralSettingsViewController, AutomationApprovalPanel, BrowserWindowController+Automation and the wiki's automation-endpoint pages; one claim removed in that check (agents reach every profile, so no per-profile protection). The user said 'push it' without a browser review: merged ff to website main, built from a git archive of 0b3d3b5 with Node 24.22.1 (24 pages), pushed, wrangler deploy (version b9f69535), checked live with curl (automation page, shortcuts row, Spaces FAQ, palette section, index link). Not done: a visual check in a browser at desktop and phone widths. The Automation loop is in TASK-415.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The website now matches 0.5.0. Guides updated: Spaces and the Arc hub (⌃1–⌃9), Keyboard Shortcuts (⌃1–⌃9, customizable shortcuts, palette commands, Back to the opener), Command Palette (run a command, > list, command chips, local web servers), Quick Detour (history from every profile, local servers), Privacy and Content Blocker (clean links, the AdGuard URL Tracking switch, rows after the Settings redesign), the features index (Sleeping Tabs, Undo, Clean Links, Local Servers, Automation). New guide: Automation (MCP). Wording checked against the code; built and deployed 2026-11-19 (website 0b3d3b5), live pages checked with curl. Not checked visually in a browser. Follow-ups: TASK-415 (Settings stills and the Automation loop), TASK-292.4 phase 1 (reasons to choose Detour on the home page).
+<!-- SECTION:FINAL_SUMMARY:END -->

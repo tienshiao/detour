@@ -3,11 +3,11 @@ id: TASK-327
 title: >-
   Keyboard shortcuts: assign and customize the shortcuts of browser commands in
   Settings
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14T19:47:00Z'
-updated_date: '2026-11-16T05:54:00Z'
+updated_date: '2026-11-20T03:37:00Z'
 labels:
   - keyboard
   - menus
@@ -56,7 +56,7 @@ Open questions for the user:
 - [x] #4 A shortcut already used by another command, by the Quick Detour hotkey, or reserved by macOS is refused or reassigned as decided, and the user is told which command or system shortcut holds it
 - [x] #5 Restore Defaults resets one command or all of them to the built-in shortcuts
 - [x] #6 Tests cover the binding store (defaults, overrides, clearing, persistence) and conflict detection; the runtime check (/verify) records a shortcut in Settings and fires it in a browser window
-- [ ] #7 The wiki gets a page on keyboard shortcuts (where they are defined, how overrides apply, known layout limits), and the website keyboard-shortcuts page notes that shortcuts can be customized when this ships
+- [x] #7 The wiki gets a page on keyboard shortcuts (where they are defined, how overrides apply, known layout limits), and the website keyboard-shortcuts page notes that shortcuts can be customized when this ships
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -146,6 +146,8 @@ Left as is: (a) conflicts on shifted punctuation are not seen (a recording store
 2026-11-14 user decision: approved as built: main-menu commands only; ⌘ or ⌃ required except F1–F20; a taken key is refused with the holder named, never reassigned; Restore Defaults asks no confirmation; App Shortcuts set in System Settings win.
 
 2026-11-15, the user's decision: Cut, Copy, Paste and Select All stay fixed (not bindable), like Undo/Redo. The PROVISIONAL comment in BrowserCommands.fixedShortcuts is removed under TASK-353.
+
+AC #7 (2026-11-19, TASK-414): wiki/features/keyboard-shortcuts.md covers the definitions, overrides and layout limits; the website's Keyboard Shortcuts page says shortcuts are changed in Settings › Shortcuts (taken keys refused with the holder named, the fixed editing commands, Restore Defaults) and the features index line says so too; website 0b3d3b5 (deployed 2026-11-19, version b9f69535; live pages checked with curl).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

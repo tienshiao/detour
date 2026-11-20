@@ -3,11 +3,11 @@ id: TASK-295
 title: >-
   Spaces: keyboard shortcuts that jump straight to a space by its position
   (first through ninth)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08T07:38:00Z'
-updated_date: '2026-11-15T22:57:00Z'
+updated_date: '2026-11-20T03:37:00Z'
 labels:
   - spaces
   - menus
@@ -34,7 +34,7 @@ Context for the choice of keys (the user's call): the only digit key equivalent 
 - [x] #4 Reordering, adding or deleting spaces updates which space each shortcut opens without a relaunch
 - [x] #5 Tests cover the position-to-space mapping, including fewer than nine spaces and more than nine
 - [x] #6 Checked at runtime with /verify: the shortcuts switch spaces in the key window only
-- [ ] #7 The website's Spaces guide (src/content/features/spaces.md: shortcuts table, FAQ and Coming from Arc box) is updated when this ships
+- [x] #7 The website's Spaces guide (src/content/features/spaces.md: shortcuts table, FAQ and Coming from Arc box) is updated when this ships
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -94,6 +94,8 @@ No correctness bugs. Fixed: the space title format shared by both item loops; th
 2026-11-14 user decision: keep ⌃1–⌃9 as the defaults (matches Arc). On the user's Mac Mission Control holds ⌃1–⌃6; the user turns those off in System Settings or rebinds in Settings > Shortcuts, which already marks them 'Used by macOS'. ⌘1–⌘9 rejected.
 
 2026-11-15: the user rebound the first two space jumps to ⌘1 and ⌘2 in Settings > Shortcuts and used them by hand: they switch spaces (physical key presses, with a custom binding). Only AC #7 (the website's Spaces guide at release) remains.
+
+AC #7 (2026-11-19, TASK-414): Spaces guide (limits list, FAQ, Switch Spaces step, shortcuts table), Arc hub (Spaces row, not-in-Detour line removed) and the Keyboard Shortcuts page list ⌃1–⌃9, with the Mission Control note; website 0b3d3b5 (deployed 2026-11-19, version b9f69535; live pages checked with curl).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
